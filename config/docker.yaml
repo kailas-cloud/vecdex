@@ -1,0 +1,39 @@
+http:
+  port: 8080
+  read_timeout_sec: 10
+  write_timeout_sec: 10
+  shutdown_timeout_sec: 10
+
+database:
+  driver: ${DB_DRIVER:-valkey}
+  addrs:
+    - ${CACHE_ADDR:-valkey:6379}
+  password: ""
+  readiness_timeout_sec: 10
+
+index:
+  hnsw_m: 32
+  hnsw_ef_construction: 400
+  default_page_size: 20
+  max_page_size: 100
+  max_batch_size: 100
+
+storage:
+  key_prefix: "vecdex:"
+
+auth:
+  api_keys:
+    - test-api-key
+
+embedding:
+  providers:
+    stub:
+      api_key: "fake-key"
+      base_url: "http://mock-embedder:9999/v1/"
+  vectorizers:
+    json:
+      provider: stub
+      model: stub
+      dimensions: 1024
+      document_instruction: ""
+      query_instruction: ""

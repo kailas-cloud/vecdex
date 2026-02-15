@@ -1,0 +1,97 @@
+name: Vecdex CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/tests.yml'
+      - '.testcoverage.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/tests.yml'
+      - '.testcoverage.yml'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.8.0
+          args: --timeout=5m
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run unit tests with coverage
+        run: go test ./... -short -coverprofile=coverage.out -covermode=atomic
+
+      - name: Check coverage thresholds
+        id: coverage
+        uses: vladopajic/go-test-coverage@v2
+        with:
+          config: ./.testcoverage.yml
+
+      - name: Save coverage report
+        if: github.event_name == 'pull_request'
+        run: echo '${{ fromJSON(steps.coverage.outputs.report) }}' > .coverage-report.md
+
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          file-path: .coverage-report.md
+          comment-tag: coverage-report
+
+  e2e-pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        backend: [valkey, redis]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run pytest E2E (${{ matrix.backend }})
+        working-directory: ./tests
+        run: |
+          docker compose --profile ${{ matrix.backend }} up \
+            --build --abort-on-container-exit \
+            --exit-code-from pytest-${{ matrix.backend }}
+
+      - name: Show logs on failure
+        if: failure()
+        working-directory: ./tests
+        run: docker compose --profile ${{ matrix.backend }} logs
+
+      - name: Cleanup
+        if: always()
+        working-directory: ./tests
+        run: docker compose --profile ${{ matrix.backend }} down -v

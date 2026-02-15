@@ -1,0 +1,1818 @@
+openapi: 3.0.3
+info:
+  title: vecdex API
+  description: |
+    Zero-config document search API. Send text, get results. No dimensions,
+    no embedding models, no vector math. vecdex handles vectorization, indexing,
+    and hybrid search transparently.
+
+    ## Authentication
+
+    All endpoints require `Authorization: Bearer <api-key>`. Keys are static,
+    configured on the server. No OAuth, no OIDC — one header, one check.
+    `/health` and `/metrics` are exempt.
+
+    ## Request tracing
+
+    Every response includes an `X-Request-ID` header. Clients may send their own
+    `X-Request-ID`; if omitted, the server generates a UUID v4.
+
+    ## Rate limiting
+
+    Rate limits are planned for a future release. The `rate_limited` error code
+    and 429 responses are reserved but not currently enforced.
+
+    ## Storage type
+
+    All collections use JSON storage (the only supported type). The `type` field
+    is omitted from the API — if additional storage types are added in the future,
+    the field will be introduced in a backwards-compatible way.
+
+    ## Score semantics
+
+    All scores are normalized to 0.0–1.0, but their meaning varies by mode:
+    - **semantic**: cosine similarity (`1 - cosine_distance`).
+    - **keyword**: normalized BM25 score.
+    - **hybrid**: fused RRF score — not cosine similarity, represents
+      relative ranking quality.
+
+    `min_score` is applied in semantic and hybrid modes; ignored in keyword
+    mode (BM25 scores are not comparable across queries).
+
+    ## Search modes
+
+    vecdex supports three search modes:
+    - **hybrid** (default): combines semantic vector search with BM25 keyword
+      matching via Reciprocal Rank Fusion (RRF). Best for most use cases —
+      catches both exact names (`parseJSON`) and semantic meaning ("function
+      that parses JSON").
+    - **semantic**: pure vector KNN search. Use when exact keyword matches
+      are noise (e.g., natural language queries).
+    - **keyword**: pure BM25 full-text search. Use for exact identifier lookup.
+
+    ## Versioning
+
+    The API is versioned via URL path (`/api/v1`). Within a version:
+    - New optional fields may be added to responses (additive).
+    - New optional query/body parameters may be added.
+    - New error codes may be added.
+    - New health checks may appear.
+    - Existing fields will not be removed or renamed.
+
+    Breaking changes (field removal, type change, semantic change)
+    will increment the version number.
+
+    ## Error codes
+
+    | Code                       | HTTP | When                                  |
+    |----------------------------|------|---------------------------------------|
+    | `bad_request`              | 400  | Malformed JSON body                   |
+    | `validation_failed`        | 400  | Body/params failed validation         |
+    | `vector_dim_mismatch`      | 400  | Vector dimensions don't match index   |
+    | `collection_not_found`     | 404  | Collection doesn't exist              |
+    | `document_not_found`       | 404  | Document doesn't exist                |
+    | `collection_already_exists`| 409  | Collection name already taken         |
+    | `revision_conflict`        | 409  | Resource modified since last read     |
+    | `rate_limited`             | 429  | Per-key rate limit exceeded           |
+    | `embedding_quota_exceeded` | 402  | Embedding token budget exhausted      |
+    | `not_implemented`          | 501  | Feature not yet implemented           |
+    | `keyword_search_not_supported` | 501 | Backend doesn't support keyword search |
+    | `internal_error`           | 500  | Unexpected server error               |
+    | `embedding_provider_error` | 502  | Upstream embedding provider failure   |
+
+    ## Embedding usage and budgets
+
+    Certain operations consume embedding tokens via an upstream provider:
+
+    | Operation | Embedding calls | When |
+    |-----------|----------------|------|
+    | PUT (upsert) | 1 | Always (content required) |
+    | PATCH | 0 or 1 | Only if `content` is provided |
+    | Search (semantic/hybrid) | 1 | Query vectorization |
+    | Search (keyword) | 0 | BM25 only |
+    | Batch upsert | N | One per document |
+    | GET, DELETE, list | 0 | Never |
+
+    Budgets are enforced **per API key**, optionally **per collection**.
+    The budget unit is **tokens** (not requests, not USD) — the only
+    invariant across embedding providers.
+
+    When the budget is exhausted:
+    - Embedding operations (PUT, PATCH with content, semantic/hybrid search,
+      batch upsert) return **402** with `code: embedding_quota_exceeded`.
+    - Non-embedding operations (GET, DELETE, list, keyword search) continue
+      normally — the service is degraded, not down.
+    - Batch upsert processes documents until the budget runs out, then marks
+      remaining items with per-item `embedding_quota_exceeded` errors.
+
+    **Monitoring:**
+    - `GET /usage` — usage metrics and budget status per period.
+    - Response headers `X-Embedding-Tokens`, `X-Embedding-Budget-Remaining`,
+      `X-Embedding-Budget-Limit` on every embedding-consuming response.
+    - `/health` reports `embedding_quota: error` when budget is exhausted
+      (overall status: `degraded`).
+
+    ## Filter expressions
+
+    Search supports structured filters with `must`, `should`, `must_not`
+    semantics (one level, no nesting). Each condition targets a field by
+    `key` and matches via `match` (exact, tag fields) or `range` (numeric
+    fields).
+  version: 1.0.0
+  contact:
+    name: memory team
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+paths:
+  /collections:
+    post:
+      summary: Create collection
+      description: |
+        Creates a new collection. The platform automatically configures
+        vectorization based on internal presets (model, dimensions, distance metric).
+      operationId: createCollection
+      parameters:
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCollectionRequest'
+            examples:
+              vector_only:
+                summary: Vector search only (no filters)
+                value:
+                  name: code-chunks
+              with_filters:
+                summary: Vector search + field filters
+                value:
+                  name: code-chunks
+                  fields:
+                    - name: category
+                      type: tag
+                    - name: rating
+                      type: numeric
+      responses:
+        '201':
+          description: Collection created
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    get:
+      summary: List collections
+      description: |
+        Returns collections with cursor-based pagination.
+        Use `next_cursor` from the response to fetch the next page.
+      operationId: listCollections
+      parameters:
+        - $ref: '#/components/parameters/XRequestID'
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor from previous response. Omit for first page.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Collection list
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectionCursorListResponse'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /collections/{collection}:
+    get:
+      summary: Get collection
+      description: Returns collection metadata.
+      operationId: getCollection
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/XRequestID'
+      responses:
+        '200':
+          description: Collection metadata
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '404':
+          $ref: '#/components/responses/CollectionNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    delete:
+      summary: Delete collection
+      description: |
+        Deletes the collection and all its documents. Irreversible.
+      operationId: deleteCollection
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/XRequestID'
+      responses:
+        '204':
+          description: Collection deleted
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+        '404':
+          $ref: '#/components/responses/CollectionNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /collections/{collection}/documents:
+    get:
+      summary: List documents
+      description: |
+        Returns documents in the collection with cursor-based pagination.
+        Use `next_cursor` from the response to fetch the next page.
+        Ordering is stable (by internal key order) as long as no documents
+        are inserted or deleted between pages.
+      operationId: listDocuments
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/XRequestID'
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor from previous response. Omit for first page.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Document list
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentCursorListResponse'
+        '404':
+          $ref: '#/components/responses/CollectionNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /collections/{collection}/documents/{id}:
+    put:
+      summary: Upsert document
+      description: |
+        Creates or updates a document. Content is automatically vectorized.
+        Returns 201 if the document was created, 200 if updated.
+        On 201 Created, returns a `Location` header with the document URL.
+
+        Supports optimistic concurrency via `If-Match` header. Pass the
+        `revision` from a previous read — if the document was modified
+        since, returns 409. Omit `If-Match` for unconditional write.
+      operationId: upsertDocument
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertDocumentRequest'
+            example:
+              content: "CreateCollection validates name and creates FT index"
+              tags:
+                language: go
+              numerics:
+                start_line: 42
+      responses:
+        '201':
+          description: Document created
+          headers:
+            Location:
+              description: URL of the created document
+              schema:
+                type: string
+              example: /api/v1/collections/code-chunks/documents/chunk-1
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+            X-Embedding-Tokens:
+              $ref: '#/components/headers/XEmbeddingTokens'
+            X-Embedding-Budget-Remaining:
+              $ref: '#/components/headers/XEmbeddingBudgetRemaining'
+            X-Embedding-Budget-Limit:
+              $ref: '#/components/headers/XEmbeddingBudgetLimit'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentResponse'
+        '200':
+          description: Document updated
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+            X-Embedding-Tokens:
+              $ref: '#/components/headers/XEmbeddingTokens'
+            X-Embedding-Budget-Remaining:
+              $ref: '#/components/headers/XEmbeddingBudgetRemaining'
+            X-Embedding-Budget-Limit:
+              $ref: '#/components/headers/XEmbeddingBudgetLimit'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/EmbeddingQuotaExceeded'
+        '404':
+          $ref: '#/components/responses/CollectionNotFound'
+        '409':
+          $ref: '#/components/responses/RevisionConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/EmbeddingProviderError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    patch:
+      summary: Partial update document
+      description: |
+        Merges provided fields into the existing document. Only specified
+        fields are updated — omitted fields are untouched.
+
+        - If `content` is provided, the document is re-vectorized.
+        - If only `tags` or `numerics` are provided, no re-vectorization
+          occurs (cheap metadata update).
+        - To remove a tag or numeric field, set its value to `null`.
+
+        Merge semantics prevent read-modify-write race conditions that
+        would occur with full PUT replacement of metadata.
+
+        PATCH does not create documents — returns 404 if the document
+        does not exist. Use PUT for upsert semantics.
+
+        Supports optimistic concurrency via `If-Match` header (same as PUT).
+      operationId: patchDocument
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchDocumentRequest'
+            examples:
+              update_tags_only:
+                summary: Update tags without re-vectorization
+                value:
+                  tags:
+                    language: python
+                    reviewed: "true"
+              remove_tag:
+                summary: Remove a tag
+                value:
+                  tags:
+                    deprecated: null
+              update_content:
+                summary: Update content (triggers re-vectorization)
+                value:
+                  content: "Updated function documentation"
+      responses:
+        '200':
+          description: |
+            Document updated. Embedding headers are present only when `content`
+            was provided (re-vectorization occurred). Metadata-only patches
+            do not consume embedding tokens.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+            X-Embedding-Tokens:
+              $ref: '#/components/headers/XEmbeddingTokens'
+            X-Embedding-Budget-Remaining:
+              $ref: '#/components/headers/XEmbeddingBudgetRemaining'
+            X-Embedding-Budget-Limit:
+              $ref: '#/components/headers/XEmbeddingBudgetLimit'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/EmbeddingQuotaExceeded'
+        '404':
+          $ref: '#/components/responses/DocumentNotFound'
+        '409':
+          $ref: '#/components/responses/RevisionConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/EmbeddingProviderError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    get:
+      summary: Get document
+      description: Returns document by ID (without vector).
+      operationId: getDocument
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/XRequestID'
+      responses:
+        '200':
+          description: Document data
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentResponse'
+        '404':
+          $ref: '#/components/responses/DocumentNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    delete:
+      summary: Delete document
+      description: Deletes a document from the collection.
+      operationId: deleteDocument
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/XRequestID'
+      responses:
+        '204':
+          description: Document deleted
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+        '404':
+          $ref: '#/components/responses/DocumentNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /collections/{collection}/documents/search:
+    post:
+      summary: Search documents
+      description: |
+        Search over the collection. Supports three modes:
+
+        - **hybrid** (default): semantic + BM25 keyword search combined via
+          Reciprocal Rank Fusion. Best for most use cases.
+        - **semantic**: pure vector KNN search.
+        - **keyword**: pure BM25 full-text search.
+
+        `top_k` controls the KNN computation window size.
+        `limit` controls how many results are returned to the client from that window.
+        There is no offset — if you need more results, increase `top_k`.
+
+        Supports structured filters with `must`/`should`/`must_not` conditions.
+        See `FilterExpression` for details.
+
+        Note: results are not stable across calls when documents are being inserted
+        or deleted concurrently.
+      operationId: searchDocuments
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+            examples:
+              simple:
+                summary: Simple search (hybrid by default)
+                value:
+                  query: "where is collection created"
+                  top_k: 5
+              keyword_exact:
+                summary: Keyword search for exact identifier
+                value:
+                  query: "parseJSON"
+                  mode: keyword
+                  top_k: 10
+              semantic_only:
+                summary: Pure semantic search
+                value:
+                  query: "function that handles errors gracefully"
+                  mode: semantic
+                  top_k: 10
+                  min_score: 0.5
+              filtered:
+                summary: Search with must/should/must_not filters
+                value:
+                  query: "error handling"
+                  filters:
+                    must:
+                      - key: language
+                        match: python
+                    must_not:
+                      - key: archived
+                        match: "true"
+                    should:
+                      - key: repo
+                        match: vecdex
+                      - key: repo
+                        match: redcat
+              filtered_range:
+                summary: Search with numeric range filter
+                value:
+                  query: "database queries"
+                  top_k: 50
+                  limit: 10
+                  filters:
+                    must:
+                      - key: priority
+                        range:
+                          gte: 5
+      responses:
+        '200':
+          description: |
+            Search results. Embedding headers are present for semantic and
+            hybrid modes (query vectorization). Keyword mode does not consume
+            embedding tokens — headers are absent.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+            X-Embedding-Tokens:
+              $ref: '#/components/headers/XEmbeddingTokens'
+            X-Embedding-Budget-Remaining:
+              $ref: '#/components/headers/XEmbeddingBudgetRemaining'
+            X-Embedding-Budget-Limit:
+              $ref: '#/components/headers/XEmbeddingBudgetLimit'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResultListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/EmbeddingQuotaExceeded'
+        '404':
+          $ref: '#/components/responses/CollectionNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+        '502':
+          $ref: '#/components/responses/EmbeddingProviderError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /collections/{collection}/documents/batch-upsert:
+    post:
+      summary: Batch upsert documents
+      description: |
+        Upserts up to 100 documents in a single request. Each document is
+        vectorized and upserted independently. Returns per-item status
+        even on partial failure (HTTP 200 always).
+
+        **Quota exhaustion:**
+        - If the budget is **already exhausted** before processing begins,
+          returns top-level **402** with `code: embedding_quota_exceeded`.
+        - If exhaustion occurs **mid-batch**, returns **200** with per-item
+          statuses: successful items get `ok`, remaining items get per-item
+          `embedding_quota_exceeded` errors. Embedding headers reflect
+          the total tokens consumed by the successful portion.
+        - Check per-item statuses to detect partial success.
+      operationId: batchUpsert
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchUpsertRequest'
+      responses:
+        '200':
+          description: |
+            Batch results (may include per-item errors). Embedding headers
+            report totals across all documents in the batch.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+            X-Embedding-Tokens:
+              $ref: '#/components/headers/XEmbeddingTokens'
+            X-Embedding-Budget-Remaining:
+              $ref: '#/components/headers/XEmbeddingBudgetRemaining'
+            X-Embedding-Budget-Limit:
+              $ref: '#/components/headers/XEmbeddingBudgetLimit'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchUpsertResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/EmbeddingQuotaExceeded'
+        '404':
+          $ref: '#/components/responses/CollectionNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/EmbeddingProviderError'
+
+  /collections/{collection}/documents/batch-delete:
+    post:
+      summary: Batch delete documents
+      description: |
+        Deletes up to 100 documents by ID. Returns per-item status
+        even on partial failure (HTTP 200 always).
+      operationId: batchDelete
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchDeleteRequest'
+      responses:
+        '200':
+          description: Batch results (may include per-item errors)
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchDeleteResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/CollectionNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /usage:
+    get:
+      summary: Get embedding usage and budget
+      description: |
+        Returns embedding usage metrics and budget status for the current API key.
+        Optionally filter by collection. Use `period` to select the aggregation window.
+      operationId: getUsage
+      parameters:
+        - $ref: '#/components/parameters/XRequestID'
+        - name: collection
+          in: query
+          required: false
+          description: Filter usage by collection name. If omitted, returns global usage.
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9_-]+$'
+            maxLength: 64
+          example: code-chunks
+        - name: period
+          in: query
+          required: false
+          description: Aggregation period.
+          schema:
+            type: string
+            enum: [day, month, total]
+            default: month
+          example: month
+      responses:
+        '200':
+          description: Usage metrics and budget status
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageResponse'
+              example:
+                period: month
+                period_start_at: "2025-02-01T00:00:00Z"
+                period_end_at: "2025-03-01T00:00:00Z"
+                usage:
+                  embedding_requests: 1542
+                  tokens: 384200
+                  cost_millidollars: 38
+                budget:
+                  tokens_limit: 1000000
+                  tokens_remaining: 615800
+                  is_exhausted: false
+                  resets_at: "2025-03-01T00:00:00Z"
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /health:
+    get:
+      summary: Health check
+      description: |
+        Returns service health with dependency checks. Used as k8s
+        readiness probe — returns 503 if any critical dependency is down.
+
+        The `embedding_quota` check reports budget availability:
+        - `ok` — budget available, embedding operations will succeed.
+        - `error` — budget exhausted, embedding operations return 402.
+
+        When `embedding_quota` is `error`, overall status is `degraded`
+        (not `error`) because non-embedding operations (GET, DELETE,
+        keyword search, list) remain fully functional.
+      operationId: healthCheck
+      security: []
+      responses:
+        '200':
+          description: Service is healthy or degraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy:
+                  summary: All checks pass
+                  value:
+                    status: ok
+                    checks:
+                      valkey: ok
+                      embedding: ok
+                      embedding_quota: ok
+                degraded:
+                  summary: Embedding quota exhausted
+                  value:
+                    status: degraded
+                    checks:
+                      valkey: ok
+                      embedding: ok
+                      embedding_quota: error
+        '503':
+          description: Service is unhealthy (critical dependency down)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: error
+                checks:
+                  valkey: error
+                  embedding: ok
+                  embedding_quota: ok
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      operationId: metrics
+      security: []
+      responses:
+        '200':
+          description: Prometheus metrics in text format
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Static API key passed as Bearer token. Keys are configured on the
+        server side. No token exchange, no expiration — simple shared secret.
+
+  headers:
+    XRequestID:
+      description: Unique request identifier for tracing. Echoes client-provided value or server-generated UUID v4.
+      schema:
+        type: string
+        format: uuid
+      example: 550e8400-e29b-41d4-a716-446655440000
+
+    ETag:
+      description: Resource revision for conditional requests. Use with If-Match on PUT/PATCH.
+      schema:
+        type: string
+      example: '"3"'
+
+    RetryAfter:
+      description: Seconds to wait before retrying
+      schema:
+        type: integer
+      example: 30
+
+    XEmbeddingTokens:
+      description: Embedding tokens consumed by this request
+      schema:
+        type: integer
+      example: 256
+
+    XEmbeddingBudgetRemaining:
+      description: Embedding tokens remaining in the current budget period. -1 if unlimited.
+      schema:
+        type: integer
+      example: 615800
+
+    XEmbeddingBudgetLimit:
+      description: Total embedding token budget for the current period. -1 if unlimited.
+      schema:
+        type: integer
+      example: 1000000
+
+  parameters:
+    CollectionName:
+      name: collection
+      in: path
+      required: true
+      description: Collection name (alphanumeric, underscores, hyphens)
+      schema:
+        type: string
+        pattern: '^[a-zA-Z0-9_-]+$'
+        minLength: 1
+        maxLength: 64
+      example: code-chunks
+
+    DocumentId:
+      name: id
+      in: path
+      required: true
+      description: Document ID (alphanumeric, underscores, hyphens)
+      schema:
+        type: string
+        pattern: '^[a-zA-Z0-9_-]+$'
+        minLength: 1
+        maxLength: 256
+      example: chunk-1
+
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: |
+        Revision-based optimistic concurrency control. Pass the `revision`
+        value from a previous GET response. If the current revision doesn't
+        match, the server returns 409 with `code: revision_conflict`.
+        If omitted, the write proceeds unconditionally (no conflict check).
+      schema:
+        type: integer
+      example: 3
+
+    XRequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
+      schema:
+        type: string
+        maxLength: 128
+      example: 550e8400-e29b-41d4-a716-446655440000
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum number of items to return
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      example: 20
+
+  schemas:
+    # --- Collections ---
+
+    CreateCollectionRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Collection name (alphanumeric, underscores, hyphens)
+          pattern: '^[a-zA-Z0-9_-]+$'
+          minLength: 1
+          maxLength: 64
+          example: code-chunks
+        fields:
+          type: array
+          maxItems: 64
+          description: |
+            Optional fields for filtering (max 64).
+            If omitted, only vector/keyword search is available.
+          items:
+            $ref: '#/components/schemas/FieldDefinition'
+          example:
+            - name: category
+              type: tag
+            - name: rating
+              type: numeric
+
+    Collection:
+      type: object
+      required:
+        - name
+        - created_at
+        - revision
+      properties:
+        name:
+          type: string
+          example: code-chunks
+        revision:
+          type: integer
+          description: |
+            Monotonically increasing revision number. Incremented on any
+            mutation (field schema changes, etc). Starts at 1.
+          example: 1
+        fields:
+          type: array
+          description: Indexed fields for filtering (empty if search-only)
+          items:
+            $ref: '#/components/schemas/FieldDefinition'
+        document_count:
+          type: integer
+          description: |
+            Approximate number of documents. May lag behind recent
+            batch operations by a few seconds.
+          example: 1337
+        vector_dimensions:
+          type: integer
+          description: Vector dimensions (set automatically by the platform)
+          example: 1024
+        created_at:
+          type: string
+          format: date-time
+          description: Collection creation time (ISO 8601, UTC)
+          example: "2025-02-04T02:00:00Z"
+
+    FieldDefinition:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+          description: |
+            Field name in JSON document. Must not conflict with reserved
+            names: `id`, `content`, `score`, `vector`.
+          pattern: '^[a-zA-Z_][a-zA-Z0-9_]*$'
+          minLength: 1
+          maxLength: 64
+          example: category
+        type:
+          type: string
+          enum: [tag, numeric]
+          description: |
+            Field type for indexing:
+            - tag: categorical/string filtering (exact match via `match`)
+            - numeric: numeric range filtering (via `range` with gt/gte/lt/lte)
+            Document values for tag fields are passed in the `tags` object
+            of the document body.
+          example: tag
+
+    CollectionCursorListResponse:
+      type: object
+      required:
+        - items
+        - has_more
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Collection'
+        next_cursor:
+          type: string
+          description: |
+            Opaque pagination token for the next page. Absent when has_more is false.
+            Clients must treat this value as an opaque string — do not parse, decode,
+            or construct cursor values. The format may change without notice.
+        has_more:
+          type: boolean
+          description: Whether more results are available
+          example: true
+
+    # --- Documents ---
+
+    UpsertDocumentRequest:
+      type: object
+      required:
+        - content
+      properties:
+        content:
+          type: string
+          maxLength: 163840
+          description: |
+            Document text content (will be auto-vectorized). Maximum size is
+            160 KB (~41k tokens for the default embedding model). Requests
+            exceeding this limit return 400 with code `validation_failed`.
+          example: "CreateCollection validates name and creates FT index"
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+          description: Tag fields for filtering (must match collection schema)
+          example:
+            language: go
+        numerics:
+          type: object
+          additionalProperties:
+            type: number
+          description: Numeric fields for filtering (must match collection schema)
+          example:
+            start_line: 42
+
+    PatchDocumentRequest:
+      type: object
+      properties:
+        content:
+          type: string
+          maxLength: 163840
+          description: |
+            New content text. If provided, triggers re-vectorization.
+            If omitted, existing content and vector are preserved.
+        tags:
+          type: object
+          additionalProperties:
+            nullable: true
+            type: string
+          description: |
+            Tags to merge. Existing tags not mentioned here are preserved.
+            Set a value to `null` to remove the tag.
+          example:
+            language: python
+            deprecated: null
+        numerics:
+          type: object
+          additionalProperties:
+            nullable: true
+            type: number
+          description: |
+            Numerics to merge. Existing numerics not mentioned here are preserved.
+            Set a value to `null` to remove the numeric.
+          example:
+            priority: 10
+      minProperties: 1
+      description: |
+        Partial update with merge semantics. All fields are optional —
+        only provided fields are updated. Set a tag/numeric value to `null`
+        to remove it. Empty nested objects (`{"tags": {}}`) are no-ops:
+        no error, no changes applied.
+
+    DocumentResponse:
+      type: object
+      required:
+        - id
+        - content
+        - revision
+      properties:
+        id:
+          type: string
+          example: chunk-1
+        content:
+          type: string
+          example: "CreateCollection validates name and creates FT index"
+        revision:
+          type: integer
+          description: |
+            Monotonically increasing revision number. Use with `If-Match`
+            header on PUT/PATCH to prevent lost updates. Starts at 1.
+          example: 3
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+        numerics:
+          type: object
+          additionalProperties:
+            type: number
+
+    DocumentCursorListResponse:
+      type: object
+      required:
+        - items
+        - has_more
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentResponse'
+        next_cursor:
+          type: string
+          description: |
+            Opaque pagination token for the next page. Absent when has_more is false.
+            Clients must treat this value as an opaque string — do not parse, decode,
+            or construct cursor values. The format may change without notice.
+          example: eyJsYXN0X2tleSI6InZlY25hOmNvZGUtY2h1bmtzOmNodW5rLTQyIn0
+        has_more:
+          type: boolean
+          description: Whether more results are available
+          example: true
+
+    # --- Search ---
+
+    SearchRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          maxLength: 4096
+          description: |
+            Search query text (auto-vectorized for semantic/hybrid modes).
+            Maximum 4096 characters. Queries exceeding this return 400.
+          example: "where is collection created"
+        mode:
+          type: string
+          enum: [hybrid, semantic, keyword]
+          default: hybrid
+          description: |
+            Search mode:
+            - **hybrid** (default): semantic + BM25 keyword search combined
+              via Reciprocal Rank Fusion. Catches both exact identifiers and
+              semantic meaning.
+            - **semantic**: pure vector KNN search.
+            - **keyword**: pure BM25 full-text search.
+        filters:
+          $ref: '#/components/schemas/FilterExpression'
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 10
+          description: |
+            Number of nearest neighbors for KNN (the computation window).
+            The server computes this many candidates, then `limit` controls
+            how many are returned. Increasing `top_k` is more expensive.
+            In keyword mode, controls BM25 result window size.
+          example: 50
+        min_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: |
+            Minimum relevance score threshold. Results below this score are
+            excluded from the response. Applied as a post-filter on the server.
+            - In **semantic** mode: cosine similarity threshold.
+            - In **hybrid** mode: RRF score threshold (not cosine).
+            - In **keyword** mode: ignored (BM25 scores are not comparable
+              across queries, so thresholding is unreliable).
+          example: 0.5
+        include_vectors:
+          type: boolean
+          default: false
+          description: |
+            Include embedding vectors in the response. Vectors are returned
+            regardless of search mode — they exist in storage even when
+            keyword mode doesn't use them for ranking.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: |
+            Maximum results to return from the top_k window. If top_k=100
+            and limit=10, the server computes 100 nearest neighbors but
+            returns only the top 10. If limit > top_k, the server silently
+            caps to top_k (no error).
+
+    FilterExpression:
+      type: object
+      description: |
+        Flat filter with `must`, `should`, `must_not` semantics.
+        One level only — no recursive nesting.
+
+        - **must**: all conditions must match (AND).
+        - **should**: at least one condition must match (OR).
+        - **must_not**: none of the conditions may match (NOT).
+
+        Each condition targets a field by `key` and uses either `match`
+        (exact value, for tag fields) or `range` (for numeric fields).
+
+        Equivalent boolean query semantics:
+        ```
+        language=python AND NOT archived=true AND (repo=vecdex OR repo=redcat)
+        ```
+
+        An empty filter (`{}`) or a filter with all empty arrays is a no-op —
+        no filtering is applied, all candidates are returned.
+
+        **Error handling:** Invalid filter expressions return 400 with
+        `code: validation_failed`. The `details` array contains per-field
+        errors, e.g. `{"field": "filters.must[0].key", "message": "unknown field"}`.
+        Unknown field names (not in collection schema) also return 400.
+      properties:
+        must:
+          type: array
+          maxItems: 32
+          description: All conditions must match (AND)
+          items:
+            $ref: '#/components/schemas/FilterCondition'
+        should:
+          type: array
+          maxItems: 32
+          description: At least one condition must match (OR)
+          items:
+            $ref: '#/components/schemas/FilterCondition'
+        must_not:
+          type: array
+          maxItems: 32
+          description: None of the conditions may match (NOT)
+          items:
+            $ref: '#/components/schemas/FilterCondition'
+      example:
+        must:
+          - key: language
+            match: python
+        must_not:
+          - key: archived
+            match: "true"
+        should:
+          - key: repo
+            match: vecdex
+          - key: repo
+            match: redcat
+
+    FilterCondition:
+      type: object
+      required:
+        - key
+      description: |
+        A single filter condition. Exactly one of `match` or `range`
+        must be provided. Use `match` for tag fields (exact string value),
+        `range` for numeric fields. Providing both returns 400. Providing
+        neither returns 400.
+      properties:
+        key:
+          type: string
+          description: Field name (must exist in collection schema)
+          example: language
+        match:
+          type: string
+          description: |
+            Exact string match for tag fields. For boolean-like values,
+            use string literals: `"true"`, `"false"`.
+          example: python
+        range:
+          $ref: '#/components/schemas/RangeFilter'
+
+    RangeFilter:
+      type: object
+      description: |
+        Numeric range filter. At least one boundary must be specified.
+        Multiple boundaries are combined with AND. Do not mix `gt` with
+        `gte` or `lt` with `lte` — returns 400 if both provided for
+        the same direction.
+      properties:
+        gt:
+          type: number
+          description: Greater than
+        gte:
+          type: number
+          description: Greater than or equal
+        lt:
+          type: number
+          description: Less than
+        lte:
+          type: number
+          description: Less than or equal
+      minProperties: 1
+      example:
+        gte: 5
+        lt: 100
+
+    SearchResultItem:
+      type: object
+      required:
+        - id
+        - score
+        - content
+      properties:
+        id:
+          type: string
+          example: chunk-1
+        score:
+          type: number
+          format: double
+          description: |
+            Relevance score normalized to 0.0–1.0.
+            - In **semantic** mode: cosine similarity (`1 - cosine_distance`).
+            - In **keyword** mode: normalized BM25 score.
+            - In **hybrid** mode: fused RRF score. Not directly comparable
+              to cosine similarity — represents relative ranking quality,
+              not geometric distance.
+            Note: `min_score` thresholds mean different things in each mode.
+          minimum: 0
+          maximum: 1
+          example: 0.87
+        content:
+          type: string
+          example: "CreateCollection validates name and creates FT index"
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+        numerics:
+          type: object
+          additionalProperties:
+            type: number
+        vector:
+          type: array
+          items:
+            type: number
+            format: float
+          description: Embedding vector (only present when include_vectors=true)
+
+    SearchResultListResponse:
+      type: object
+      required:
+        - items
+        - total
+        - limit
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResultItem'
+        total:
+          type: integer
+          description: |
+            Number of candidates that passed min_score filtering within the
+            top_k window. May be greater than `limit` — in that case, increase
+            `limit` to see more results from the same KNN window. To get more
+            candidates overall, increase `top_k`.
+          example: 42
+        limit:
+          type: integer
+          description: Requested limit
+          example: 20
+
+    # --- Batch ---
+
+    BatchUpsertRequest:
+      type: object
+      required:
+        - documents
+      properties:
+        documents:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/BatchUpsertItem'
+
+    BatchUpsertItem:
+      type: object
+      required:
+        - id
+        - content
+      properties:
+        id:
+          type: string
+          description: Document ID
+          pattern: '^[a-zA-Z0-9_-]+$'
+          minLength: 1
+          maxLength: 256
+          example: chunk-1
+        content:
+          type: string
+          maxLength: 163840
+          description: Document text content
+        tags:
+          type: object
+          additionalProperties:
+            type: string
+        numerics:
+          type: object
+          additionalProperties:
+            type: number
+
+    BatchUpsertResponse:
+      type: object
+      required:
+        - items
+        - succeeded
+        - failed
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchResultItem'
+        succeeded:
+          type: integer
+          description: Number of successfully processed items
+          example: 98
+        failed:
+          type: integer
+          description: Number of failed items
+          example: 2
+
+    BatchDeleteRequest:
+      type: object
+      required:
+        - ids
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            pattern: '^[a-zA-Z0-9_-]+$'
+            minLength: 1
+            maxLength: 256
+          example: ["chunk-1", "chunk-2"]
+
+    BatchDeleteResponse:
+      type: object
+      required:
+        - items
+        - succeeded
+        - failed
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchResultItem'
+        succeeded:
+          type: integer
+          description: Number of successfully deleted items
+          example: 98
+        failed:
+          type: integer
+          description: Number of failed items
+          example: 2
+
+    BatchResultItem:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+          example: chunk-1
+        status:
+          type: string
+          enum: [ok, error]
+        error:
+          $ref: '#/components/schemas/ErrorResponse'
+
+    # --- Errors ---
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          enum:
+            - bad_request
+            - validation_failed
+            - vector_dim_mismatch
+            - collection_not_found
+            - document_not_found
+            - collection_already_exists
+            - revision_conflict
+            - rate_limited
+            - embedding_quota_exceeded
+            - not_implemented
+            - keyword_search_not_supported
+            - embedding_provider_error
+            - internal_error
+          description: Machine-readable error code
+          example: validation_failed
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Invalid request body"
+        details:
+          type: array
+          description: Field-level validation errors
+          items:
+            $ref: '#/components/schemas/ValidationError'
+
+    ValidationError:
+      type: object
+      required:
+        - field
+        - message
+      properties:
+        field:
+          type: string
+          description: Field path that failed validation
+          example: name
+        message:
+          type: string
+          description: Validation error message
+          example: "required"
+
+    # --- Usage & Budget ---
+
+    UsageResponse:
+      type: object
+      required:
+        - period
+        - usage
+        - budget
+      properties:
+        period:
+          type: string
+          enum: [day, month, total]
+          description: Aggregation period
+          example: month
+        period_start_at:
+          type: string
+          format: date-time
+          description: Period start (ISO 8601, UTC). Absent when period=total.
+          example: "2025-02-01T00:00:00Z"
+        period_end_at:
+          type: string
+          format: date-time
+          description: Period end (ISO 8601, UTC). Absent when period=total.
+          example: "2025-03-01T00:00:00Z"
+        collection:
+          type: string
+          description: Collection name if filtered, absent for global usage.
+          example: code-chunks
+        usage:
+          $ref: '#/components/schemas/UsageMetrics'
+        budget:
+          $ref: '#/components/schemas/BudgetStatus'
+
+    UsageMetrics:
+      type: object
+      required:
+        - embedding_requests
+        - tokens
+      properties:
+        embedding_requests:
+          type: integer
+          description: Number of embedding API calls in this period
+          example: 1542
+        tokens:
+          type: integer
+          description: Total embedding tokens consumed in this period
+          example: 384200
+        cost_millidollars:
+          type: integer
+          description: |
+            Estimated cost in millidollars (1 USD = 1,000 millidollars).
+            Absent if provider doesn't report cost. Use integer arithmetic
+            to avoid floating-point precision issues.
+          example: 38
+
+    BudgetStatus:
+      type: object
+      required:
+        - tokens_limit
+        - tokens_remaining
+        - is_exhausted
+      properties:
+        tokens_limit:
+          type: integer
+          description: Token budget for the current period. -1 means unlimited.
+          example: 1000000
+        tokens_remaining:
+          type: integer
+          description: Tokens remaining in the current period. -1 if unlimited.
+          example: 615800
+        is_exhausted:
+          type: boolean
+          description: Whether the budget is exhausted (tokens_remaining = 0)
+          example: false
+        resets_at:
+          type: string
+          format: date-time
+          description: When the budget resets (ISO 8601, UTC). Absent if unlimited.
+          example: "2025-03-01T00:00:00Z"
+
+    # --- Infrastructure ---
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - checks
+      properties:
+        version:
+          type: string
+          description: Service version (semver)
+          example: "1.0.0"
+        status:
+          type: string
+          enum: [ok, degraded, error]
+          description: |
+            Aggregate health status:
+            - ok: all checks pass
+            - degraded: non-critical check failed (e.g., embedding cache)
+            - error: critical check failed (e.g., valkey connection)
+        checks:
+          type: object
+          description: |
+            Individual dependency health checks. New checks may appear
+            in future versions without a schema change.
+          additionalProperties:
+            type: string
+            enum: [ok, error]
+          example:
+            valkey: ok
+            embedding: ok
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            validation_failed:
+              value:
+                code: validation_failed
+                message: "Request validation failed"
+                details:
+                  - field: name
+                    message: required
+            bad_request:
+              value:
+                code: bad_request
+                message: "Invalid JSON body"
+
+    CollectionNotFound:
+      description: Collection not found
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: collection_not_found
+            message: "Collection 'documents' not found"
+
+    DocumentNotFound:
+      description: Document not found
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: document_not_found
+            message: "Document 'chunk-1' not found"
+
+    Conflict:
+      description: Resource already exists
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: collection_already_exists
+            message: "Collection 'code-chunks' already exists"
+
+    RevisionConflict:
+      description: |
+        Resource was modified since last read (optimistic concurrency).
+        The response includes the current revision so the client can
+        re-read and retry without an extra GET.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ErrorResponse'
+              - type: object
+                properties:
+                  current_revision:
+                    type: integer
+                    description: Current revision of the resource
+                    example: 5
+          example:
+            code: revision_conflict
+            message: "Resource was modified. Re-read and retry with current revision."
+            current_revision: 5
+
+    RateLimited:
+      description: Rate limit exceeded (reserved for future use)
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: rate_limited
+            message: "Rate limit exceeded. Retry after 30 seconds."
+
+    EmbeddingQuotaExceeded:
+      description: Embedding token budget exhausted
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        X-Embedding-Tokens:
+          $ref: '#/components/headers/XEmbeddingTokens'
+        X-Embedding-Budget-Remaining:
+          $ref: '#/components/headers/XEmbeddingBudgetRemaining'
+        X-Embedding-Budget-Limit:
+          $ref: '#/components/headers/XEmbeddingBudgetLimit'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: embedding_quota_exceeded
+            message: "Embedding token budget exhausted. Resets in 3600 seconds."
+
+    EmbeddingProviderError:
+      description: Upstream embedding provider failure
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: embedding_provider_error
+            message: "Embedding provider returned an error. Retry may succeed."
+
+    NotImplemented:
+      description: Feature not implemented
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: not_implemented
+            message: "This feature is not yet implemented"
+
+    InternalError:
+      description: Internal server error
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: internal_error
+            message: "Internal server error"

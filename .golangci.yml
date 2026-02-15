@@ -1,0 +1,140 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    # Security
+    - gosec
+
+    # Architecture
+    - depguard
+    - interfacebloat
+
+    # Errors
+    - wrapcheck
+    - errorlint
+    - errname
+    - nilerr
+    - nilnil
+
+    # Deep analysis
+    - gocritic
+    - musttag
+    - bodyclose
+    - noctx
+
+    # Complexity
+    - cyclop
+    - funlen
+    - nestif
+
+    # Style
+    - misspell
+    - dupl
+    - unconvert
+    - unparam
+    - prealloc
+    - lll
+    - revive
+
+    # Dead code
+    - unused
+
+    # Meta
+    - nolintlint
+
+  settings:
+    cyclop:
+      max-complexity: 15
+
+    funlen:
+      lines: 80
+
+    nestif:
+      min-complexity: 5
+
+    interfacebloat:
+      max: 6
+
+    lll:
+      line-length: 120
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+        - opinionated
+
+    depguard:
+      rules:
+        no-reflect:
+          deny:
+            - pkg: reflect
+              desc: "no runtime reflection, use interfaces"
+
+        domain-layer:
+          files:
+            - "**/internal/domain/**"
+          deny:
+            - pkg: net/http
+              desc: "domain must not depend on net/http"
+            - pkg: database/sql
+              desc: "domain must not depend on database/sql"
+            - pkg: github.com/gofiber/fiber
+              desc: "domain must not depend on fiber"
+            - pkg: github.com/redis/rueidis
+              desc: "domain must not depend on rueidis"
+
+        service-layer:
+          files:
+            - "**/internal/service/**"
+          deny:
+            - pkg: net/http
+              desc: "service must not depend on net/http"
+            - pkg: github.com/gofiber/fiber
+              desc: "service must not depend on fiber"
+
+        transport-layer:
+          files:
+            - "**/internal/transport/**"
+          deny:
+            - pkg: github.com/redis/rueidis
+              desc: "transport must not depend on rueidis"
+
+    wrapcheck:
+      ignore-package-globs:
+        - github.com/gofiber/fiber/*
+        - github.com/redis/rueidis
+        - github.com/sashabaranov/go-openai
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+    revive:
+      rules:
+        - name: exported
+
+  exclusions:
+    paths:
+      - internal/transport/generated
+
+    rules:
+      - path: _test\.go
+        linters:
+          - wrapcheck
+          - dupl
+          - funlen
+          - gosec
+          - errcheck
+
+      - path: cmd/vecdex/main\.go
+        linters:
+          - funlen
+          - cyclop
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

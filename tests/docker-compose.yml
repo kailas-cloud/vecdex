@@ -1,0 +1,102 @@
+services:
+  valkey:
+    image: valkey/valkey-bundle:9
+    profiles: [valkey]
+    command: ["--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  redis:
+    image: redis:8.4.1-alpine3.22
+    profiles: [redis]
+    command: ["--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  mock-embedder:
+    build:
+      context: ./mock_embedder
+      dockerfile: Dockerfile
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/health')"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  vecdex-valkey:
+    profiles: [valkey]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      - ENV=docker
+      - CACHE_ADDR=valkey:6379
+      - DB_DRIVER=valkey
+    depends_on:
+      valkey:
+        condition: service_healthy
+      mock-embedder:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  vecdex-redis:
+    profiles: [redis]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      - ENV=docker
+      - CACHE_ADDR=redis:6379
+      - DB_DRIVER=redis
+    depends_on:
+      redis:
+        condition: service_healthy
+      mock-embedder:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  pytest-valkey:
+    profiles: [valkey]
+    build:
+      context: .
+      dockerfile: Dockerfile.pytest
+    environment:
+      - VECDEX_BASE_URL=http://vecdex-valkey:8080
+      - VECDEX_API_KEY=test-api-key
+      - DB_DRIVER=valkey
+    depends_on:
+      vecdex-valkey:
+        condition: service_healthy
+    volumes:
+      - ./reports:/reports
+
+  pytest-redis:
+    profiles: [redis]
+    build:
+      context: .
+      dockerfile: Dockerfile.pytest
+    environment:
+      - VECDEX_BASE_URL=http://vecdex-redis:8080
+      - VECDEX_API_KEY=test-api-key
+      - DB_DRIVER=redis
+    depends_on:
+      vecdex-redis:
+        condition: service_healthy
+    volumes:
+      - ./reports:/reports

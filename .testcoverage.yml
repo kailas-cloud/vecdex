@@ -1,0 +1,17 @@
+profile: coverage.out
+
+threshold:
+  file: 0
+  package: 0
+  total: 65
+
+exclude:
+  paths:
+    - _test\.go$
+    - /tests/
+    - /mock_
+    - /transport/generated/
+    - ^cmd/
+    - /config/
+    - /logger/
+    - ^examples/
