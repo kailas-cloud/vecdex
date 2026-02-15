@@ -1,0 +1,5 @@
+package: generated
+output: ../internal/transport/generated/api.gen.go
+generate:
+  chi-server: true
+  models: true

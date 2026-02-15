@@ -1,0 +1,46 @@
+http:
+  port: 8080
+  read_timeout_sec: 10
+  write_timeout_sec: 10
+  shutdown_timeout_sec: 10
+
+database:
+  driver: valkey
+  addrs:
+    - valkey-0.valkey-headless.memory.svc.cluster.local:6379
+    - valkey-1.valkey-headless.memory.svc.cluster.local:6379
+    - valkey-2.valkey-headless.memory.svc.cluster.local:6379
+  password: ${DB_PASSWORD}
+  readiness_timeout_sec: 10
+
+index:
+  hnsw_m: 32
+  hnsw_ef_construction: 400
+  default_page_size: 20
+  max_page_size: 100
+  max_batch_size: 100
+
+storage:
+  key_prefix: "vecdex:"
+
+auth:
+  api_keys:
+    - ${VECDEX_API_KEY}
+
+embedding:
+  providers:
+    nebius:
+      api_key: ${NEBIUS_API_KEY}
+      base_url: https://api.tokenfactory.nebius.com/v1/
+      budget:
+        daily_token_limit: 10000000
+        monthly_token_limit: 200000000
+        cost_per_million_tokens: 0.01
+        action: reject
+  vectorizers:
+    json:
+      provider: nebius
+      model: Qwen/Qwen3-Embedding-8B
+      dimensions: 1024
+      document_instruction: "Represent this document for semantic search: "
+      query_instruction: "Represent this query for retrieving similar documents: "
