@@ -7,7 +7,7 @@ http:
 database:
   driver: valkey
   addrs:
-    - valkey.kailas.cloud:6397
+    - localhost:6379
   password: ${DB_PASSWORD}
   readiness_timeout_sec: 10
 
