@@ -26,7 +26,7 @@ func New(repo Repository, colls CollectionReader, embed Embedder) *Service {
 	return &Service{repo: repo, colls: colls, embed: embed}
 }
 
-// Search executes a document search across semantic, keyword, or hybrid modes.
+// Search executes a document search across semantic, keyword, hybrid, or geo modes.
 func (s *Service) Search(
 	ctx context.Context, collectionName string, req *request.Request,
 ) ([]result.Result, error) {
@@ -38,50 +38,62 @@ func (s *Service) Search(
 	if err = validateFiltersAgainstSchema(req.Filters(), col); err != nil {
 		return nil, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
 	}
-
-	// Collection type mismatch: geo search on text collection or text search on geo collection
-	if req.Mode() == mode.Geo && !col.IsGeo() {
-		return nil, fmt.Errorf("geo search on text collection: %w", domain.ErrCollectionTypeMismatch)
-	}
-	if req.Mode() != mode.Geo && col.IsGeo() {
-		return nil, fmt.Errorf("%s search on geo collection: %w", req.Mode(), domain.ErrCollectionTypeMismatch)
+	if err := validateSearchMode(req.Mode(), col.IsGeo()); err != nil {
+		return nil, err
 	}
 
-	var results []result.Result
-
-	switch req.Mode() {
-	case mode.Semantic:
-		results, err = s.searchSemantic(ctx, collectionName, req)
-	case mode.Keyword:
-		results, err = s.searchKeyword(ctx, collectionName, req)
-	case mode.Hybrid:
-		results, err = s.searchHybrid(ctx, collectionName, req)
-	case mode.Geo:
-		results, err = s.searchGeo(ctx, collectionName, req)
-	default:
-		return nil, fmt.Errorf("unsupported search mode: %s", req.Mode())
-	}
+	results, err := s.dispatch(ctx, collectionName, req)
 	if err != nil {
 		return nil, err
 	}
 
-	// Post-filter: min_score
-	if req.MinScore() > 0 {
+	return applyPostFilters(results, req.MinScore(), req.Limit()), nil
+}
+
+// validateSearchMode ensures the search mode matches the collection type.
+func validateSearchMode(m mode.Mode, isGeo bool) error {
+	if m == mode.Geo && !isGeo {
+		return fmt.Errorf("geo search on text collection: %w", domain.ErrCollectionTypeMismatch)
+	}
+	if m != mode.Geo && isGeo {
+		return fmt.Errorf("%s search on geo collection: %w", m, domain.ErrCollectionTypeMismatch)
+	}
+	return nil
+}
+
+// dispatch routes to the appropriate search implementation.
+func (s *Service) dispatch(
+	ctx context.Context, collectionName string, req *request.Request,
+) ([]result.Result, error) {
+	switch req.Mode() {
+	case mode.Semantic:
+		return s.searchSemantic(ctx, collectionName, req)
+	case mode.Keyword:
+		return s.searchKeyword(ctx, collectionName, req)
+	case mode.Hybrid:
+		return s.searchHybrid(ctx, collectionName, req)
+	case mode.Geo:
+		return s.searchGeo(ctx, collectionName, req)
+	default:
+		return nil, fmt.Errorf("unsupported search mode: %s", req.Mode())
+	}
+}
+
+// applyPostFilters applies min_score threshold and limit to search results.
+func applyPostFilters(results []result.Result, minScore float64, limit int) []result.Result {
+	if minScore > 0 {
 		filtered := results[:0]
 		for _, r := range results {
-			if r.Score() >= req.MinScore() {
+			if r.Score() >= minScore {
 				filtered = append(filtered, r)
 			}
 		}
 		results = filtered
 	}
-
-	// Limit
-	if len(results) > req.Limit() {
-		results = results[:req.Limit()]
+	if len(results) > limit {
+		results = results[:limit]
 	}
-
-	return results, nil
+	return results
 }
 
 // searchSemantic embeds the query and runs KNN search (works on any backend).

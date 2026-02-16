@@ -22,7 +22,9 @@ func New(repo Repository, vectorDim int) *Service {
 }
 
 // Create validates and stores a new collection.
-func (s *Service) Create(ctx context.Context, name string, colType domcol.Type, fields []field.Field) (domcol.Collection, error) {
+func (s *Service) Create(
+	ctx context.Context, name string, colType domcol.Type, fields []field.Field,
+) (domcol.Collection, error) {
 	vectorDim := s.vectorDim
 	if colType == domcol.TypeGeo {
 		vectorDim = geo.GeoVectorDim

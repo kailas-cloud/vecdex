@@ -79,7 +79,10 @@ func New(name string, colType Type, fields []field.Field, vectorDim int) (Collec
 }
 
 // Reconstruct creates a Collection without validation (storage hydration).
-func Reconstruct(name string, colType Type, fields []field.Field, vectorDim int, createdAt int64, revision int) Collection {
+func Reconstruct(
+	name string, colType Type, fields []field.Field,
+	vectorDim int, createdAt int64, revision int,
+) Collection {
 	if colType == "" {
 		colType = TypeText
 	}

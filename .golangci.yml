@@ -65,6 +65,9 @@ linters:
         - style
         - performance
         - opinionated
+      settings:
+        hugeParam:
+          sizeThreshold: 96
 
     depguard:
       rules:
