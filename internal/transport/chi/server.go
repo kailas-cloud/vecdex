@@ -505,7 +505,6 @@ func (s *Server) GetUsage(w http.ResponseWriter, r *http.Request, params gen.Get
 
 	report := s.usage.GetReport(r.Context(), period)
 
-	isExhausted := report.Budget().IsExhausted()
 	resp := gen.UsageResponse{
 		Period: gen.UsageResponsePeriod(report.Period()),
 		Usage: gen.UsageMetrics{
@@ -515,7 +514,7 @@ func (s *Server) GetUsage(w http.ResponseWriter, r *http.Request, params gen.Get
 		Budget: gen.BudgetStatus{
 			TokensLimit:     report.Budget().TokensLimit(),
 			TokensRemaining: report.Budget().TokensRemaining(),
-			IsExhausted:     &isExhausted,
+			IsExhausted:     report.Budget().IsExhausted(),
 		},
 	}
 
