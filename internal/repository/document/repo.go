@@ -172,27 +172,7 @@ func (r *Repo) Patch(ctx context.Context, collectionName, id string, p patch.Pat
 	}
 
 	current := docs[0]
-
-	if p.HasContent() {
-		current["__content"] = *p.Content()
-	}
-	for k, v := range p.Tags() {
-		if v == nil {
-			delete(current, k)
-		} else {
-			current[k] = *v
-		}
-	}
-	for k, v := range p.Numerics() {
-		if v == nil {
-			delete(current, k)
-		} else {
-			current[k] = *v
-		}
-	}
-	if newVector != nil {
-		current["__vector"] = newVector
-	}
+	applyPatchFields(current, p, newVector)
 
 	data, err := json.Marshal(current)
 	if err != nil {
@@ -216,4 +196,28 @@ func indexName(collection string) string {
 func extractDocID(key, collection string) string {
 	prefix := fmt.Sprintf("%s%s:", domain.KeyPrefix, collection)
 	return strings.TrimPrefix(key, prefix)
+}
+
+// applyPatchFields merges patch fields into the current JSON map in-place.
+func applyPatchFields(current map[string]any, p patch.Patch, newVector []float32) {
+	if p.HasContent() {
+		current["__content"] = *p.Content()
+	}
+	for k, v := range p.Tags() {
+		if v == nil {
+			delete(current, k)
+		} else {
+			current[k] = *v
+		}
+	}
+	for k, v := range p.Numerics() {
+		if v == nil {
+			delete(current, k)
+		} else {
+			current[k] = *v
+		}
+	}
+	if newVector != nil {
+		current["__vector"] = newVector
+	}
 }
