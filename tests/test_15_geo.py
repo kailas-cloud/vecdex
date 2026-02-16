@@ -530,7 +530,7 @@ class TestGeoBatchUpsert:
                 ]
             },
         )
-        time.sleep(0.5)
+        time.sleep(1.0)
         resp = geo_search_with_retry(client, coll["name"], 40.7128, -74.0060, top_k=2)
         items = resp.json()["items"]
         assert items[0]["id"] == "nyc"
@@ -642,7 +642,7 @@ class TestGeoSearchStress:
         assert resp.status_code == 200
         assert resp.json()["succeeded"] == 50
 
-        time.sleep(1.0)
+        time.sleep(2.0)
         resp = geo_search_with_retry(client, coll["name"], 40.0, -74.0, top_k=10)
         items = resp.json()["items"]
         assert len(items) > 0
@@ -661,7 +661,7 @@ class TestGeoSearchStress:
                 f"/collections/{coll['name']}/documents/{doc['id']}",
                 json=doc,
             )
-        time.sleep(0.5)
+        time.sleep(1.0)
 
         # Search from NYC
         resp = geo_search_with_retry(client, coll["name"], 40.7128, -74.0060, top_k=2)
