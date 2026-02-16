@@ -12,7 +12,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
-	"github.com/kailas-cloud/vecdex/internal/version"
 	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
@@ -31,6 +30,7 @@ import (
 	usageuc "github.com/kailas-cloud/vecdex/internal/usecase/usage"
 
 	batchuc "github.com/kailas-cloud/vecdex/internal/usecase/batch"
+	"github.com/kailas-cloud/vecdex/internal/version"
 )
 
 const maxBatchSize = 100

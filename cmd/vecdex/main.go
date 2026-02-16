@@ -15,7 +15,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/kailas-cloud/vecdex/internal/config"
-	"github.com/kailas-cloud/vecdex/internal/version"
 	"github.com/kailas-cloud/vecdex/internal/db"
 	dbRedis "github.com/kailas-cloud/vecdex/internal/db/redis"
 	dbValkey "github.com/kailas-cloud/vecdex/internal/db/valkey"
@@ -37,6 +36,7 @@ import (
 	healthuc "github.com/kailas-cloud/vecdex/internal/usecase/health"
 	searchuc "github.com/kailas-cloud/vecdex/internal/usecase/search"
 	usageuc "github.com/kailas-cloud/vecdex/internal/usecase/usage"
+	"github.com/kailas-cloud/vecdex/internal/version"
 )
 
 func main() {
