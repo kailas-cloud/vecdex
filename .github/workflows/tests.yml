@@ -53,6 +53,7 @@ jobs:
       - name: Run unit tests with coverage
         run: go test ./... -short -coverprofile=coverage.out -covermode=atomic
 
+
       - name: Check coverage thresholds
         id: coverage
         uses: vladopajic/go-test-coverage@v2
