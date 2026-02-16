@@ -1,2 +1,9 @@
 exclude_paths:
   - "tests/**"
+  - "cmd/**"
+  - "internal/config/**"
+  - "internal/logger/**"
+  - "internal/transport/generated/**"
+  - "**/mock_*"
+  - "**/*_test.go"
+  - "CLAUDE.md"

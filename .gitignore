@@ -16,6 +16,9 @@ config/prod.yaml
 .idea/
 .vscode/
 
+# Claude Code
+CLAUDE.md
+
 # OS
 .DS_Store
 

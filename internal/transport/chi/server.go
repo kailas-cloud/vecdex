@@ -34,16 +34,20 @@ import (
 
 const maxBatchSize = 100
 
+// errorHandler tries to handle a domain error. Returns true if handled.
+type errorHandler func(w http.ResponseWriter, err error, msg string) bool
+
 // Server implements generated.ServerInterface for the oapi-codegen chi router.
 type Server struct {
 	gen.Unimplemented
-	collections *collectionuc.Service
-	documents   *documentuc.Service
-	search      *searchuc.Service
-	batch       *batchuc.Service
-	usage       *usageuc.Service
-	health      *healthuc.Service
-	logger      *zap.Logger
+	collections   *collectionuc.Service
+	documents     *documentuc.Service
+	search        *searchuc.Service
+	batch         *batchuc.Service
+	usage         *usageuc.Service
+	health        *healthuc.Service
+	logger        *zap.Logger
+	errorHandlers []errorHandler
 }
 
 var _ gen.ServerInterface = (*Server)(nil)
@@ -58,7 +62,7 @@ func NewServer(
 	health *healthuc.Service,
 	logger *zap.Logger,
 ) *Server {
-	return &Server{
+	s := &Server{
 		collections: collections,
 		documents:   documents,
 		search:      search,
@@ -67,6 +71,23 @@ func NewServer(
 		health:      health,
 		logger:      logger,
 	}
+	s.errorHandlers = []errorHandler{
+		revisionConflictHandler,
+		sentinelHandler(domain.ErrNotFound, http.StatusNotFound, gen.ErrorResponseCodeCollectionNotFound),
+		sentinelHandler(domain.ErrDocumentNotFound, http.StatusNotFound, gen.ErrorResponseCodeDocumentNotFound),
+		sentinelHandler(domain.ErrAlreadyExists, http.StatusConflict, gen.ErrorResponseCodeCollectionAlreadyExists),
+		sentinelHandler(domain.ErrVectorDimMismatch, http.StatusBadRequest, gen.ErrorResponseCodeVectorDimMismatch),
+		sentinelHandler(domain.ErrInvalidSchema, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed),
+		sentinelHandler(domain.ErrRateLimited, http.StatusTooManyRequests, gen.ErrorResponseCodeRateLimited),
+		sentinelHandler(domain.ErrEmbeddingQuotaExceeded,
+			http.StatusPaymentRequired, gen.ErrorResponseCodeEmbeddingQuotaExceeded),
+		sentinelHandler(domain.ErrEmbeddingProviderError,
+			http.StatusBadGateway, gen.ErrorResponseCodeEmbeddingProviderError),
+		sentinelHandler(domain.ErrKeywordSearchNotSupported,
+			http.StatusNotImplemented, gen.ErrorResponseCodeKeywordSearchNotSupported),
+		sentinelHandler(domain.ErrNotImplemented, http.StatusNotImplemented, gen.ErrorResponseCodeNotImplemented),
+	}
+	return s
 }
 
 // CreateCollection handles POST /collections.
@@ -110,25 +131,17 @@ func (s *Server) ListCollections(w http.ResponseWriter, r *http.Request, params 
 		items[i] = collectionToGen(c)
 	}
 
+	resp := paginateCollections(items, params.Cursor, params.Limit)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func paginateCollections(items []gen.Collection, cursor *string, limitPtr *int) gen.CollectionCursorListResponse {
 	limit := 20
-	if params.Limit != nil {
-		limit = *params.Limit
+	if limitPtr != nil {
+		limit = *limitPtr
 	}
 
-	// Cursor = collection name; skip items until we pass it.
-	startIdx := 0
-	if params.Cursor != nil && *params.Cursor != "" {
-		for i, item := range items {
-			if item.Name == *params.Cursor {
-				startIdx = i + 1
-				break
-			}
-		}
-	}
-
-	if startIdx > len(items) {
-		startIdx = len(items)
-	}
+	startIdx := findCursorStart(items, cursor)
 	end := startIdx + limit
 	if end > len(items) {
 		end = len(items)
@@ -142,11 +155,23 @@ func (s *Server) ListCollections(w http.ResponseWriter, r *http.Request, params 
 		HasMore: hasMore,
 	}
 	if hasMore && len(page) > 0 {
-		cursor := page[len(page)-1].Name
-		resp.NextCursor = &cursor
+		c := page[len(page)-1].Name
+		resp.NextCursor = &c
 	}
+	return resp
+}
 
-	writeJSON(w, http.StatusOK, resp)
+// findCursorStart returns the index of the first item after the cursor.
+func findCursorStart(items []gen.Collection, cursor *string) int {
+	if cursor == nil || *cursor == "" {
+		return 0
+	}
+	for i, item := range items {
+		if item.Name == *cursor {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // GetCollection handles GET /collections/{collection}.
@@ -580,60 +605,46 @@ func safeDomainMessage(err error) string {
 	return "internal error"
 }
 
+// sentinelHandler returns an errorHandler that matches a single sentinel error.
+func sentinelHandler(sentinel error, status int, code gen.ErrorResponseCode) errorHandler {
+	return func(w http.ResponseWriter, err error, msg string) bool {
+		if !errors.Is(err, sentinel) {
+			return false
+		}
+		writeError(w, status, code, msg)
+		return true
+	}
+}
+
+// revisionConflictHandler handles ErrRevisionConflict with ETag header and extra fields.
+func revisionConflictHandler(w http.ResponseWriter, err error, msg string) bool {
+	if !errors.Is(err, domain.ErrRevisionConflict) {
+		return false
+	}
+	var rce *domain.RevisionConflictError
+	if errors.As(err, &rce) {
+		w.Header().Set("ETag", strconv.Quote(strconv.Itoa(rce.CurrentRevision)))
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"code":             gen.ErrorResponseCodeRevisionConflict,
+			"message":          msg,
+			"current_revision": rce.CurrentRevision,
+		})
+		return true
+	}
+	writeError(w, http.StatusConflict, gen.ErrorResponseCodeRevisionConflict, msg)
+	return true
+}
+
 func (s *Server) handleDomainError(w http.ResponseWriter, err error) {
-	// Log the full error; only expose the sentinel message to the client.
 	s.logger.Warn("domain error", zap.Error(err))
 	msg := safeDomainMessage(err)
-
-	switch {
-	case errors.Is(err, domain.ErrNotFound):
-		writeError(w, http.StatusNotFound,
-			gen.ErrorResponseCodeCollectionNotFound, msg)
-	case errors.Is(err, domain.ErrDocumentNotFound):
-		writeError(w, http.StatusNotFound,
-			gen.ErrorResponseCodeDocumentNotFound, msg)
-	case errors.Is(err, domain.ErrAlreadyExists):
-		writeError(w, http.StatusConflict,
-			gen.ErrorResponseCodeCollectionAlreadyExists, msg)
-	case errors.Is(err, domain.ErrRevisionConflict):
-		var rce *domain.RevisionConflictError
-		if errors.As(err, &rce) {
-			w.Header().Set("ETag", strconv.Quote(strconv.Itoa(rce.CurrentRevision)))
-			writeJSON(w, http.StatusConflict, map[string]any{
-				"code":             gen.ErrorResponseCodeRevisionConflict,
-				"message":          msg,
-				"current_revision": rce.CurrentRevision,
-			})
-		} else {
-			writeError(w, http.StatusConflict,
-				gen.ErrorResponseCodeRevisionConflict, msg)
+	for _, h := range s.errorHandlers {
+		if h(w, err, msg) {
+			return
 		}
-	case errors.Is(err, domain.ErrVectorDimMismatch):
-		writeError(w, http.StatusBadRequest,
-			gen.ErrorResponseCodeVectorDimMismatch, msg)
-	case errors.Is(err, domain.ErrInvalidSchema):
-		writeError(w, http.StatusBadRequest,
-			gen.ErrorResponseCodeValidationFailed, msg)
-	case errors.Is(err, domain.ErrRateLimited):
-		writeError(w, http.StatusTooManyRequests,
-			gen.ErrorResponseCodeRateLimited, msg)
-	case errors.Is(err, domain.ErrEmbeddingQuotaExceeded):
-		writeError(w, http.StatusPaymentRequired,
-			gen.ErrorResponseCodeEmbeddingQuotaExceeded, msg)
-	case errors.Is(err, domain.ErrEmbeddingProviderError):
-		writeError(w, http.StatusBadGateway,
-			gen.ErrorResponseCodeEmbeddingProviderError, msg)
-	case errors.Is(err, domain.ErrKeywordSearchNotSupported):
-		writeError(w, http.StatusNotImplemented,
-			gen.ErrorResponseCodeKeywordSearchNotSupported, msg)
-	case errors.Is(err, domain.ErrNotImplemented):
-		writeError(w, http.StatusNotImplemented,
-			gen.ErrorResponseCodeNotImplemented, msg)
-	default:
-		s.logger.Error("internal error", zap.Error(err))
-		writeError(w, http.StatusInternalServerError,
-			gen.ErrorResponseCodeInternalError, "internal error")
 	}
+	s.logger.Error("internal error", zap.Error(err))
+	writeError(w, http.StatusInternalServerError, gen.ErrorResponseCodeInternalError, "internal error")
 }
 
 func collectionToGen(c domcol.Collection) gen.Collection {
