@@ -84,24 +84,24 @@ func (s *Service) dispatch(
 // so we keep results with score <= minScore. For other modes, higher is better.
 func applyPostFilters(results []result.Result, minScore float64, limit int, m mode.Mode) []result.Result {
 	if minScore > 0 {
-		filtered := results[:0]
-		for _, r := range results {
-			if m == mode.Geo {
-				if r.Score() <= minScore {
-					filtered = append(filtered, r)
-				}
-			} else {
-				if r.Score() >= minScore {
-					filtered = append(filtered, r)
-				}
-			}
-		}
-		results = filtered
+		results = filterByScore(results, minScore, m)
 	}
 	if len(results) > limit {
 		results = results[:limit]
 	}
 	return results
+}
+
+func filterByScore(results []result.Result, minScore float64, m mode.Mode) []result.Result {
+	filtered := results[:0]
+	for _, r := range results {
+		if m == mode.Geo && r.Score() <= minScore {
+			filtered = append(filtered, r)
+		} else if m != mode.Geo && r.Score() >= minScore {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
 }
 
 // searchSemantic embeds the query and runs KNN search (works on any backend).

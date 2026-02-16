@@ -35,6 +35,33 @@ type Collection struct {
 	revision       int
 }
 
+func validateName(name string) error {
+	if name == "" {
+		return fmt.Errorf("collection name is required")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("collection name too long (max 64)")
+	}
+	if !nameRegex.MatchString(name) {
+		return fmt.Errorf("collection name must be alphanumeric with underscores and hyphens")
+	}
+	return nil
+}
+
+func validateFields(fields []field.Field) error {
+	if len(fields) > 64 {
+		return fmt.Errorf("too many fields (max 64)")
+	}
+	seen := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		if seen[f.Name()] {
+			return fmt.Errorf("duplicate field name: %s", f.Name())
+		}
+		seen[f.Name()] = true
+	}
+	return nil
+}
+
 // New validates and creates a Collection.
 // Name: ^[a-zA-Z0-9_-]+$, 1-64 chars. Fields: unique names, max 64. VectorDim: > 0.
 func New(name string, colType Type, fields []field.Field, vectorDim int) (Collection, error) {
@@ -44,28 +71,14 @@ func New(name string, colType Type, fields []field.Field, vectorDim int) (Collec
 	if !colType.IsValid() {
 		return Collection{}, fmt.Errorf("invalid collection type: %q", colType)
 	}
-	if name == "" {
-		return Collection{}, fmt.Errorf("collection name is required")
-	}
-	if len(name) > 64 {
-		return Collection{}, fmt.Errorf("collection name too long (max 64)")
-	}
-	if !nameRegex.MatchString(name) {
-		return Collection{}, fmt.Errorf("collection name must be alphanumeric with underscores and hyphens")
+	if err := validateName(name); err != nil {
+		return Collection{}, err
 	}
 	if vectorDim <= 0 {
 		return Collection{}, fmt.Errorf("vector dimension must be positive")
 	}
-	if len(fields) > 64 {
-		return Collection{}, fmt.Errorf("too many fields (max 64)")
-	}
-
-	seen := make(map[string]bool, len(fields))
-	for _, f := range fields {
-		if seen[f.Name()] {
-			return Collection{}, fmt.Errorf("duplicate field name: %s", f.Name())
-		}
-		seen[f.Name()] = true
+	if err := validateFields(fields); err != nil {
+		return Collection{}, err
 	}
 
 	return Collection{
