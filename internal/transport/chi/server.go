@@ -79,9 +79,12 @@ func NewServer(
 		sentinelHandler(domain.ErrVectorDimMismatch, http.StatusBadRequest, gen.ErrorResponseCodeVectorDimMismatch),
 		sentinelHandler(domain.ErrInvalidSchema, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed),
 		sentinelHandler(domain.ErrRateLimited, http.StatusTooManyRequests, gen.ErrorResponseCodeRateLimited),
-		sentinelHandler(domain.ErrEmbeddingQuotaExceeded, http.StatusPaymentRequired, gen.ErrorResponseCodeEmbeddingQuotaExceeded),
-		sentinelHandler(domain.ErrEmbeddingProviderError, http.StatusBadGateway, gen.ErrorResponseCodeEmbeddingProviderError),
-		sentinelHandler(domain.ErrKeywordSearchNotSupported, http.StatusNotImplemented, gen.ErrorResponseCodeKeywordSearchNotSupported),
+		sentinelHandler(domain.ErrEmbeddingQuotaExceeded,
+			http.StatusPaymentRequired, gen.ErrorResponseCodeEmbeddingQuotaExceeded),
+		sentinelHandler(domain.ErrEmbeddingProviderError,
+			http.StatusBadGateway, gen.ErrorResponseCodeEmbeddingProviderError),
+		sentinelHandler(domain.ErrKeywordSearchNotSupported,
+			http.StatusNotImplemented, gen.ErrorResponseCodeKeywordSearchNotSupported),
 		sentinelHandler(domain.ErrNotImplemented, http.StatusNotImplemented, gen.ErrorResponseCodeNotImplemented),
 	}
 	return s
