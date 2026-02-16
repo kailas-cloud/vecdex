@@ -825,7 +825,7 @@ func searchRequestFromGen(
 	includeVectors := derefBool(req.IncludeVectors)
 
 	r, err := request.New(
-		req.Query, m, filters, topK, limit, minScore, includeVectors,
+		req.Query, m, filters, topK, limit, minScore, includeVectors, nil,
 	)
 	if err != nil {
 		return request.Request{}, fmt.Errorf("build search request: %w", err)
