@@ -1,5 +1,9 @@
 # vecdex
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/kailas-cloud/vecdex)](https://goreportcard.com/report/github.com/kailas-cloud/vecdex)
+[![Maintainability](https://api.codeclimate.com/v1/badges/<REPO_ID>/maintainability)](https://codeclimate.com/github/kailas-cloud/vecdex/maintainability)
+[![CI](https://github.com/kailas-cloud/vecdex/actions/workflows/tests.yml/badge.svg)](https://github.com/kailas-cloud/vecdex/actions/workflows/tests.yml)
+
 Vector index management HTTP service built on Valkey with valkey-search and valkey-json modules.
 
 ## Architecture
