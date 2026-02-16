@@ -60,6 +60,10 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc
 		return s.upsertGeo(ctx, collectionName, doc)
 	}
 
+	if doc.Content() == "" {
+		return false, fmt.Errorf("content is required for text collections: %w", domain.ErrInvalidSchema)
+	}
+
 	result, err := s.docEmbedder.Embed(ctx, doc.Content())
 	if err != nil {
 		return false, fmt.Errorf("vectorize document: %w", err)

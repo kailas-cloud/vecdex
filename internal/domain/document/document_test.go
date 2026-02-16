@@ -101,12 +101,14 @@ func TestNew_ReservedIDs(t *testing.T) {
 }
 
 func TestNew_EmptyContent(t *testing.T) {
-	_, err := New("doc-1", "", nil, nil)
-	if err == nil {
-		t.Fatal("expected error for empty content")
+	// Empty content is allowed at the domain level (geo collections don't need content).
+	// Content validation for text collections is enforced in the usecase layer.
+	doc, err := New("doc-1", "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "required") {
-		t.Errorf("error = %q", err)
+	if doc.Content() != "" {
+		t.Errorf("expected empty content, got %q", doc.Content())
 	}
 }
 

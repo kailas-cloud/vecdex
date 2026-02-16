@@ -25,7 +25,8 @@ type Document struct {
 
 // New validates and creates a Document.
 // ID: ^[a-zA-Z0-9_-]+$, 1-256 chars, not reserved.
-// Content: non-empty, max 160KB. Tags/Numerics schema validation happens in the service layer.
+// Content: max 160KB (may be empty for geo collections).
+// Tags/Numerics schema validation happens in the service layer.
 func New(id, content string, tags map[string]string, numerics map[string]float64) (Document, error) {
 	if id == "" {
 		return Document{}, fmt.Errorf("document ID is required")
@@ -38,9 +39,6 @@ func New(id, content string, tags map[string]string, numerics map[string]float64
 	}
 	if reservedIDs[id] {
 		return Document{}, fmt.Errorf("document ID %q is reserved", id)
-	}
-	if content == "" {
-		return Document{}, fmt.Errorf("content is required")
 	}
 	if len(content) > MaxContentSize {
 		return Document{}, fmt.Errorf("content too large (max %d bytes)", MaxContentSize)

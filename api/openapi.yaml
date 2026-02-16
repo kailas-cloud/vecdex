@@ -510,12 +510,14 @@ paths:
     post:
       summary: Search documents
       description: |
-        Search over the collection. Supports three modes:
+        Search over the collection. Supports four modes:
 
         - **hybrid** (default): semantic + BM25 keyword search combined via
           Reciprocal Rank Fusion. Best for most use cases.
         - **semantic**: pure vector KNN search.
         - **keyword**: pure BM25 full-text search.
+        - **geo**: geographic proximity search (geo collections only). Query
+          must be `"lat,lon"` string. Score is distance in meters.
 
         `top_k` controls the KNN computation window size.
         `limit` controls how many results are returned to the client from that window.
@@ -956,10 +958,10 @@ components:
             - **text** (default): embedding-based vector search. Documents have
               `content` that is automatically vectorized. Supports hybrid,
               semantic, and keyword search modes.
-            - **geo**: geographic proximity search. Documents have `latitude`
-              and `longitude` numeric fields. Content is optional. Coordinates
-              are converted to ECEF vectors for KNN search. Only `geo` search
-              mode is supported.
+            - **geo**: geographic proximity search. Documents must include
+              `latitude` (-90 to 90) and `longitude` (-180 to 180) as numeric
+              fields. Content is optional. Coordinates are converted to ECEF
+              vectors for KNN search. Only `geo` search mode is supported.
           example: text
         fields:
           type: array
@@ -1068,8 +1070,6 @@ components:
 
     UpsertDocumentRequest:
       type: object
-      required:
-        - content
       properties:
         content:
           type: string
@@ -1078,6 +1078,8 @@ components:
             Document text content (will be auto-vectorized). Maximum size is
             160 KB (~41k tokens for the default embedding model). Requests
             exceeding this limit return 400 with code `validation_failed`.
+            Required for text collections. Optional for geo collections
+            (geo vectorization uses latitude/longitude numerics, not content).
           example: "CreateCollection validates name and creates FT index"
         tags:
           type: object
@@ -1226,14 +1228,16 @@ components:
           type: number
           format: double
           minimum: 0
-          maximum: 1
           description: |
             Minimum relevance score threshold. Results below this score are
             excluded from the response. Applied as a post-filter on the server.
-            - In **semantic** mode: cosine similarity threshold.
-            - In **hybrid** mode: RRF score threshold (not cosine).
+            - In **semantic** mode: cosine similarity threshold (0.0–1.0).
+            - In **hybrid** mode: RRF score threshold (0.0–1.0, not cosine).
             - In **keyword** mode: ignored (BM25 scores are not comparable
               across queries, so thresholding is unreliable).
+            - In **geo** mode: maximum distance in meters. Results farther
+              than this distance are excluded. E.g., `min_score: 5000` returns
+              only results within 5 km.
           example: 0.5
         include_vectors:
           type: boolean
@@ -1441,7 +1445,6 @@ components:
       type: object
       required:
         - id
-        - content
       properties:
         id:
           type: string
@@ -1453,7 +1456,9 @@ components:
         content:
           type: string
           maxLength: 163840
-          description: Document text content
+          description: |
+            Document text content. Required for text collections.
+            Optional for geo collections.
         tags:
           type: object
           additionalProperties:
