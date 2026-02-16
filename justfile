@@ -84,6 +84,10 @@ clean-pytest:
     cd tests && docker compose --profile valkey down -v
     cd tests && docker compose --profile redis down -v
 
+# Dry-run GoReleaser (snapshot build, no publish)
+release-dry:
+    goreleaser release --snapshot --clean
+
 # Quick check before commit
 pre-commit: build lint test-unit
     @echo "✓ Ready to commit"
