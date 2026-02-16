@@ -2,6 +2,7 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/kailas-cloud/vecdex)](https://goreportcard.com/report/github.com/kailas-cloud/vecdex)
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/3ebe9ae848f348bca37551c9da1e77e2)](https://app.codacy.com/gh/kailas-cloud/vecdex/dashboard)
+[![Codacy Coverage](https://app.codacy.com/project/badge/Coverage/3ebe9ae848f348bca37551c9da1e77e2)](https://app.codacy.com/gh/kailas-cloud/vecdex/dashboard)
 [![CI](https://github.com/kailas-cloud/vecdex/actions/workflows/tests.yml/badge.svg)](https://github.com/kailas-cloud/vecdex/actions/workflows/tests.yml)
 
 Vector index management HTTP service built on Valkey with valkey-search and valkey-json modules.
