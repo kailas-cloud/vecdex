@@ -64,7 +64,10 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 		fieldTypes[f.Name()] = f.FieldType()
 	}
 
-	isGeo := col.IsGeo()
+	vectorize := s.vectorizeText
+	if col.IsGeo() {
+		vectorize = vectorizeGeo
+	}
 
 	for i, item := range items {
 		if err := validateItemFields(&item, fieldTypes); err != nil {
@@ -72,35 +75,17 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 			continue
 		}
 
-		if isGeo {
-			lat, hasLat := item.Numerics()["latitude"]
-			lon, hasLon := item.Numerics()["longitude"]
-			if !hasLat || !hasLon {
-				results[i] = dombatch.NewError(item.ID(), fmt.Errorf("geo document requires latitude and longitude numerics: %w", domain.ErrInvalidSchema))
-				continue
-			}
-			if !geo.ValidateCoordinates(lat, lon) {
-				results[i] = dombatch.NewError(item.ID(), fmt.Errorf("invalid coordinates: lat=%f lon=%f: %w", lat, lon, domain.ErrGeoQueryInvalid))
-				continue
-			}
-			item.SetVector(geo.ToVector(lat, lon))
-		} else {
-			embResult, err := s.embed.Embed(ctx, item.Content())
-			if err != nil {
-				// Quota/rate-limit errors cascade: skip all remaining items
-				if errors.Is(err, domain.ErrEmbeddingQuotaExceeded) || errors.Is(err, domain.ErrRateLimited) {
-					results[i] = dombatch.NewError(item.ID(), err)
-					for j := i + 1; j < len(items); j++ {
-						results[j] = dombatch.NewError(items[j].ID(), err)
-					}
-					return results
+		cascade, err := vectorize(ctx, &item)
+		if err != nil {
+			if cascade {
+				results[i] = dombatch.NewError(item.ID(), err)
+				for j := i + 1; j < len(items); j++ {
+					results[j] = dombatch.NewError(items[j].ID(), err)
 				}
-				results[i] = dombatch.NewError(item.ID(), fmt.Errorf("vectorize: %w", err))
-				continue
+				return results
 			}
-
-			domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
-			item.SetVector(embResult.Embedding)
+			results[i] = dombatch.NewError(item.ID(), err)
+			continue
 		}
 
 		if _, err := s.docs.Upsert(ctx, collectionName, &item); err != nil {
@@ -112,6 +97,42 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 	}
 
 	return results
+}
+
+// vectorizeText embeds document content via the embedding API.
+// Returns (cascade, error): cascade=true means quota/rate-limit error, skip remaining.
+func (s *Service) vectorizeText(
+	ctx context.Context, item *domdoc.Document,
+) (bool, error) {
+	embResult, err := s.embed.Embed(ctx, item.Content())
+	if err != nil {
+		cascade := errors.Is(err, domain.ErrEmbeddingQuotaExceeded) ||
+			errors.Is(err, domain.ErrRateLimited)
+		return cascade, fmt.Errorf("vectorize: %w", err)
+	}
+	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
+	item.SetVector(embResult.Embedding)
+	return false, nil
+}
+
+// vectorizeGeo sets ECEF vector from latitude/longitude numerics.
+func vectorizeGeo(_ context.Context, item *domdoc.Document) (bool, error) {
+	lat, hasLat := item.Numerics()["latitude"]
+	lon, hasLon := item.Numerics()["longitude"]
+	if !hasLat || !hasLon {
+		return false, fmt.Errorf(
+			"geo document requires latitude and longitude numerics: %w",
+			domain.ErrInvalidSchema,
+		)
+	}
+	if !geo.ValidateCoordinates(lat, lon) {
+		return false, fmt.Errorf(
+			"invalid coordinates: lat=%f lon=%f: %w",
+			lat, lon, domain.ErrGeoQueryInvalid,
+		)
+	}
+	item.SetVector(geo.ToVector(lat, lon))
+	return false, nil
 }
 
 // Delete removes documents by ID in batch.
