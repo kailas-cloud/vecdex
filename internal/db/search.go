@@ -10,6 +10,7 @@ type KNNQuery struct {
 	K             int
 	ReturnFields  []string
 	IncludeVector bool
+	RawScores     bool // return __vector_score as-is (for L2 distance in geo search)
 }
 
 // TextQuery is the input for BM25 text search.

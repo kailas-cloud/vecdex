@@ -3,10 +3,13 @@ package search
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
+	"github.com/kailas-cloud/vecdex/internal/domain/geo"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/mode"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/request"
@@ -25,7 +28,7 @@ func New(repo Repository, colls CollectionReader, embed Embedder) *Service {
 	return &Service{repo: repo, colls: colls, embed: embed}
 }
 
-// Search executes a document search across semantic, keyword, or hybrid modes.
+// Search executes a document search across semantic, keyword, hybrid, or geo modes.
 func (s *Service) Search(
 	ctx context.Context, collectionName string, req *request.Request,
 ) ([]result.Result, error) {
@@ -37,40 +40,70 @@ func (s *Service) Search(
 	if err = validateFiltersAgainstSchema(req.Filters(), col); err != nil {
 		return nil, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
 	}
-
-	var results []result.Result
-
-	switch req.Mode() {
-	case mode.Semantic:
-		results, err = s.searchSemantic(ctx, collectionName, req)
-	case mode.Keyword:
-		results, err = s.searchKeyword(ctx, collectionName, req)
-	case mode.Hybrid:
-		results, err = s.searchHybrid(ctx, collectionName, req)
-	default:
-		return nil, fmt.Errorf("unsupported search mode: %s", req.Mode())
+	if err := validateSearchMode(req.Mode(), col.IsGeo()); err != nil {
+		return nil, err
 	}
+
+	results, err := s.dispatch(ctx, collectionName, req)
 	if err != nil {
 		return nil, err
 	}
 
-	// Post-filter: min_score
-	if req.MinScore() > 0 {
-		filtered := results[:0]
-		for _, r := range results {
-			if r.Score() >= req.MinScore() {
-				filtered = append(filtered, r)
-			}
+	return applyPostFilters(results, req.MinScore(), req.Limit(), req.Mode()), nil
+}
+
+// validateSearchMode ensures the search mode matches the collection type.
+func validateSearchMode(m mode.Mode, isGeo bool) error {
+	if m == mode.Geo && !isGeo {
+		return fmt.Errorf("geo search on text collection: %w", domain.ErrCollectionTypeMismatch)
+	}
+	if m != mode.Geo && isGeo {
+		return fmt.Errorf("%s search on geo collection: %w", m, domain.ErrCollectionTypeMismatch)
+	}
+	return nil
+}
+
+// dispatch routes to the appropriate search implementation.
+func (s *Service) dispatch(
+	ctx context.Context, collectionName string, req *request.Request,
+) ([]result.Result, error) {
+	switch req.Mode() {
+	case mode.Semantic:
+		return s.searchSemantic(ctx, collectionName, req)
+	case mode.Keyword:
+		return s.searchKeyword(ctx, collectionName, req)
+	case mode.Hybrid:
+		return s.searchHybrid(ctx, collectionName, req)
+	case mode.Geo:
+		return s.searchGeo(ctx, collectionName, req)
+	default:
+		return nil, fmt.Errorf("unsupported search mode: %s", req.Mode())
+	}
+}
+
+// applyPostFilters applies min_score threshold and limit to search results.
+// For geo mode, min_score is a max-distance threshold (lower = closer),
+// so we keep results with score <= minScore. For other modes, higher is better.
+func applyPostFilters(results []result.Result, minScore float64, limit int, m mode.Mode) []result.Result {
+	if minScore > 0 {
+		results = filterByScore(results, minScore, m)
+	}
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results
+}
+
+func filterByScore(results []result.Result, minScore float64, m mode.Mode) []result.Result {
+	filtered := results[:0]
+	for _, r := range results {
+		if m == mode.Geo && r.Score() <= minScore {
+			filtered = append(filtered, r)
+		} else if m != mode.Geo && r.Score() >= minScore {
+			filtered = append(filtered, r)
 		}
-		results = filtered
 	}
-
-	// Limit
-	if len(results) > req.Limit() {
-		results = results[:req.Limit()]
-	}
-
-	return results, nil
+	return filtered
 }
 
 // searchSemantic embeds the query and runs KNN search (works on any backend).
@@ -85,11 +118,17 @@ func (s *Service) searchSemantic(
 	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
 
 	results, err := s.repo.SearchKNN(
-		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(),
+		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(), false,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search knn: %w", err)
 	}
+
+	// HNSW is approximate — enforce descending similarity order.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score() > results[j].Score()
+	})
+
 	return results, nil
 }
 
@@ -126,7 +165,7 @@ func (s *Service) searchHybrid(
 	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
 
 	knnResults, err := s.repo.SearchKNN(
-		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(),
+		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(), false,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search knn: %w", err)
@@ -140,6 +179,49 @@ func (s *Service) searchHybrid(
 	}
 
 	return fuseRRF(knnResults, bm25Results, req.TopK()), nil
+}
+
+// searchGeo converts lat/lon query to ECEF, runs KNN, converts L2 distances to meters.
+func (s *Service) searchGeo(
+	ctx context.Context, collectionName string, req *request.Request,
+) ([]result.Result, error) {
+	gq := req.GeoQuery()
+	if gq == nil {
+		return nil, fmt.Errorf("geo search requires geo_query: %w", domain.ErrGeoQueryInvalid)
+	}
+	if !geo.ValidateCoordinates(gq.Latitude, gq.Longitude) {
+		return nil, fmt.Errorf(
+			"invalid coordinates: lat=%f lon=%f: %w",
+			gq.Latitude, gq.Longitude, domain.ErrGeoQueryInvalid,
+		)
+	}
+
+	vector := geo.ToVector(gq.Latitude, gq.Longitude)
+
+	results, err := s.repo.SearchKNN(
+		ctx, collectionName, vector, req.Filters(), req.TopK(), req.IncludeVectors(), true,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search geo knn: %w", err)
+	}
+
+	// Redis/Valkey returns L2² (squared Euclidean distance) for L2 metric.
+	// Convert: L2² → L2 (sqrt) → great-circle meters (Haversine).
+	converted := make([]result.Result, len(results))
+	for i, r := range results {
+		l2 := math.Sqrt(r.Score())
+		meters := geo.L2ToHaversineMeters(l2)
+		converted[i] = result.New(
+			r.ID(), meters, r.Content(),
+			r.Tags(), r.Numerics(), r.Vector(),
+		)
+	}
+
+	sort.Slice(converted, func(i, j int) bool {
+		return converted[i].Score() < converted[j].Score()
+	})
+
+	return converted, nil
 }
 
 // validateFiltersAgainstSchema ensures filter fields exist in the collection

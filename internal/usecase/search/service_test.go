@@ -30,7 +30,7 @@ type mockRepo struct {
 func (m *mockRepo) SearchKNN(
 	_ context.Context, _ string,
 	_ []float32, _ filter.Expression, _ int,
-	includeVectors bool,
+	includeVectors bool, _ bool,
 ) ([]result.Result, error) {
 	m.knnCalled = true
 	m.lastIncludeVec = includeVectors
@@ -65,7 +65,7 @@ func defaultMockColls() *mockColls {
 func mockCollsWithFields() *mockColls {
 	tagField := field.Reconstruct("category", field.Tag)
 	numField := field.Reconstruct("price", field.Numeric)
-	col := domcol.Reconstruct("test-col", []field.Field{tagField, numField}, 128, 0, 1)
+	col := domcol.Reconstruct("test-col", domcol.TypeText, []field.Field{tagField, numField}, 128, 0, 1)
 	return &mockColls{col: col}
 }
 
@@ -85,7 +85,7 @@ func (m *mockEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResul
 
 func makeSearchRequest(t *testing.T, m mode.Mode) *request.Request {
 	t.Helper()
-	r, err := request.New("test query", m, filter.Expression{}, 10, 10, 0, false)
+	r, err := request.New("test query", m, filter.Expression{}, 10, 10, 0, false, nil)
 	if err != nil {
 		t.Fatalf("request.New: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestSearch_MinScoreFilter(t *testing.T) {
 	embed := &mockEmbedder{vec: []float32{0.1}}
 	svc := New(repo, defaultMockColls(), embed)
 
-	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0.5, false)
+	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0.5, false, nil)
 	results, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -257,7 +257,7 @@ func TestSearch_FilterValidation_UnknownField(t *testing.T) {
 
 	matchCond, _ := filter.NewMatch("nonexistent", "val")
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
 	_, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
@@ -275,7 +275,7 @@ func TestSearch_FilterValidation_MatchOnNumeric(t *testing.T) {
 
 	matchCond, _ := filter.NewMatch("price", "100")
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
 	_, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
@@ -295,7 +295,7 @@ func TestSearch_FilterValidation_RangeOnTag(t *testing.T) {
 	rng, _ := filter.NewRangeFilter(&v, nil, nil, nil)
 	rangeCond, _ := filter.NewRange("category", rng)
 	expr, _ := filter.NewExpression([]filter.Condition{rangeCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
 	_, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
@@ -316,7 +316,7 @@ func TestSearch_FilterValidation_ValidMatch(t *testing.T) {
 
 	matchCond, _ := filter.NewMatch("category", "electronics")
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
 	results, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
@@ -339,7 +339,7 @@ func TestSearch_FilterValidation_ValidRange(t *testing.T) {
 	rng, _ := filter.NewRangeFilter(nil, &v, nil, nil)
 	rangeCond, _ := filter.NewRange("price", rng)
 	expr, _ := filter.NewExpression([]filter.Condition{rangeCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
 	results, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
@@ -356,7 +356,7 @@ func TestSearch_CollectionNotFound(t *testing.T) {
 	colls := &mockColls{err: domain.ErrNotFound}
 	svc := New(repo, colls, embed)
 
-	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, false, nil)
 	_, err := svc.Search(context.Background(), "missing", &r)
 	if err == nil {
 		t.Fatal("expected error for missing collection")
@@ -371,7 +371,7 @@ func TestSearch_EmbedError(t *testing.T) {
 	embed := &mockEmbedder{err: errors.New("embedding provider down")}
 	svc := New(repo, defaultMockColls(), embed)
 
-	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, false, nil)
 	_, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
 		t.Fatal("expected error from embedding failure")
@@ -386,7 +386,7 @@ func TestSearch_IncludeVectors(t *testing.T) {
 	embed := &mockEmbedder{vec: []float32{0.1}}
 	svc := New(repo, defaultMockColls(), embed)
 
-	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, true)
+	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, true, nil)
 	_, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -21,7 +21,7 @@ func TestNew_Valid(t *testing.T) {
 	f := makeField(t, "language", field.Tag)
 	before := time.Now().UnixMilli()
 
-	col, err := New("my-collection", []field.Field{f}, 1024)
+	col, err := New("my-collection", TypeText, []field.Field{f}, 1024)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestNew_Valid(t *testing.T) {
 }
 
 func TestNew_NoFields(t *testing.T) {
-	col, err := New("empty", nil, 512)
+	col, err := New("empty", TypeText, nil, 512)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestNew_NoFields(t *testing.T) {
 }
 
 func TestNew_EmptyName(t *testing.T) {
-	_, err := New("", nil, 1024)
+	_, err := New("", TypeText, nil, 1024)
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -63,7 +63,7 @@ func TestNew_EmptyName(t *testing.T) {
 }
 
 func TestNew_NameTooLong(t *testing.T) {
-	_, err := New(strings.Repeat("a", 65), nil, 1024)
+	_, err := New(strings.Repeat("a", 65), TypeText, nil, 1024)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -75,7 +75,7 @@ func TestNew_NameTooLong(t *testing.T) {
 func TestNew_InvalidNameChars(t *testing.T) {
 	names := []string{"has space", "слово", "col.name", "col/name", "col@name"}
 	for _, name := range names {
-		_, err := New(name, nil, 1024)
+		_, err := New(name, TypeText, nil, 1024)
 		if err == nil {
 			t.Errorf("expected error for name %q", name)
 		}
@@ -85,7 +85,7 @@ func TestNew_InvalidNameChars(t *testing.T) {
 func TestNew_ValidNameChars(t *testing.T) {
 	names := []string{"abc", "ABC-123", "with_underscore", "a-b-c", "X"}
 	for _, name := range names {
-		_, err := New(name, nil, 1024)
+		_, err := New(name, TypeText, nil, 1024)
 		if err != nil {
 			t.Errorf("New(%q) unexpected error: %v", name, err)
 		}
@@ -93,7 +93,7 @@ func TestNew_ValidNameChars(t *testing.T) {
 }
 
 func TestNew_ZeroVectorDim(t *testing.T) {
-	_, err := New("col", nil, 0)
+	_, err := New("col", TypeText, nil, 0)
 	if err == nil {
 		t.Fatal("expected error for zero vector dim")
 	}
@@ -103,7 +103,7 @@ func TestNew_ZeroVectorDim(t *testing.T) {
 }
 
 func TestNew_NegativeVectorDim(t *testing.T) {
-	_, err := New("col", nil, -1)
+	_, err := New("col", TypeText, nil, -1)
 	if err == nil {
 		t.Fatal("expected error for negative vector dim")
 	}
@@ -114,7 +114,7 @@ func TestNew_TooManyFields(t *testing.T) {
 	for i := range fields {
 		fields[i] = field.Reconstruct("f"+strings.Repeat("x", 2)+string(rune('a'+i%26))+string(rune('0'+i/26)), field.Tag)
 	}
-	_, err := New("col", fields, 1024)
+	_, err := New("col", TypeText, fields, 1024)
 	if err == nil {
 		t.Fatal("expected error for too many fields")
 	}
@@ -126,7 +126,7 @@ func TestNew_TooManyFields(t *testing.T) {
 func TestNew_DuplicateFieldNames(t *testing.T) {
 	f1 := field.Reconstruct("lang", field.Tag)
 	f2 := field.Reconstruct("lang", field.Numeric)
-	_, err := New("col", []field.Field{f1, f2}, 1024)
+	_, err := New("col", TypeText, []field.Field{f1, f2}, 1024)
 	if err == nil {
 		t.Fatal("expected error for duplicate field names")
 	}
@@ -140,7 +140,7 @@ func TestNew_MaxFields(t *testing.T) {
 	for i := range fields {
 		fields[i] = field.Reconstruct("f_"+string(rune('a'+i%26))+string(rune('a'+i/26)), field.Tag)
 	}
-	_, err := New("col", fields, 1024)
+	_, err := New("col", TypeText, fields, 1024)
 	if err != nil {
 		t.Fatalf("unexpected error for 64 fields: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestNew_MaxFields(t *testing.T) {
 
 func TestReconstruct(t *testing.T) {
 	f := field.Reconstruct("lang", field.Tag)
-	col := Reconstruct("old-col", []field.Field{f}, 768, 1700000000000, 1)
+	col := Reconstruct("old-col", TypeText, []field.Field{f}, 768, 1700000000000, 1)
 
 	if col.Name() != "old-col" {
 		t.Errorf("Name() = %q", col.Name())
@@ -164,7 +164,7 @@ func TestReconstruct(t *testing.T) {
 func TestHasField(t *testing.T) {
 	f1 := field.Reconstruct("language", field.Tag)
 	f2 := field.Reconstruct("priority", field.Numeric)
-	col := Reconstruct("col", []field.Field{f1, f2}, 1024, 0, 1)
+	col := Reconstruct("col", TypeText, []field.Field{f1, f2}, 1024, 0, 1)
 
 	if !col.HasField("language", field.Tag) {
 		t.Error("HasField(language, tag) = false, want true")
@@ -184,7 +184,7 @@ func TestHasField(t *testing.T) {
 
 func TestFieldByName(t *testing.T) {
 	f1 := field.Reconstruct("language", field.Tag)
-	col := Reconstruct("col", []field.Field{f1}, 1024, 0, 1)
+	col := Reconstruct("col", TypeText, []field.Field{f1}, 1024, 0, 1)
 
 	found, ok := col.FieldByName("language")
 	if !ok {

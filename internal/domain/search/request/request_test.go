@@ -14,7 +14,7 @@ func emptyFilters() filter.Expression {
 }
 
 func TestNew_Defaults(t *testing.T) {
-	r, err := New("hello", "", emptyFilters(), 0, 0, 0, false)
+	r, err := New("hello", "", emptyFilters(), 0, 0, 0, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestNew_Defaults(t *testing.T) {
 }
 
 func TestNew_ExplicitValues(t *testing.T) {
-	r, err := New("query", mode.Semantic, emptyFilters(), 50, 20, 0.5, true)
+	r, err := New("query", mode.Semantic, emptyFilters(), 50, 20, 0.5, true, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestNew_ExplicitValues(t *testing.T) {
 }
 
 func TestNew_EmptyQuery(t *testing.T) {
-	_, err := New("", mode.Hybrid, emptyFilters(), 10, 10, 0, false)
+	_, err := New("", mode.Hybrid, emptyFilters(), 10, 10, 0, false, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -72,7 +72,7 @@ func TestNew_EmptyQuery(t *testing.T) {
 }
 
 func TestNew_QueryTooLong(t *testing.T) {
-	_, err := New(strings.Repeat("x", MaxQueryLength+1), mode.Hybrid, emptyFilters(), 10, 10, 0, false)
+	_, err := New(strings.Repeat("x", MaxQueryLength+1), mode.Hybrid, emptyFilters(), 10, 10, 0, false, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -82,14 +82,14 @@ func TestNew_QueryTooLong(t *testing.T) {
 }
 
 func TestNew_QueryAtMaxLength(t *testing.T) {
-	_, err := New(strings.Repeat("x", MaxQueryLength), mode.Hybrid, emptyFilters(), 10, 10, 0, false)
+	_, err := New(strings.Repeat("x", MaxQueryLength), mode.Hybrid, emptyFilters(), 10, 10, 0, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestNew_InvalidMode(t *testing.T) {
-	_, err := New("query", "invalid", emptyFilters(), 10, 10, 0, false)
+	_, err := New("query", "invalid", emptyFilters(), 10, 10, 0, false, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -99,8 +99,8 @@ func TestNew_InvalidMode(t *testing.T) {
 }
 
 func TestNew_AllValidModes(t *testing.T) {
-	for _, m := range []mode.Mode{mode.Hybrid, mode.Semantic, mode.Keyword} {
-		_, err := New("q", m, emptyFilters(), 10, 10, 0, false)
+	for _, m := range []mode.Mode{mode.Hybrid, mode.Semantic, mode.Keyword, mode.Geo} {
+		_, err := New("q", m, emptyFilters(), 10, 10, 0, false, nil)
 		if err != nil {
 			t.Errorf("unexpected error for mode %q: %v", m, err)
 		}
@@ -121,7 +121,7 @@ func TestNew_TopKClamping(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r, err := New("q", mode.Hybrid, emptyFilters(), tt.topK, 1, 0, false)
+			r, err := New("q", mode.Hybrid, emptyFilters(), tt.topK, 1, 0, false, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -148,7 +148,7 @@ func TestNew_LimitClamping(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r, err := New("q", mode.Hybrid, emptyFilters(), tt.topK, tt.limit, 0, false)
+			r, err := New("q", mode.Hybrid, emptyFilters(), tt.topK, tt.limit, 0, false, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -162,7 +162,7 @@ func TestNew_LimitClamping(t *testing.T) {
 func TestNew_MinScoreValidation(t *testing.T) {
 	// Valid values
 	for _, s := range []float64{0, 0.5, 1} {
-		_, err := New("q", mode.Hybrid, emptyFilters(), 10, 10, s, false)
+		_, err := New("q", mode.Hybrid, emptyFilters(), 10, 10, s, false, nil)
 		if err != nil {
 			t.Errorf("unexpected error for min_score=%f: %v", s, err)
 		}
@@ -170,7 +170,7 @@ func TestNew_MinScoreValidation(t *testing.T) {
 
 	// Invalid values
 	for _, s := range []float64{-0.1, 1.1, -1, 2} {
-		_, err := New("q", mode.Hybrid, emptyFilters(), 10, 10, s, false)
+		_, err := New("q", mode.Hybrid, emptyFilters(), 10, 10, s, false, nil)
 		if err == nil {
 			t.Errorf("expected error for min_score=%f", s)
 		}
@@ -181,7 +181,7 @@ func TestNew_WithFilters(t *testing.T) {
 	m, _ := filter.NewMatch("lang", "go")
 	expr, _ := filter.NewExpression([]filter.Condition{m}, nil, nil)
 
-	r, err := New("query", mode.Hybrid, expr, 10, 10, 0, false)
+	r, err := New("query", mode.Hybrid, expr, 10, 10, 0, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

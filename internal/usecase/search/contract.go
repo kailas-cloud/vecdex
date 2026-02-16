@@ -14,7 +14,7 @@ type Repository interface {
 	SearchKNN(
 		ctx context.Context, collectionName string,
 		vector []float32, filters filter.Expression, topK int,
-		includeVectors bool,
+		includeVectors bool, rawScores bool,
 	) ([]result.Result, error)
 
 	SearchBM25(

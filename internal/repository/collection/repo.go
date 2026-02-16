@@ -71,7 +71,7 @@ func (r *Repo) Create(ctx context.Context, col domcol.Collection) error {
 	}
 
 	// Prepare index definition and hash data before writes
-	indexDef, err := buildIndex(name, col.Fields(), col.VectorDim(), r.store.SupportsTextSearch(ctx), r.hnsw)
+	indexDef, err := buildIndex(name, col.Type(), col.Fields(), col.VectorDim(), r.store.SupportsTextSearch(ctx), r.hnsw)
 	if err != nil {
 		return fmt.Errorf("build index: %w", err)
 	}

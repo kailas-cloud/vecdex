@@ -80,7 +80,7 @@ func makeField(t *testing.T, name string, ft field.Type) field.Field {
 
 func makeCollection(t *testing.T, fields []field.Field) domcol.Collection {
 	t.Helper()
-	col, err := domcol.New("test-col", fields, 3)
+	col, err := domcol.New("test-col", domcol.TypeText, fields, 3)
 	if err != nil {
 		t.Fatalf("domcol.New: %v", err)
 	}

@@ -50,7 +50,7 @@ func makeField(t *testing.T, name string, ft field.Type) field.Field {
 
 func makeCollection(t *testing.T, name string) domcol.Collection {
 	t.Helper()
-	col, err := domcol.New(name, nil, 1024)
+	col, err := domcol.New(name, domcol.TypeText, nil, 1024)
 	if err != nil {
 		t.Fatalf("domcol.New: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestCreate_Success(t *testing.T) {
 	repo := &mockRepo{}
 	svc := New(repo, 1024)
 
-	col, err := svc.Create(context.Background(), "test-col", nil)
+	col, err := svc.Create(context.Background(), "test-col", domcol.TypeText, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCreate_WithFields(t *testing.T) {
 	svc := New(repo, 1024)
 
 	fields := []field.Field{makeField(t, "category", field.Tag), makeField(t, "rating", field.Numeric)}
-	col, err := svc.Create(context.Background(), "test-col", fields)
+	col, err := svc.Create(context.Background(), "test-col", domcol.TypeText, fields)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestCreate_InvalidSchema(t *testing.T) {
 	svc := New(repo, 1024)
 
 	// Empty name is an invalid schema
-	_, err := svc.Create(context.Background(), "", nil)
+	_, err := svc.Create(context.Background(), "", domcol.TypeText, nil)
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -108,7 +108,7 @@ func TestCreate_RepoError(t *testing.T) {
 	repo := &mockRepo{createErr: repoErr}
 	svc := New(repo, 1024)
 
-	_, err := svc.Create(context.Background(), "test-col", nil)
+	_, err := svc.Create(context.Background(), "test-col", domcol.TypeText, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -121,7 +121,7 @@ func TestCreate_AlreadyExists(t *testing.T) {
 	repo := &mockRepo{createErr: domain.ErrAlreadyExists}
 	svc := New(repo, 1024)
 
-	_, err := svc.Create(context.Background(), "test-col", nil)
+	_, err := svc.Create(context.Background(), "test-col", domcol.TypeText, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}

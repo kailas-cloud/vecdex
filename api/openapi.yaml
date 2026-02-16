@@ -35,13 +35,16 @@ info:
     - **keyword**: normalized BM25 score.
     - **hybrid**: fused RRF score — not cosine similarity, represents
       relative ranking quality.
+    - **geo**: great-circle distance in meters (Haversine). Lower is closer.
+      NOT normalized to 0-1.
 
     `min_score` is applied in semantic and hybrid modes; ignored in keyword
-    mode (BM25 scores are not comparable across queries).
+    mode (BM25 scores are not comparable across queries). In geo mode,
+    `min_score` acts as a maximum distance threshold in meters.
 
     ## Search modes
 
-    vecdex supports three search modes:
+    vecdex supports four search modes:
     - **hybrid** (default): combines semantic vector search with BM25 keyword
       matching via Reciprocal Rank Fusion (RRF). Best for most use cases —
       catches both exact names (`parseJSON`) and semantic meaning ("function
@@ -49,6 +52,9 @@ info:
     - **semantic**: pure vector KNN search. Use when exact keyword matches
       are noise (e.g., natural language queries).
     - **keyword**: pure BM25 full-text search. Use for exact identifier lookup.
+    - **geo**: geographic proximity search for geo collections. Query format
+      is `"lat,lon"` (e.g., `"40.7128,-74.0060"`). No embedding — uses
+      ECEF vector math. Score is distance in meters.
 
     ## Versioning
 
@@ -77,6 +83,8 @@ info:
     | `embedding_quota_exceeded` | 402  | Embedding token budget exhausted      |
     | `not_implemented`          | 501  | Feature not yet implemented           |
     | `keyword_search_not_supported` | 501 | Backend doesn't support keyword search |
+    | `geo_query_invalid`        | 400  | Malformed lat/lon in geo search       |
+    | `collection_type_mismatch` | 400  | Geo search on text collection or vice versa |
     | `internal_error`           | 500  | Unexpected server error               |
     | `embedding_provider_error` | 502  | Upstream embedding provider failure   |
 
@@ -91,6 +99,8 @@ info:
     | Search (semantic/hybrid) | 1 | Query vectorization |
     | Search (keyword) | 0 | BM25 only |
     | Batch upsert | N | One per document |
+    | Search (geo) | 0 | ECEF math only |
+    | Geo collection upsert | 0 | ECEF from lat/lon |
     | GET, DELETE, list | 0 | Never |
 
     Budgets are enforced **per API key**, optionally **per collection**.
@@ -159,6 +169,14 @@ paths:
                       type: tag
                     - name: rating
                       type: numeric
+              geo_collection:
+                summary: Geo collection for spatial search
+                value:
+                  name: places
+                  type: geo
+                  fields:
+                    - name: category
+                      type: tag
       responses:
         '201':
           description: Collection created
@@ -492,12 +510,14 @@ paths:
     post:
       summary: Search documents
       description: |
-        Search over the collection. Supports three modes:
+        Search over the collection. Supports four modes:
 
         - **hybrid** (default): semantic + BM25 keyword search combined via
           Reciprocal Rank Fusion. Best for most use cases.
         - **semantic**: pure vector KNN search.
         - **keyword**: pure BM25 full-text search.
+        - **geo**: geographic proximity search (geo collections only). Query
+          must be `"lat,lon"` string. Score is distance in meters.
 
         `top_k` controls the KNN computation window size.
         `limit` controls how many results are returned to the client from that window.
@@ -537,6 +557,12 @@ paths:
                   mode: semantic
                   top_k: 10
                   min_score: 0.5
+              geo_nearby:
+                summary: Geo search for nearby points
+                value:
+                  query: "40.7128,-74.0060"
+                  mode: geo
+                  top_k: 10
               filtered:
                 summary: Search with must/should/must_not filters
                 value:
@@ -923,6 +949,20 @@ components:
           minLength: 1
           maxLength: 64
           example: code-chunks
+        type:
+          type: string
+          enum: [text, geo]
+          default: text
+          description: |
+            Collection type:
+            - **text** (default): embedding-based vector search. Documents have
+              `content` that is automatically vectorized. Supports hybrid,
+              semantic, and keyword search modes.
+            - **geo**: geographic proximity search. Documents must include
+              `latitude` (-90 to 90) and `longitude` (-180 to 180) as numeric
+              fields. Content is optional. Coordinates are converted to ECEF
+              vectors for KNN search. Only `geo` search mode is supported.
+          example: text
         fields:
           type: array
           maxItems: 64
@@ -947,6 +987,11 @@ components:
         name:
           type: string
           example: code-chunks
+        type:
+          type: string
+          enum: [text, geo]
+          description: Collection type (text or geo)
+          example: text
         revision:
           type: integer
           description: |
@@ -1025,8 +1070,6 @@ components:
 
     UpsertDocumentRequest:
       type: object
-      required:
-        - content
       properties:
         content:
           type: string
@@ -1035,6 +1078,8 @@ components:
             Document text content (will be auto-vectorized). Maximum size is
             160 KB (~41k tokens for the default embedding model). Requests
             exceeding this limit return 400 with code `validation_failed`.
+            Required for text collections. Optional for geo collections
+            (geo vectorization uses latitude/longitude numerics, not content).
           example: "CreateCollection validates name and creates FT index"
         tags:
           type: object
@@ -1154,7 +1199,7 @@ components:
           example: "where is collection created"
         mode:
           type: string
-          enum: [hybrid, semantic, keyword]
+          enum: [hybrid, semantic, keyword, geo]
           default: hybrid
           description: |
             Search mode:
@@ -1163,6 +1208,9 @@ components:
               semantic meaning.
             - **semantic**: pure vector KNN search.
             - **keyword**: pure BM25 full-text search.
+            - **geo**: geographic proximity search. Query must be `"lat,lon"`
+              string (e.g., `"40.7128,-74.0060"`). Only works on geo
+              collections. Score is distance in meters.
         filters:
           $ref: '#/components/schemas/FilterExpression'
         top_k:
@@ -1180,14 +1228,16 @@ components:
           type: number
           format: double
           minimum: 0
-          maximum: 1
           description: |
             Minimum relevance score threshold. Results below this score are
             excluded from the response. Applied as a post-filter on the server.
-            - In **semantic** mode: cosine similarity threshold.
-            - In **hybrid** mode: RRF score threshold (not cosine).
+            - In **semantic** mode: cosine similarity threshold (0.0–1.0).
+            - In **hybrid** mode: RRF score threshold (0.0–1.0, not cosine).
             - In **keyword** mode: ignored (BM25 scores are not comparable
               across queries, so thresholding is unreliable).
+            - In **geo** mode: maximum distance in meters. Results farther
+              than this distance are excluded. E.g., `min_score: 5000` returns
+              only results within 5 km.
           example: 0.5
         include_vectors:
           type: boolean
@@ -1326,15 +1376,14 @@ components:
           type: number
           format: double
           description: |
-            Relevance score normalized to 0.0–1.0.
-            - In **semantic** mode: cosine similarity (`1 - cosine_distance`).
-            - In **keyword** mode: normalized BM25 score.
-            - In **hybrid** mode: fused RRF score. Not directly comparable
-              to cosine similarity — represents relative ranking quality,
-              not geometric distance.
+            Relevance score. Meaning varies by mode:
+            - In **semantic** mode: cosine similarity (`1 - cosine_distance`), 0.0–1.0.
+            - In **keyword** mode: normalized BM25 score, 0.0–1.0.
+            - In **hybrid** mode: fused RRF score, 0.0–1.0. Not directly comparable
+              to cosine similarity — represents relative ranking quality.
+            - In **geo** mode: great-circle distance in meters (Haversine).
+              Lower values mean closer. NOT normalized to 0-1.
             Note: `min_score` thresholds mean different things in each mode.
-          minimum: 0
-          maximum: 1
           example: 0.87
         content:
           type: string
@@ -1396,7 +1445,6 @@ components:
       type: object
       required:
         - id
-        - content
       properties:
         id:
           type: string
@@ -1408,7 +1456,9 @@ components:
         content:
           type: string
           maxLength: 163840
-          description: Document text content
+          description: |
+            Document text content. Required for text collections.
+            Optional for geo collections.
         tags:
           type: object
           additionalProperties:
@@ -1511,6 +1561,8 @@ components:
             - embedding_quota_exceeded
             - not_implemented
             - keyword_search_not_supported
+            - geo_query_invalid
+            - collection_type_mismatch
             - embedding_provider_error
             - internal_error
           description: Machine-readable error code

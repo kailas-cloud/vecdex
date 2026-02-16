@@ -29,6 +29,10 @@ var (
 	ErrNotImplemented = errors.New("not implemented")
 	// ErrKeywordSearchNotSupported signals that the backend lacks keyword search.
 	ErrKeywordSearchNotSupported = errors.New("keyword search not supported by backend")
+	// ErrGeoQueryInvalid signals a malformed lat/lon in geo search.
+	ErrGeoQueryInvalid = errors.New("invalid geo query")
+	// ErrCollectionTypeMismatch signals a geo search on text collection or vice versa.
+	ErrCollectionTypeMismatch = errors.New("collection type mismatch")
 )
 
 // RevisionConflictError wraps ErrRevisionConflict with the current resource revision.

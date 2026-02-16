@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
@@ -39,14 +38,11 @@ func (r *Repo) SupportsTextSearch(ctx context.Context) bool {
 func (r *Repo) SearchKNN(
 	ctx context.Context, collectionName string,
 	vector []float32, filters filter.Expression, topK int,
-	includeVectors bool,
+	includeVectors bool, rawScores bool,
 ) ([]result.Result, error) {
 	indexName := fmt.Sprintf("%s%s:idx", domain.KeyPrefix, collectionName)
 
-	returnFields := []string{"$"}
-	if includeVectors {
-		returnFields = append(returnFields, "__vector_score")
-	}
+	returnFields := []string{"$", "__vector_score"}
 
 	q := &db.KNNQuery{
 		IndexName:     indexName,
@@ -55,6 +51,7 @@ func (r *Repo) SearchKNN(
 		K:             topK,
 		ReturnFields:  returnFields,
 		IncludeVector: includeVectors,
+		RawScores:     rawScores,
 	}
 
 	sr, err := r.store.SearchKNN(ctx, q)
@@ -124,27 +121,18 @@ func parseBM25Results(sr *db.SearchResult, collection string) ([]result.Result, 
 	return results, nil
 }
 
-// parseEntryFields parses a KNN entry: score from __vector_score, content/tags/numerics from $.
+// parseEntryFields parses a KNN entry: score from entry.Score (set by db layer), content/tags/numerics from $.
 func parseEntryFields(docID string, entry db.SearchEntry, includeVectors bool) result.Result {
-	var score float64
 	var content string
 	var vector []float32
 	tags := make(map[string]string)
 	numerics := make(map[string]float64)
 
-	// __vector_score: cosine distance; similarity = 1.0 - distance
-	if scoreStr, ok := entry.Fields["__vector_score"]; ok {
-		if s, err := strconv.ParseFloat(scoreStr, 64); err == nil {
-			score = 1.0 - s
-		}
-	}
-
-	// $ field: JSON document
 	if jsonStr, ok := entry.Fields["$"]; ok {
 		parseJSONField(jsonStr, &content, tags, numerics, includeVectors, &vector)
 	}
 
-	return result.New(docID, score, content, tags, numerics, vector)
+	return result.New(docID, entry.Score, content, tags, numerics, vector)
 }
 
 // parseBM25EntryFields parses a BM25 entry: score from SearchEntry.Score, content/tags/numerics from $.

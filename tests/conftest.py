@@ -65,11 +65,17 @@ def collection_factory(client: httpx.Client):
     """Factory that creates collections and cleans up after the test."""
     created: list[str] = []
 
-    def _create(name: str | None = None, fields: list[dict] | None = None) -> dict:
+    def _create(
+        name: str | None = None,
+        fields: list[dict] | None = None,
+        type: str | None = None,
+    ) -> dict:
         coll_name = name or unique_name()
         body: dict = {"name": coll_name}
         if fields:
             body["fields"] = fields
+        if type:
+            body["type"] = type
         resp = client.post("/collections", json=body)
         assert resp.status_code == 201, f"Failed to create collection: {resp.text}"
         created.append(coll_name)
@@ -163,3 +169,52 @@ def assert_embedding_headers(resp: httpx.Response):
 def assert_no_embedding_headers(resp: httpx.Response):
     """Assert embedding headers are absent."""
     assert "x-embedding-tokens" not in resp.headers
+
+
+# --- NYC POI test data for geo collections ---
+
+NYC_POIS = [
+    ("times-square", "Times Square", 40.7580, -73.9855, "landmark"),
+    ("central-park", "Central Park", 40.7829, -73.9654, "park"),
+    ("brooklyn-bridge", "Brooklyn Bridge", 40.7061, -73.9969, "landmark"),
+    ("empire-state", "Empire State Building", 40.7484, -73.9857, "landmark"),
+    ("statue-liberty", "Statue of Liberty", 40.6892, -74.0445, "landmark"),
+]
+
+
+@pytest.fixture()
+def geo_collection_factory(collection_factory):
+    """Factory for geo collections with default lat/lon/category fields."""
+
+    def _create(name=None, fields=None):
+        default_fields = [
+            {"name": "latitude", "type": "numeric"},
+            {"name": "longitude", "type": "numeric"},
+            {"name": "category", "type": "tag"},
+        ]
+        return collection_factory(
+            name=name, fields=fields or default_fields, type="geo"
+        )
+
+    return _create
+
+
+@pytest.fixture()
+def populated_geo_collection(client: httpx.Client, geo_collection_factory):
+    """Geo collection pre-loaded with 5 NYC POIs."""
+    coll = geo_collection_factory()
+    coll_name = coll["name"]
+
+    for doc_id, content, lat, lon, category in NYC_POIS:
+        resp = client.put(
+            f"/collections/{coll_name}/documents/{doc_id}",
+            json={
+                "content": content,
+                "numerics": {"latitude": lat, "longitude": lon},
+                "tags": {"category": category},
+            },
+        )
+        assert resp.status_code in (200, 201), f"Failed to upsert {doc_id}: {resp.text}"
+
+    time.sleep(0.5)
+    return {"name": coll_name, **coll}
