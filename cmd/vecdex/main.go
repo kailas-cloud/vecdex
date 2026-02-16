@@ -36,6 +36,7 @@ import (
 	healthuc "github.com/kailas-cloud/vecdex/internal/usecase/health"
 	searchuc "github.com/kailas-cloud/vecdex/internal/usecase/search"
 	usageuc "github.com/kailas-cloud/vecdex/internal/usecase/usage"
+	"github.com/kailas-cloud/vecdex/internal/version"
 )
 
 func main() {
@@ -54,6 +55,8 @@ func main() {
 	defer func() { _ = logger.Sync() }()
 
 	logger.Info("Starting vecdex API server",
+		zap.String("version", version.Version),
+		zap.String("commit", version.Commit),
 		zap.String("env", env),
 		zap.Int("http_port", cfg.HTTP.Port),
 		zap.String("db_driver", cfg.Database.Driver),

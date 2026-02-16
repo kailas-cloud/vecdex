@@ -30,6 +30,7 @@ import (
 	usageuc "github.com/kailas-cloud/vecdex/internal/usecase/usage"
 
 	batchuc "github.com/kailas-cloud/vecdex/internal/usecase/batch"
+	"github.com/kailas-cloud/vecdex/internal/version"
 )
 
 const maxBatchSize = 100
@@ -552,9 +553,11 @@ func (s *Server) HealthCheck(w http.ResponseWriter, r *http.Request) {
 		httpStatus = http.StatusServiceUnavailable
 	}
 
+	ver := version.Version
 	writeJSON(w, httpStatus, gen.HealthResponse{
-		Status: status,
-		Checks: checks,
+		Status:  status,
+		Checks:  checks,
+		Version: &ver,
 	})
 }
 

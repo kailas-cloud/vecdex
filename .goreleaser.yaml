@@ -1,0 +1,39 @@
+version: 2
+
+builds:
+  - main: ./cmd/vecdex
+    binary: vecdex
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/kailas-cloud/vecdex/internal/version.Version={{.Version}}
+      - -X github.com/kailas-cloud/vecdex/internal/version.Commit={{.Commit}}
+      - -X github.com/kailas-cloud/vecdex/internal/version.Date={{.Date}}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+dockers_v2:
+  - dockerfile: Dockerfile.goreleaser
+    images:
+      - "ghcr.io/kailas-cloud/vecdex"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    extra_files:
+      - config/
+
+changelog:
+  disable: true
