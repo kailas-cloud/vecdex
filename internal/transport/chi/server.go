@@ -141,19 +141,7 @@ func paginateCollections(items []gen.Collection, cursor *string, limitPtr *int) 
 		limit = *limitPtr
 	}
 
-	startIdx := 0
-	if cursor != nil && *cursor != "" {
-		for i, item := range items {
-			if item.Name == *cursor {
-				startIdx = i + 1
-				break
-			}
-		}
-	}
-
-	if startIdx > len(items) {
-		startIdx = len(items)
-	}
+	startIdx := findCursorStart(items, cursor)
 	end := startIdx + limit
 	if end > len(items) {
 		end = len(items)
@@ -171,6 +159,19 @@ func paginateCollections(items []gen.Collection, cursor *string, limitPtr *int) 
 		resp.NextCursor = &c
 	}
 	return resp
+}
+
+// findCursorStart returns the index of the first item after the cursor.
+func findCursorStart(items []gen.Collection, cursor *string) int {
+	if cursor == nil || *cursor == "" {
+		return 0
+	}
+	for i, item := range items {
+		if item.Name == *cursor {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // GetCollection handles GET /collections/{collection}.
