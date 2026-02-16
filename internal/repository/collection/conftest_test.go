@@ -103,6 +103,7 @@ func testCollection(t *testing.T) domcol.Collection {
 	t.Helper()
 	return domcol.Reconstruct(
 		"test-collection",
+		domcol.TypeText,
 		[]field.Field{
 			field.Reconstruct("language", field.Tag),
 			field.Reconstruct("priority", field.Numeric),

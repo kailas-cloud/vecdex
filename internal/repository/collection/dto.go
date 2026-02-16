@@ -26,12 +26,13 @@ func collectionToHash(col collection.Collection) (map[string]string, error) {
 		return nil, fmt.Errorf("marshal fields: %w", err)
 	}
 	return map[string]string{
-		"name":        col.Name(),
-		"type":        "json",
-		"fields_json": string(fieldsJSON),
-		"vector_dim":  strconv.Itoa(col.VectorDim()),
-		"created_at":  strconv.FormatInt(col.CreatedAt(), 10),
-		"revision":    strconv.Itoa(col.Revision()),
+		"name":            col.Name(),
+		"type":            "json",
+		"collection_type": string(col.Type()),
+		"fields_json":     string(fieldsJSON),
+		"vector_dim":      strconv.Itoa(col.VectorDim()),
+		"created_at":      strconv.FormatInt(col.CreatedAt(), 10),
+		"revision":        strconv.Itoa(col.Revision()),
 	}, nil
 }
 
@@ -72,5 +73,6 @@ func collectionFromHash(m map[string]string, defaultVectorDim int) (collection.C
 		}
 	}
 
-	return collection.Reconstruct(name, fields, vectorDim, createdAt, revision), nil
+	colType := collection.Type(m["collection_type"])
+	return collection.Reconstruct(name, colType, fields, vectorDim, createdAt, revision), nil
 }

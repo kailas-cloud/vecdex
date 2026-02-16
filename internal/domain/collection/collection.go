@@ -10,18 +10,40 @@ import (
 
 var nameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// Type distinguishes collection kinds (text vs geo).
+type Type string
+
+const (
+	// TypeText is the default collection type with embedding-based vector search.
+	TypeText Type = "text"
+	// TypeGeo is a geo collection using ECEF vectors for spatial search.
+	TypeGeo Type = "geo"
+)
+
+// IsValid checks if the collection type is supported.
+func (t Type) IsValid() bool {
+	return t == TypeText || t == TypeGeo
+}
+
 // Collection is the document collection aggregate (immutable value object).
 type Collection struct {
-	name      string
-	fields    []field.Field
-	vectorDim int
-	createdAt int64
-	revision  int
+	name           string
+	collectionType Type
+	fields         []field.Field
+	vectorDim      int
+	createdAt      int64
+	revision       int
 }
 
 // New validates and creates a Collection.
 // Name: ^[a-zA-Z0-9_-]+$, 1-64 chars. Fields: unique names, max 64. VectorDim: > 0.
-func New(name string, fields []field.Field, vectorDim int) (Collection, error) {
+func New(name string, colType Type, fields []field.Field, vectorDim int) (Collection, error) {
+	if colType == "" {
+		colType = TypeText
+	}
+	if !colType.IsValid() {
+		return Collection{}, fmt.Errorf("invalid collection type: %q", colType)
+	}
 	if name == "" {
 		return Collection{}, fmt.Errorf("collection name is required")
 	}
@@ -47,27 +69,38 @@ func New(name string, fields []field.Field, vectorDim int) (Collection, error) {
 	}
 
 	return Collection{
-		name:      name,
-		fields:    fields,
-		vectorDim: vectorDim,
-		createdAt: time.Now().UnixMilli(),
-		revision:  1,
+		name:           name,
+		collectionType: colType,
+		fields:         fields,
+		vectorDim:      vectorDim,
+		createdAt:      time.Now().UnixMilli(),
+		revision:       1,
 	}, nil
 }
 
 // Reconstruct creates a Collection without validation (storage hydration).
-func Reconstruct(name string, fields []field.Field, vectorDim int, createdAt int64, revision int) Collection {
+func Reconstruct(name string, colType Type, fields []field.Field, vectorDim int, createdAt int64, revision int) Collection {
+	if colType == "" {
+		colType = TypeText
+	}
 	return Collection{
-		name:      name,
-		fields:    fields,
-		vectorDim: vectorDim,
-		createdAt: createdAt,
-		revision:  revision,
+		name:           name,
+		collectionType: colType,
+		fields:         fields,
+		vectorDim:      vectorDim,
+		createdAt:      createdAt,
+		revision:       revision,
 	}
 }
 
 // Name returns the collection name.
 func (c Collection) Name() string { return c.name }
+
+// Type returns the collection type (text or geo).
+func (c Collection) Type() Type { return c.collectionType }
+
+// IsGeo returns true if this is a geo collection.
+func (c Collection) IsGeo() bool { return c.collectionType == TypeGeo }
 
 // Fields returns the indexed field definitions.
 func (c Collection) Fields() []field.Field { return c.fields }

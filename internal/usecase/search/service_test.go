@@ -65,7 +65,7 @@ func defaultMockColls() *mockColls {
 func mockCollsWithFields() *mockColls {
 	tagField := field.Reconstruct("category", field.Tag)
 	numField := field.Reconstruct("price", field.Numeric)
-	col := domcol.Reconstruct("test-col", []field.Field{tagField, numField}, 128, 0, 1)
+	col := domcol.Reconstruct("test-col", domcol.TypeText, []field.Field{tagField, numField}, 128, 0, 1)
 	return &mockColls{col: col}
 }
 

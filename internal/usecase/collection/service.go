@@ -21,8 +21,8 @@ func New(repo Repository, vectorDim int) *Service {
 }
 
 // Create validates and stores a new collection.
-func (s *Service) Create(ctx context.Context, name string, fields []field.Field) (domcol.Collection, error) {
-	col, err := domcol.New(name, fields, s.vectorDim)
+func (s *Service) Create(ctx context.Context, name string, colType domcol.Type, fields []field.Field) (domcol.Collection, error) {
+	col, err := domcol.New(name, colType, fields, s.vectorDim)
 	if err != nil {
 		return domcol.Collection{}, fmt.Errorf("validate collection: %w: %w", domain.ErrInvalidSchema, err)
 	}

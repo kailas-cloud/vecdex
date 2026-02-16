@@ -110,7 +110,12 @@ func (s *Server) CreateCollection(w http.ResponseWriter, r *http.Request, params
 		return
 	}
 
-	col, err := s.collections.Create(r.Context(), req.Name, fields)
+	var colType domcol.Type
+	if req.Type != nil {
+		colType = domcol.Type(*req.Type)
+	}
+
+	col, err := s.collections.Create(r.Context(), req.Name, colType, fields)
 	if err != nil {
 		s.handleDomainError(w, err)
 		return
@@ -669,8 +674,11 @@ func collectionToGen(c domcol.Collection) gen.Collection {
 		vectorDimensions = &d
 	}
 
+	colType := gen.CollectionType(c.Type())
+
 	return gen.Collection{
 		Name:             c.Name(),
+		Type:             &colType,
 		Fields:           fields,
 		VectorDimensions: vectorDimensions,
 		CreatedAt:        time.UnixMilli(c.CreatedAt()).UTC(),
