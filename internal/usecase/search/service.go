@@ -47,7 +47,7 @@ func (s *Service) Search(
 		return nil, err
 	}
 
-	return applyPostFilters(results, req.MinScore(), req.Limit()), nil
+	return applyPostFilters(results, req.MinScore(), req.Limit(), req.Mode()), nil
 }
 
 // validateSearchMode ensures the search mode matches the collection type.
@@ -80,12 +80,20 @@ func (s *Service) dispatch(
 }
 
 // applyPostFilters applies min_score threshold and limit to search results.
-func applyPostFilters(results []result.Result, minScore float64, limit int) []result.Result {
+// For geo mode, min_score is a max-distance threshold (lower = closer),
+// so we keep results with score <= minScore. For other modes, higher is better.
+func applyPostFilters(results []result.Result, minScore float64, limit int, m mode.Mode) []result.Result {
 	if minScore > 0 {
 		filtered := results[:0]
 		for _, r := range results {
-			if r.Score() >= minScore {
-				filtered = append(filtered, r)
+			if m == mode.Geo {
+				if r.Score() <= minScore {
+					filtered = append(filtered, r)
+				}
+			} else {
+				if r.Score() >= minScore {
+					filtered = append(filtered, r)
+				}
 			}
 		}
 		results = filtered
