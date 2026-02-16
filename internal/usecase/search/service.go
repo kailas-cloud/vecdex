@@ -116,7 +116,7 @@ func (s *Service) searchSemantic(
 	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
 
 	results, err := s.repo.SearchKNN(
-		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(),
+		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(), false,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search knn: %w", err)
@@ -157,7 +157,7 @@ func (s *Service) searchHybrid(
 	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
 
 	knnResults, err := s.repo.SearchKNN(
-		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(),
+		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(), false,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search knn: %w", err)
@@ -191,7 +191,7 @@ func (s *Service) searchGeo(
 	vector := geo.ToVector(gq.Latitude, gq.Longitude)
 
 	results, err := s.repo.SearchKNN(
-		ctx, collectionName, vector, req.Filters(), req.TopK(), req.IncludeVectors(),
+		ctx, collectionName, vector, req.Filters(), req.TopK(), req.IncludeVectors(), true,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search geo knn: %w", err)

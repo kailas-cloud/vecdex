@@ -27,25 +27,23 @@ func TestSearchKNN_HappyPath(t *testing.T) {
 			Entries: []db.SearchEntry{
 				{
 					Key:   "vecdex:notes:doc-1",
-					Score: 0,
+					Score: 0.877,
 					Fields: map[string]string{
-						"__vector_score": "0.123",
-						"$":              `{"__content":"hello world","language":"go","priority":1.5}`,
+						"$": `{"__content":"hello world","language":"go","priority":1.5}`,
 					},
 				},
 				{
 					Key:   "vecdex:notes:doc-2",
-					Score: 0,
+					Score: 0.544,
 					Fields: map[string]string{
-						"__vector_score": "0.456",
-						"$":              `{"__content":"goodbye world","language":"rust"}`,
+						"$": `{"__content":"goodbye world","language":"rust"}`,
 					},
 				},
 			},
 		}, nil
 	}
 
-	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false)
+	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +53,7 @@ func TestSearchKNN_HappyPath(t *testing.T) {
 	if results[0].ID() != "doc-1" {
 		t.Fatalf("expected ID doc-1, got %s", results[0].ID())
 	}
-	// Cosine distance 0.123 → similarity 1.0 - 0.123 = 0.877
+	// Score comes from entry.Score set by db layer (cosine similarity 0.877)
 	if results[0].Score() != 0.877 {
 		t.Fatalf("expected score 0.877, got %f", results[0].Score())
 	}
@@ -76,17 +74,17 @@ func TestSearchKNN_IncludeVectors(t *testing.T) {
 			Total: 1,
 			Entries: []db.SearchEntry{
 				{
-					Key: "vecdex:notes:doc-1",
+					Key:   "vecdex:notes:doc-1",
+					Score: 0.9,
 					Fields: map[string]string{
-						"__vector_score": "0.1",
-						"$":              `{"__content":"text","__vector":[0.1,0.2,0.3]}`,
+						"$": `{"__content":"text","__vector":[0.1,0.2,0.3]}`,
 					},
 				},
 			},
 		}, nil
 	}
 
-	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, true)
+	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +104,7 @@ func TestSearchKNN_EmptyResults(t *testing.T) {
 		return &db.SearchResult{Total: 0}, nil
 	}
 
-	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false)
+	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +121,7 @@ func TestSearchKNN_Error(t *testing.T) {
 		return nil, errors.New("index not found")
 	}
 
-	_, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false)
+	_, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false, false)
 	if err == nil {
 		t.Fatal("expected error on SearchKNN failure")
 	}
@@ -147,17 +145,17 @@ func TestSearchKNN_WithFilter(t *testing.T) {
 			Total: 1,
 			Entries: []db.SearchEntry{
 				{
-					Key: "vecdex:notes:doc-1",
+					Key:   "vecdex:notes:doc-1",
+					Score: 0.9,
 					Fields: map[string]string{
-						"__vector_score": "0.1",
-						"$":              `{"__content":"filtered","language":"go"}`,
+						"$": `{"__content":"filtered","language":"go"}`,
 					},
 				},
 			},
 		}, nil
 	}
 
-	results, err := repo.SearchKNN(ctx, "notes", testVector(), expr, 10, false)
+	results, err := repo.SearchKNN(ctx, "notes", testVector(), expr, 10, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

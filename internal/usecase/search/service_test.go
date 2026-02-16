@@ -30,7 +30,7 @@ type mockRepo struct {
 func (m *mockRepo) SearchKNN(
 	_ context.Context, _ string,
 	_ []float32, _ filter.Expression, _ int,
-	includeVectors bool,
+	includeVectors bool, _ bool,
 ) ([]result.Result, error) {
 	m.knnCalled = true
 	m.lastIncludeVec = includeVectors
