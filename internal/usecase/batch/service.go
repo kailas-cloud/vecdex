@@ -9,6 +9,7 @@ import (
 	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
+	"github.com/kailas-cloud/vecdex/internal/domain/geo"
 )
 
 // MaxBatchSize is the maximum number of items per batch request.
@@ -63,29 +64,45 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 		fieldTypes[f.Name()] = f.FieldType()
 	}
 
+	isGeo := col.IsGeo()
+
 	for i, item := range items {
 		if err := validateItemFields(&item, fieldTypes); err != nil {
 			results[i] = dombatch.NewError(item.ID(), err)
 			continue
 		}
 
-		embResult, err := s.embed.Embed(ctx, item.Content())
-		if err != nil {
-			// Quota/rate-limit errors cascade: skip all remaining items
-			if errors.Is(err, domain.ErrEmbeddingQuotaExceeded) || errors.Is(err, domain.ErrRateLimited) {
-				results[i] = dombatch.NewError(item.ID(), err)
-				for j := i + 1; j < len(items); j++ {
-					results[j] = dombatch.NewError(items[j].ID(), err)
-				}
-				return results
+		if isGeo {
+			lat, hasLat := item.Numerics()["latitude"]
+			lon, hasLon := item.Numerics()["longitude"]
+			if !hasLat || !hasLon {
+				results[i] = dombatch.NewError(item.ID(), fmt.Errorf("geo document requires latitude and longitude numerics: %w", domain.ErrInvalidSchema))
+				continue
 			}
-			results[i] = dombatch.NewError(item.ID(), fmt.Errorf("vectorize: %w", err))
-			continue
+			if !geo.ValidateCoordinates(lat, lon) {
+				results[i] = dombatch.NewError(item.ID(), fmt.Errorf("invalid coordinates: lat=%f lon=%f: %w", lat, lon, domain.ErrGeoQueryInvalid))
+				continue
+			}
+			item.SetVector(geo.ToVector(lat, lon))
+		} else {
+			embResult, err := s.embed.Embed(ctx, item.Content())
+			if err != nil {
+				// Quota/rate-limit errors cascade: skip all remaining items
+				if errors.Is(err, domain.ErrEmbeddingQuotaExceeded) || errors.Is(err, domain.ErrRateLimited) {
+					results[i] = dombatch.NewError(item.ID(), err)
+					for j := i + 1; j < len(items); j++ {
+						results[j] = dombatch.NewError(items[j].ID(), err)
+					}
+					return results
+				}
+				results[i] = dombatch.NewError(item.ID(), fmt.Errorf("vectorize: %w", err))
+				continue
+			}
+
+			domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
+			item.SetVector(embResult.Embedding)
 		}
 
-		domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
-
-		item.SetVector(embResult.Embedding)
 		if _, err := s.docs.Upsert(ctx, collectionName, &item); err != nil {
 			results[i] = dombatch.NewError(item.ID(), fmt.Errorf("upsert: %w", err))
 			continue
