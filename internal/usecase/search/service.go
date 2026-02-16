@@ -3,6 +3,8 @@ package search
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
@@ -197,15 +199,21 @@ func (s *Service) searchGeo(
 		return nil, fmt.Errorf("search geo knn: %w", err)
 	}
 
-	// Convert L2 distances to Haversine meters
+	// Redis/Valkey returns L2² (squared Euclidean distance) for L2 metric.
+	// Convert: L2² → L2 (sqrt) → great-circle meters (Haversine).
 	converted := make([]result.Result, len(results))
 	for i, r := range results {
-		meters := geo.L2ToHaversineMeters(r.Score())
+		l2 := math.Sqrt(r.Score())
+		meters := geo.L2ToHaversineMeters(l2)
 		converted[i] = result.New(
 			r.ID(), meters, r.Content(),
 			r.Tags(), r.Numerics(), r.Vector(),
 		)
 	}
+
+	sort.Slice(converted, func(i, j int) bool {
+		return converted[i].Score() < converted[j].Score()
+	})
 
 	return converted, nil
 }

@@ -247,7 +247,7 @@ func parseKNNResult(raw []rueidis.RedisMessage, rawScores bool) (*db.SearchResul
 				if rawScores {
 					entry.Score = s
 				} else {
-					entry.Score = 1.0 - s // cosine distance → similarity
+					entry.Score = max(0, 1.0-s) // cosine distance → similarity, clamped to [0,1]
 				}
 			}
 			delete(entry.Fields, "__vector_score")
