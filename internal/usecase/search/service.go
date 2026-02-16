@@ -7,6 +7,7 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
+	"github.com/kailas-cloud/vecdex/internal/domain/geo"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/mode"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/request"
@@ -38,6 +39,14 @@ func (s *Service) Search(
 		return nil, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
 	}
 
+	// Collection type mismatch: geo search on text collection or text search on geo collection
+	if req.Mode() == mode.Geo && !col.IsGeo() {
+		return nil, fmt.Errorf("geo search on text collection: %w", domain.ErrCollectionTypeMismatch)
+	}
+	if req.Mode() != mode.Geo && col.IsGeo() {
+		return nil, fmt.Errorf("%s search on geo collection: %w", req.Mode(), domain.ErrCollectionTypeMismatch)
+	}
+
 	var results []result.Result
 
 	switch req.Mode() {
@@ -47,6 +56,8 @@ func (s *Service) Search(
 		results, err = s.searchKeyword(ctx, collectionName, req)
 	case mode.Hybrid:
 		results, err = s.searchHybrid(ctx, collectionName, req)
+	case mode.Geo:
+		results, err = s.searchGeo(ctx, collectionName, req)
 	default:
 		return nil, fmt.Errorf("unsupported search mode: %s", req.Mode())
 	}
@@ -140,6 +151,43 @@ func (s *Service) searchHybrid(
 	}
 
 	return fuseRRF(knnResults, bm25Results, req.TopK()), nil
+}
+
+// searchGeo converts lat/lon query to ECEF, runs KNN, converts L2 distances to meters.
+func (s *Service) searchGeo(
+	ctx context.Context, collectionName string, req *request.Request,
+) ([]result.Result, error) {
+	gq := req.GeoQuery()
+	if gq == nil {
+		return nil, fmt.Errorf("geo search requires geo_query: %w", domain.ErrGeoQueryInvalid)
+	}
+	if !geo.ValidateCoordinates(gq.Latitude, gq.Longitude) {
+		return nil, fmt.Errorf(
+			"invalid coordinates: lat=%f lon=%f: %w",
+			gq.Latitude, gq.Longitude, domain.ErrGeoQueryInvalid,
+		)
+	}
+
+	vector := geo.ToVector(gq.Latitude, gq.Longitude)
+
+	results, err := s.repo.SearchKNN(
+		ctx, collectionName, vector, req.Filters(), req.TopK(), req.IncludeVectors(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search geo knn: %w", err)
+	}
+
+	// Convert L2 distances to Haversine meters
+	converted := make([]result.Result, len(results))
+	for i, r := range results {
+		meters := geo.L2ToHaversineMeters(r.Score())
+		converted[i] = result.New(
+			r.ID(), meters, r.Content(),
+			r.Tags(), r.Numerics(), r.Vector(),
+		)
+	}
+
+	return converted, nil
 }
 
 // validateFiltersAgainstSchema ensures filter fields exist in the collection
