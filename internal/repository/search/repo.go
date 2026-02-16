@@ -178,15 +178,7 @@ func parseJSONField(
 			}
 		case "__vector":
 			if includeVectors && vector != nil {
-				if arr, ok := v.([]any); ok {
-					vec := make([]float32, 0, len(arr))
-					for _, elem := range arr {
-						if f, ok := elem.(float64); ok {
-							vec = append(vec, float32(f))
-						}
-					}
-					*vector = vec
-				}
+				*vector = parseVectorField(v)
 			}
 		default:
 			switch val := v.(type) {
@@ -197,4 +189,19 @@ func parseJSONField(
 			}
 		}
 	}
+}
+
+// parseVectorField converts a JSON array ([]any of float64) into []float32.
+func parseVectorField(v any) []float32 {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	vec := make([]float32, 0, len(arr))
+	for _, elem := range arr {
+		if f, ok := elem.(float64); ok {
+			vec = append(vec, float32(f))
+		}
+	}
+	return vec
 }
