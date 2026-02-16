@@ -97,24 +97,7 @@ func (r *Repo) List(ctx context.Context, collectionName, cursor string, limit in
 		return nil, "", nil
 	}
 
-	docs := make([]domdoc.Document, 0, limit)
-	for i, entry := range result.Entries {
-		if i >= limit {
-			break
-		}
-		docID := extractDocID(entry.Key, collectionName)
-		jsonStr := entry.Fields["$"]
-		if jsonStr == "" {
-			docs = append(docs, domdoc.Reconstruct(docID, "", nil, nil, nil, 0))
-			continue
-		}
-		var m map[string]any
-		if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
-			docs = append(docs, domdoc.Reconstruct(docID, "", nil, nil, nil, 0))
-			continue
-		}
-		docs = append(docs, parseDocMap(docID, m))
-	}
+	docs := parseListEntries(result.Entries, collectionName, limit)
 
 	var nextCursor string
 	if len(result.Entries) > limit {
@@ -196,6 +179,29 @@ func indexName(collection string) string {
 func extractDocID(key, collection string) string {
 	prefix := fmt.Sprintf("%s%s:", domain.KeyPrefix, collection)
 	return strings.TrimPrefix(key, prefix)
+}
+
+// parseListEntries converts search entries into domain documents, capping at limit.
+func parseListEntries(entries []db.SearchEntry, collectionName string, limit int) []domdoc.Document {
+	docs := make([]domdoc.Document, 0, limit)
+	for i, entry := range entries {
+		if i >= limit {
+			break
+		}
+		docID := extractDocID(entry.Key, collectionName)
+		jsonStr := entry.Fields["$"]
+		if jsonStr == "" {
+			docs = append(docs, domdoc.Reconstruct(docID, "", nil, nil, nil, 0))
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
+			docs = append(docs, domdoc.Reconstruct(docID, "", nil, nil, nil, 0))
+			continue
+		}
+		docs = append(docs, parseDocMap(docID, m))
+	}
+	return docs
 }
 
 // applyPatchFields merges patch fields into the current JSON map in-place.
