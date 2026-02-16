@@ -123,6 +123,12 @@ func (s *Service) searchSemantic(
 	if err != nil {
 		return nil, fmt.Errorf("search knn: %w", err)
 	}
+
+	// HNSW is approximate — enforce descending similarity order.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score() > results[j].Score()
+	})
+
 	return results, nil
 }
 
