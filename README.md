@@ -1,5 +1,7 @@
 # vecdex
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/e308496f0bf04743b46bf17fe65b1f71)](https://app.codacy.com/gh/kailas-cloud/vecdex?utm_source=github.com&utm_medium=referral&utm_content=kailas-cloud/vecdex&utm_campaign=Badge_Grade)
+
 Vector index management HTTP service built on Valkey with valkey-search and valkey-json modules.
 
 ## Architecture
