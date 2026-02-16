@@ -1,5 +1,7 @@
 # Build output
 /bin/
+/build/
+/dist/
 *.exe
 coverage.out
 coverage.html

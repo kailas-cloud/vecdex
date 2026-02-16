@@ -1,0 +1,6 @@
+FROM alpine:3.21
+WORKDIR /app
+COPY vecdex /app/vecdex
+COPY config/ /app/config/
+EXPOSE 8080
+ENTRYPOINT ["/app/vecdex"]
