@@ -18,38 +18,22 @@ builds:
       - -X github.com/kailas-cloud/vecdex/internal/version.Date={{.Date}}
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
-dockers:
-  - image_templates:
-      - "ghcr.io/kailas-cloud/vecdex:{{ .Version }}-amd64"
-    use: buildx
-    dockerfile: Dockerfile.goreleaser
-    build_flag_templates:
-      - "--platform=linux/amd64"
+dockers_v2:
+  - dockerfile: Dockerfile.goreleaser
+    images:
+      - "ghcr.io/kailas-cloud/vecdex"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    platforms:
+      - linux/amd64
+      - linux/arm64
     extra_files:
       - config/
-    goarch: amd64
-  - image_templates:
-      - "ghcr.io/kailas-cloud/vecdex:{{ .Version }}-arm64"
-    use: buildx
-    dockerfile: Dockerfile.goreleaser
-    build_flag_templates:
-      - "--platform=linux/arm64"
-    extra_files:
-      - config/
-    goarch: arm64
-
-docker_manifests:
-  - name_template: "ghcr.io/kailas-cloud/vecdex:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/kailas-cloud/vecdex:{{ .Version }}-amd64"
-      - "ghcr.io/kailas-cloud/vecdex:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/kailas-cloud/vecdex:latest"
-    image_templates:
-      - "ghcr.io/kailas-cloud/vecdex:{{ .Version }}-amd64"
-      - "ghcr.io/kailas-cloud/vecdex:{{ .Version }}-arm64"
 
 changelog:
   disable: true
