@@ -52,7 +52,7 @@ Most vector databases are **heavy, cloud-locked, or expensive**. vecdex takes a 
 
 ## 30-second demo
 
-**1. Create a collection**
+#### 1. Create a collection
 
 ```bash
 curl -s -X POST http://localhost:8080/collections \
@@ -67,7 +67,7 @@ curl -s -X POST http://localhost:8080/collections \
   }'
 ```
 
-**2. Add a document** (auto-vectorized)
+#### 2. Add a document (auto-vectorized)
 
 ```bash
 curl -s -X PUT http://localhost:8080/collections/code-chunks/documents/chunk-1 \
@@ -80,7 +80,7 @@ curl -s -X PUT http://localhost:8080/collections/code-chunks/documents/chunk-1 \
   }'
 ```
 
-**3. Search** (hybrid mode — RRF of vector KNN + BM25)
+#### 3. Search (hybrid mode — RRF of vector KNN + BM25)
 
 ```bash
 curl -s -X POST http://localhost:8080/collections/code-chunks/documents/search \
