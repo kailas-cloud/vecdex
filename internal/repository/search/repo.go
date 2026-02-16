@@ -42,10 +42,7 @@ func (r *Repo) SearchKNN(
 ) ([]result.Result, error) {
 	indexName := fmt.Sprintf("%s%s:idx", domain.KeyPrefix, collectionName)
 
-	returnFields := []string{"$"}
-	if includeVectors {
-		returnFields = append(returnFields, "__vector_score")
-	}
+	returnFields := []string{"$", "__vector_score"}
 
 	q := &db.KNNQuery{
 		IndexName:     indexName,
