@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/kailas-cloud/vecdex/internal/config"
+	"github.com/kailas-cloud/vecdex/internal/version"
 	"github.com/kailas-cloud/vecdex/internal/db"
 	dbRedis "github.com/kailas-cloud/vecdex/internal/db/redis"
 	dbValkey "github.com/kailas-cloud/vecdex/internal/db/valkey"
@@ -54,6 +55,8 @@ func main() {
 	defer func() { _ = logger.Sync() }()
 
 	logger.Info("Starting vecdex API server",
+		zap.String("version", version.Version),
+		zap.String("commit", version.Commit),
 		zap.String("env", env),
 		zap.Int("http_port", cfg.HTTP.Port),
 		zap.String("db_driver", cfg.Database.Driver),
