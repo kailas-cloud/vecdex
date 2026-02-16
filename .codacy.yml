@@ -5,3 +5,5 @@ exclude_paths:
   - "internal/logger/**"
   - "internal/transport/generated/**"
   - "**/mock_*"
+  - "**/*_test.go"
+  - "CLAUDE.md"
