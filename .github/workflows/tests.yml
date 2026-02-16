@@ -53,6 +53,12 @@ jobs:
       - name: Run unit tests with coverage
         run: go test ./... -short -coverprofile=coverage.out -covermode=atomic
 
+      - name: Upload coverage to Codacy
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
+        run: bash <(curl -Ls https://coverage.codacy.com/get.sh) report -r coverage.out
+
       - name: Check coverage thresholds
         id: coverage
         uses: vladopajic/go-test-coverage@v2
