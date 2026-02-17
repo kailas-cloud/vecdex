@@ -1,6 +1,9 @@
 """Geo collection E2E tests — create, upsert, search, validation, accuracy."""
 
+import json
+import math
 import time
+from pathlib import Path
 
 import pytest
 
@@ -672,3 +675,93 @@ class TestGeoSearchStress:
         tokyo = next((i for i in items if i["id"] == "tokyo"), None)
         assert tokyo is not None
         assert tokyo["score"] > 10_000_000  # > 10,000 km in meters
+
+
+PAPHOS_FIXTURE = Path(__file__).parent / "testdata" / "paphos_places.jsonl"
+# Центр Пафоса — точка поиска для large dataset теста
+PAPHOS_CENTER_LAT = 34.7575
+PAPHOS_CENTER_LON = 32.4070
+
+
+def _haversine(lat1, lon1, lat2, lon2):
+    """Haversine distance in meters between two lat/lon points."""
+    R = 6_371_000
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _load_paphos_pois():
+    """Load POIs from paphos_places.jsonl fixture."""
+    pois = []
+    with open(PAPHOS_FIXTURE) as f:
+        for line in f:
+            pois.append(json.loads(line))
+    return pois
+
+
+@pytest.mark.p2
+class TestGeoSearchLargeDataset:
+    """Stress test with 100 real Paphos POIs from fixture."""
+
+    def test_batch_upsert_100_paphos_pois(self, client, geo_collection_factory):
+        """Load 100 real Cyprus POIs, search from Paphos center, verify ordering."""
+        coll = geo_collection_factory()
+        pois = _load_paphos_pois()
+        assert len(pois) == 100
+
+        # Batch upsert in chunks of 50 (within 100 limit)
+        for chunk_start in range(0, len(pois), 50):
+            chunk = pois[chunk_start : chunk_start + 50]
+            docs = [
+                {
+                    "id": poi["id"],
+                    "content": poi["name"],
+                    "numerics": {"latitude": poi["lat"], "longitude": poi["lon"]},
+                    "tags": {"category": poi.get("category_ids", ["unknown"])[0]},
+                }
+                for poi in chunk
+            ]
+            resp = client.post(
+                f"/collections/{coll['name']}/documents/batch-upsert",
+                json={"documents": docs},
+            )
+            assert resp.status_code == 200
+            assert resp.json()["succeeded"] == len(chunk)
+
+        time.sleep(3.0)
+
+        # Search from Paphos center
+        resp = geo_search_with_retry(
+            client, coll["name"], PAPHOS_CENTER_LAT, PAPHOS_CENTER_LON, top_k=10,
+        )
+        items = resp.json()["items"]
+        assert len(items) == 10
+
+        # Results must be sorted by distance ascending
+        scores = [item["score"] for item in items]
+        assert scores == sorted(scores), f"Not sorted: {scores}"
+
+        # Top-10 distances should match haversine within 15% tolerance
+        expected = sorted(
+            (
+                _haversine(PAPHOS_CENTER_LAT, PAPHOS_CENTER_LON, p["lat"], p["lon"]),
+                p["id"],
+            )
+            for p in pois
+        )[:10]
+
+        for (exp_dist, exp_id), item in zip(expected, items):
+            assert item["id"] == exp_id, (
+                f"Expected {exp_id} at {exp_dist:.0f}m, got {item['id']} at {item['score']:.0f}m"
+            )
+            if exp_dist > 0:
+                assert abs(item["score"] - exp_dist) / exp_dist < DIST_TOLERANCE, (
+                    f"{item['id']}: expected ~{exp_dist:.0f}m, got {item['score']:.0f}m"
+                )
