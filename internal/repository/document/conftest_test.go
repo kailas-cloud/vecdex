@@ -10,11 +10,12 @@ import (
 
 // mockStore implements the consumer interface for tests.
 type mockStore struct {
-	jsonSetFn    func(ctx context.Context, key, path string, data []byte) error
-	jsonGetFn    func(ctx context.Context, key string, paths ...string) ([]byte, error)
-	delFn        func(ctx context.Context, key string) error
-	existsFn     func(ctx context.Context, key string) (bool, error)
-	searchListFn func(
+	jsonSetFn      func(ctx context.Context, key, path string, data []byte) error
+	jsonSetMultiFn func(ctx context.Context, items []db.JSONSetItem) error
+	jsonGetFn      func(ctx context.Context, key string, paths ...string) ([]byte, error)
+	delFn          func(ctx context.Context, key string) error
+	existsFn       func(ctx context.Context, key string) (bool, error)
+	searchListFn   func(
 		ctx context.Context, index, query string, offset, limit int, fields []string,
 	) (*db.SearchResult, error)
 	searchCountFn func(ctx context.Context, index, query string) (int, error)
@@ -23,6 +24,13 @@ type mockStore struct {
 func (m *mockStore) JSONSet(ctx context.Context, key, path string, data []byte) error {
 	if m.jsonSetFn != nil {
 		return m.jsonSetFn(ctx, key, path, data)
+	}
+	return nil
+}
+
+func (m *mockStore) JSONSetMulti(ctx context.Context, items []db.JSONSetItem) error {
+	if m.jsonSetMultiFn != nil {
+		return m.jsonSetMultiFn(ctx, items)
 	}
 	return nil
 }

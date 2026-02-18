@@ -15,8 +15,11 @@ import (
 )
 
 // store is the consumer interface for documents (ISP).
+//
+//nolint:interfacebloat // mirrors JSONStore + search; splitting would add indirection without benefit
 type store interface {
 	JSONSet(ctx context.Context, key, path string, data []byte) error
+	JSONSetMulti(ctx context.Context, items []db.JSONSetItem) error
 	JSONGet(ctx context.Context, key string, paths ...string) ([]byte, error)
 	Del(ctx context.Context, key string) error
 	Exists(ctx context.Context, key string) (bool, error)
@@ -53,6 +56,33 @@ func (r *Repo) Upsert(ctx context.Context, collectionName string, doc *domdoc.Do
 	}
 
 	return !exists, nil
+}
+
+// BatchUpsert stores multiple documents in a single pipelined round-trip.
+// Skips per-key existence checks — designed for bulk load.
+func (r *Repo) BatchUpsert(ctx context.Context, collectionName string, docs []domdoc.Document) error {
+	if len(docs) == 0 {
+		return nil
+	}
+
+	items := make([]db.JSONSetItem, len(docs))
+	for i := range docs {
+		jsonDoc := buildJSONDoc(&docs[i])
+		data, err := json.Marshal(jsonDoc)
+		if err != nil {
+			return fmt.Errorf("marshal document %s: %w", docs[i].ID(), err)
+		}
+		items[i] = db.JSONSetItem{
+			Key:  docKey(collectionName, docs[i].ID()),
+			Path: "$",
+			Data: data,
+		}
+	}
+
+	if err := r.store.JSONSetMulti(ctx, items); err != nil {
+		return fmt.Errorf("json.set multi: %w", err)
+	}
+	return nil
 }
 
 // Get returns a document by ID.

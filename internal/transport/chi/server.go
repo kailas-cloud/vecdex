@@ -34,7 +34,7 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/version"
 )
 
-const maxBatchSize = 100
+const defaultMaxBatchSize = 100
 
 // errorHandler tries to handle a domain error. Returns true if handled.
 type errorHandler func(w http.ResponseWriter, err error, msg string) bool
@@ -49,6 +49,7 @@ type Server struct {
 	usage         *usageuc.Service
 	health        *healthuc.Service
 	logger        *zap.Logger
+	maxBatchSize  int
 	errorHandlers []errorHandler
 }
 
@@ -65,13 +66,14 @@ func NewServer(
 	logger *zap.Logger,
 ) *Server {
 	s := &Server{
-		collections: collections,
-		documents:   documents,
-		search:      search,
-		batch:       batch,
-		usage:       usage,
-		health:      health,
-		logger:      logger,
+		collections:  collections,
+		documents:    documents,
+		search:       search,
+		batch:        batch,
+		usage:        usage,
+		health:       health,
+		logger:       logger,
+		maxBatchSize: defaultMaxBatchSize,
 	}
 	s.errorHandlers = []errorHandler{
 		revisionConflictHandler,
@@ -90,6 +92,14 @@ func NewServer(
 		sentinelHandler(domain.ErrKeywordSearchNotSupported,
 			http.StatusNotImplemented, gen.ErrorResponseCodeKeywordSearchNotSupported),
 		sentinelHandler(domain.ErrNotImplemented, http.StatusNotImplemented, gen.ErrorResponseCodeNotImplemented),
+	}
+	return s
+}
+
+// WithMaxBatchSize overrides the default batch size limit for HTTP validation.
+func (s *Server) WithMaxBatchSize(size int) *Server {
+	if size > 0 {
+		s.maxBatchSize = size
 	}
 	return s
 }
@@ -419,9 +429,9 @@ func (s *Server) BatchUpsert(
 		return
 	}
 
-	if len(req.Documents) == 0 || len(req.Documents) > maxBatchSize {
+	if len(req.Documents) == 0 || len(req.Documents) > s.maxBatchSize {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed,
-			fmt.Sprintf("documents count must be between 1 and %d", maxBatchSize))
+			fmt.Sprintf("documents count must be between 1 and %d", s.maxBatchSize))
 		return
 	}
 
@@ -468,9 +478,9 @@ func (s *Server) BatchDelete(
 		return
 	}
 
-	if len(req.Ids) == 0 || len(req.Ids) > maxBatchSize {
+	if len(req.Ids) == 0 || len(req.Ids) > s.maxBatchSize {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed,
-			fmt.Sprintf("ids count must be between 1 and %d", maxBatchSize))
+			fmt.Sprintf("ids count must be between 1 and %d", s.maxBatchSize))
 		return
 	}
 

@@ -1,7 +1,7 @@
 http:
   port: 8080
   read_timeout_sec: 10
-  write_timeout_sec: 10
+  write_timeout_sec: 30
   shutdown_timeout_sec: 10
 
 database:
@@ -16,7 +16,7 @@ index:
   hnsw_ef_construction: 400
   default_page_size: 20
   max_page_size: 100
-  max_batch_size: 100
+  max_batch_size: 5000
 
 storage:
   key_prefix: "vecdex:"
