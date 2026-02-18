@@ -73,7 +73,7 @@ func run(dataFile string) error {
 	embedder := NewNebiusEmbedder(apiKey)
 
 	client, err := vecdex.New(
-		vecdex.WithValkey(addr, password),
+		vecdex.WithRedis(addr, password),
 		vecdex.WithEmbedder(embedder),
 		vecdex.WithVectorDimensions(4096),
 	)
