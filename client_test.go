@@ -109,6 +109,25 @@ func TestClientOptions(t *testing.T) {
 	}
 }
 
+func TestClient_Close_NilStore(t *testing.T) {
+	// Close на клиенте с nil store не паникует.
+	c := &Client{store: nil}
+	c.Close() // не должен упасть
+}
+
+func TestWithEmbedder(t *testing.T) {
+	mock := &mockEmbedder{
+		fn: func(_ context.Context, _ string) (EmbeddingResult, error) {
+			return EmbeddingResult{}, nil
+		},
+	}
+	cfg := &clientConfig{}
+	WithEmbedder(mock)(cfg)
+	if cfg.embedder == nil {
+		t.Error("expected non-nil embedder")
+	}
+}
+
 type mockEmbedder struct {
 	fn func(ctx context.Context, text string) (EmbeddingResult, error)
 }

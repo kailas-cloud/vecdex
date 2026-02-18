@@ -95,3 +95,87 @@ func TestSearchBuilder_TextChaining(t *testing.T) {
 		t.Errorf("limit = %d, want 20", b.limit)
 	}
 }
+
+func TestSearchBuilder_ToHits_Geo(t *testing.T) {
+	idx, err := NewIndex[geoPlace](nil, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b := idx.Search()
+	results := []SearchResult{
+		{
+			ID:       "paphos",
+			Score:    1500.0,
+			Content:  "Paphos Castle",
+			Tags:     map[string]string{"country": "CY"},
+			Numerics: map[string]float64{"latitude": 34.75, "longitude": 32.40, "population": 35000},
+		},
+	}
+
+	hits := b.toHits(results, true)
+	if len(hits) != 1 {
+		t.Fatalf("len = %d, want 1", len(hits))
+	}
+	if hits[0].Item.ID != "paphos" {
+		t.Errorf("ID = %q, want paphos", hits[0].Item.ID)
+	}
+	if hits[0].Item.Name != "Paphos Castle" {
+		t.Errorf("Name = %q, want Paphos Castle", hits[0].Item.Name)
+	}
+	if hits[0].Item.Country != "CY" {
+		t.Errorf("Country = %q, want CY", hits[0].Item.Country)
+	}
+	if hits[0].Score != 1500.0 {
+		t.Errorf("Score = %f, want 1500", hits[0].Score)
+	}
+	if hits[0].Distance != 1500.0 {
+		t.Errorf("Distance = %f, want 1500 (geo)", hits[0].Distance)
+	}
+}
+
+func TestSearchBuilder_ToHits_Text(t *testing.T) {
+	idx, err := NewIndex[textDoc](nil, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b := idx.Search()
+	results := []SearchResult{
+		{
+			ID:      "doc-1",
+			Score:   0.95,
+			Content: "hello world",
+			Tags:    map[string]string{"author": "test"},
+		},
+	}
+
+	hits := b.toHits(results, false)
+	if len(hits) != 1 {
+		t.Fatalf("len = %d, want 1", len(hits))
+	}
+	if hits[0].Item.ID != "doc-1" {
+		t.Errorf("ID = %q, want doc-1", hits[0].Item.ID)
+	}
+	if hits[0].Item.Content != "hello world" {
+		t.Errorf("Content = %q, want hello world", hits[0].Item.Content)
+	}
+	if hits[0].Score != 0.95 {
+		t.Errorf("Score = %f, want 0.95", hits[0].Score)
+	}
+	if hits[0].Distance != 0 {
+		t.Errorf("Distance = %f, want 0 (text)", hits[0].Distance)
+	}
+}
+
+func TestSearchBuilder_ToHits_Empty(t *testing.T) {
+	idx, err := NewIndex[geoPlace](nil, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hits := idx.Search().toHits(nil, false)
+	if len(hits) != 0 {
+		t.Errorf("len = %d, want 0", len(hits))
+	}
+}

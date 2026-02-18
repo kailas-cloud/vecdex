@@ -1,10 +1,13 @@
 package vecdex
 
 import (
+	"errors"
 	"testing"
 
+	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
+	"github.com/kailas-cloud/vecdex/internal/domain/search/result"
 )
 
 func TestToInternalFields(t *testing.T) {
@@ -13,18 +16,18 @@ func TestToInternalFields(t *testing.T) {
 		{Name: "population", Type: FieldNumeric},
 	}
 
-	result, err := toInternalFields(fields)
+	got, err := toInternalFields(fields)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result) != 2 {
-		t.Fatalf("len = %d, want 2", len(result))
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
 	}
-	if result[0].Name() != "country" || result[0].FieldType() != field.Tag {
-		t.Errorf("field[0] = %s/%s, want country/tag", result[0].Name(), result[0].FieldType())
+	if got[0].Name() != "country" || got[0].FieldType() != field.Tag {
+		t.Errorf("field[0] = %s/%s, want country/tag", got[0].Name(), got[0].FieldType())
 	}
-	if result[1].Name() != "population" || result[1].FieldType() != field.Numeric {
-		t.Errorf("field[1] = %s/%s, want population/numeric", result[1].Name(), result[1].FieldType())
+	if got[1].Name() != "population" || got[1].FieldType() != field.Numeric {
+		t.Errorf("field[1] = %s/%s, want population/numeric", got[1].Name(), got[1].FieldType())
 	}
 }
 
@@ -243,5 +246,102 @@ func TestFromSearchResults(t *testing.T) {
 	results := fromSearchResults(nil)
 	if len(results) != 0 {
 		t.Errorf("len = %d, want 0", len(results))
+	}
+}
+
+func TestFromSearchResults_WithData(t *testing.T) {
+	r := result.New(
+		"doc-1", 0.95, "hello",
+		map[string]string{"lang": "en"},
+		map[string]float64{"score": 0.99},
+		nil,
+	)
+	out := fromSearchResults([]result.Result{r})
+	if len(out) != 1 {
+		t.Fatalf("len = %d, want 1", len(out))
+	}
+	if out[0].ID != "doc-1" {
+		t.Errorf("ID = %q, want doc-1", out[0].ID)
+	}
+	if out[0].Score != 0.95 {
+		t.Errorf("Score = %f, want 0.95", out[0].Score)
+	}
+	if out[0].Content != "hello" {
+		t.Errorf("Content = %q, want hello", out[0].Content)
+	}
+	if out[0].Tags["lang"] != "en" {
+		t.Errorf("Tags[lang] = %q, want en", out[0].Tags["lang"])
+	}
+	if out[0].Numerics["score"] != 0.99 {
+		t.Errorf("Numerics[score] = %f, want 0.99", out[0].Numerics["score"])
+	}
+}
+
+func TestFromBatchResults_WithData(t *testing.T) {
+	ok := dombatch.NewOK("doc-1")
+	fail := dombatch.NewError("doc-2", errors.New("conflict"))
+
+	out := fromBatchResults([]dombatch.Result{ok, fail})
+	if len(out) != 2 {
+		t.Fatalf("len = %d, want 2", len(out))
+	}
+	if out[0].ID != "doc-1" || !out[0].OK {
+		t.Errorf("result[0] = %+v, want doc-1/OK", out[0])
+	}
+	if out[1].ID != "doc-2" || out[1].OK {
+		t.Errorf("result[1] = %+v, want doc-2/error", out[1])
+	}
+	if out[1].Err == nil {
+		t.Error("expected non-nil error for failed result")
+	}
+}
+
+func TestToInternalFilters_ShouldAndMustNot(t *testing.T) {
+	fe := FilterExpression{
+		Should:  []FilterCondition{{Key: "country", Match: "CY"}},
+		MustNot: []FilterCondition{{Key: "country", Match: "TR"}},
+	}
+
+	expr, err := toInternalFilters(fe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(expr.Should()) != 1 {
+		t.Errorf("len(Should) = %d, want 1", len(expr.Should()))
+	}
+	if len(expr.MustNot()) != 1 {
+		t.Errorf("len(MustNot) = %d, want 1", len(expr.MustNot()))
+	}
+}
+
+func TestToInternalFilters_ShouldError(t *testing.T) {
+	// Пустой ключ вызывает ошибку в filter.NewMatch.
+	fe := FilterExpression{
+		Should: []FilterCondition{{Key: "", Match: "val"}},
+	}
+	_, err := toInternalFilters(fe)
+	if err == nil {
+		t.Fatal("expected error for empty key in should")
+	}
+}
+
+func TestToInternalFilters_MustNotError(t *testing.T) {
+	fe := FilterExpression{
+		MustNot: []FilterCondition{{Key: "", Match: "val"}},
+	}
+	_, err := toInternalFilters(fe)
+	if err == nil {
+		t.Fatal("expected error for empty key in must_not")
+	}
+}
+
+func TestToConditions_MatchError(t *testing.T) {
+	// Пустой match value вызывает ошибку.
+	fe := FilterExpression{
+		Must: []FilterCondition{{Key: "country", Match: ""}},
+	}
+	_, err := toInternalFilters(fe)
+	if err == nil {
+		t.Fatal("expected error for empty match value")
 	}
 }
