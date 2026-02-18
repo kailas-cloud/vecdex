@@ -174,7 +174,8 @@ func main() {
 	healthSvc := healthuc.New(store, newEmbeddingHealthChecker(docEmbedder))
 
 	// Create chi server
-	server := chiTransport.NewServer(collSvc, docSvc, searchSvc, batchSvc, usageSvc, healthSvc, logger)
+	server := chiTransport.NewServer(collSvc, docSvc, searchSvc, batchSvc, usageSvc, healthSvc, logger).
+		WithMaxBatchSize(cfg.Index.MaxBatchSize)
 
 	r := chi.NewRouter()
 	r.Use(jsonRecoverer(logger))

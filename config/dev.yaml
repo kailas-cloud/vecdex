@@ -16,7 +16,7 @@ index:
   hnsw_ef_construction: 400
   default_page_size: 20
   max_page_size: 100
-  max_batch_size: 100
+  max_batch_size: 5000
 
 storage:
   key_prefix: "vecdex:"
