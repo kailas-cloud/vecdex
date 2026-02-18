@@ -1,7 +1,7 @@
 http:
   port: 8080
   read_timeout_sec: 10
-  write_timeout_sec: 10
+  write_timeout_sec: 30
   shutdown_timeout_sec: 10
 
 database:
