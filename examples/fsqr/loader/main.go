@@ -75,6 +75,7 @@ func run(dataFile string) error {
 	client, err := vecdex.New(
 		vecdex.WithValkey(addr, password),
 		vecdex.WithEmbedder(embedder),
+		vecdex.WithVectorDimensions(4096),
 	)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
