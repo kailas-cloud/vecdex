@@ -44,8 +44,8 @@ type Venue struct {
 	ID    string  `vecdex:"id,id"`
 	Name  string  `vecdex:"name,tag"`
 	CatID string  `vecdex:"category_id,tag"`
-	Lat   float64 `vecdex:"lat,geo_lat"`
-	Lon   float64 `vecdex:"lon,geo_lon"`
+	Lat   float64 `vecdex:"latitude,geo_lat"`
+	Lon   float64 `vecdex:"longitude,geo_lon"`
 }
 
 // Category — текстовая коллекция категорий (для семантического поиска).
