@@ -1,0 +1,109 @@
+package vecdex
+
+import (
+	"errors"
+	"fmt"
+
+	"context"
+
+	"github.com/kailas-cloud/vecdex/internal/domain"
+	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
+	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
+)
+
+// CollectionService manages collections.
+type CollectionService struct {
+	svc collectionUseCase
+}
+
+// Create creates a new collection.
+func (s *CollectionService) Create(
+	ctx context.Context, name string, opts ...CollectionOption,
+) (CollectionInfo, error) {
+	cfg := &collectionConfig{colType: CollectionTypeText}
+	for _, o := range opts {
+		o(cfg)
+	}
+
+	fields, err := toInternalFields(cfg.fields)
+	if err != nil {
+		return CollectionInfo{}, fmt.Errorf("create collection: %w", err)
+	}
+
+	col, err := s.svc.Create(ctx, name, domcol.Type(cfg.colType), fields)
+	if err != nil {
+		return CollectionInfo{}, fmt.Errorf("create collection: %w", err)
+	}
+	return fromInternalCollection(col), nil
+}
+
+// Ensure creates a collection if it does not exist.
+// If it already exists, returns its info.
+func (s *CollectionService) Ensure(
+	ctx context.Context, name string, opts ...CollectionOption,
+) (CollectionInfo, error) {
+	info, err := s.Create(ctx, name, opts...)
+	if err == nil {
+		return info, nil
+	}
+	if !errors.Is(err, domain.ErrAlreadyExists) {
+		return CollectionInfo{}, err
+	}
+	return s.Get(ctx, name)
+}
+
+// Get retrieves collection metadata by name.
+func (s *CollectionService) Get(ctx context.Context, name string) (CollectionInfo, error) {
+	col, err := s.svc.Get(ctx, name)
+	if err != nil {
+		return CollectionInfo{}, fmt.Errorf("get collection: %w", err)
+	}
+	return fromInternalCollection(col), nil
+}
+
+// List returns all collections.
+func (s *CollectionService) List(ctx context.Context) ([]CollectionInfo, error) {
+	cols, err := s.svc.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list collections: %w", err)
+	}
+	out := make([]CollectionInfo, len(cols))
+	for i, c := range cols {
+		out[i] = fromInternalCollection(c)
+	}
+	return out, nil
+}
+
+// Delete removes a collection.
+func (s *CollectionService) Delete(ctx context.Context, name string) error {
+	if err := s.svc.Delete(ctx, name); err != nil {
+		return fmt.Errorf("delete collection: %w", err)
+	}
+	return nil
+}
+
+func toInternalFields(fields []FieldInfo) ([]field.Field, error) {
+	out := make([]field.Field, len(fields))
+	for i, f := range fields {
+		var err error
+		out[i], err = field.New(f.Name, field.Type(f.Type))
+		if err != nil {
+			return nil, fmt.Errorf("field %q: %w", f.Name, err)
+		}
+	}
+	return out, nil
+}
+
+func fromInternalCollection(col domcol.Collection) CollectionInfo {
+	fields := make([]FieldInfo, len(col.Fields()))
+	for i, f := range col.Fields() {
+		fields[i] = FieldInfo{Name: f.Name(), Type: FieldType(f.FieldType())}
+	}
+	return CollectionInfo{
+		Name:      col.Name(),
+		Type:      CollectionType(col.Type()),
+		Fields:    fields,
+		VectorDim: col.VectorDim(),
+		CreatedAt: col.CreatedAt(),
+	}
+}

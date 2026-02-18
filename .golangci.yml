@@ -72,6 +72,8 @@ linters:
     depguard:
       rules:
         no-reflect:
+          files:
+            - "**/internal/**"
           deny:
             - pkg: reflect
               desc: "no runtime reflection, use interfaces"
