@@ -49,6 +49,14 @@ func run() error {
 		return fmt.Errorf("ensure: %w", err)
 	}
 
+	if err := seedPlaces(ctx, idx); err != nil {
+		return err
+	}
+
+	return searchNearPaphos(ctx, idx)
+}
+
+func seedPlaces(ctx context.Context, idx *vecdex.TypedIndex[Place]) error {
 	places := []Place{
 		{ID: "paphos-castle", Name: "Paphos Castle", Country: "CY", Lat: 34.7533, Lon: 32.4069},
 		{ID: "kourion", Name: "Kourion", Country: "CY", Lat: 34.6642, Lon: 32.8828},
@@ -66,7 +74,10 @@ func run() error {
 			log.Printf("failed to upsert %s: %v", r.ID, r.Err)
 		}
 	}
+	return nil
+}
 
+func searchNearPaphos(ctx context.Context, idx *vecdex.TypedIndex[Place]) error {
 	// Поиск ближайших мест к центру Пафоса (34.7720° N, 32.4246° E).
 	hits, err := idx.Search().
 		Near(34.7720, 32.4246).
