@@ -34,9 +34,17 @@ type HashStore interface {
 	Scan(ctx context.Context, pattern string) ([]string, error)
 }
 
+// JSONSetItem holds a single key+path+data triple for pipelined JSON.SET.
+type JSONSetItem struct {
+	Key  string
+	Path string
+	Data []byte
+}
+
 // JSONStore provides JSON document operations.
 type JSONStore interface {
 	JSONSet(ctx context.Context, key, path string, data []byte) error
+	JSONSetMulti(ctx context.Context, items []JSONSetItem) error
 	JSONGet(ctx context.Context, key string, paths ...string) ([]byte, error)
 	Del(ctx context.Context, key string) error
 	Exists(ctx context.Context, key string) (bool, error)
