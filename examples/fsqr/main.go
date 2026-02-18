@@ -2,15 +2,17 @@
 // Двухстадийный поиск: семантика по категориям → гео по venue'ам с фильтром.
 //
 // Env vars:
-//   VALKEY_ADDR     — адрес Valkey (default: localhost:6379)
-//   VALKEY_PASSWORD  — пароль Valkey
-//   NEBIUS_API_KEY   — API ключ Nebius Inference
-//   LISTEN           — HTTP listen addr (default: :8080)
+//
+//	VALKEY_ADDR     — адрес Valkey (default: localhost:6379)
+//	VALKEY_PASSWORD — пароль Valkey
+//	NEBIUS_API_KEY  — API ключ Nebius Inference
+//	LISTEN          — HTTP listen addr (default: :8080)
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -88,17 +90,17 @@ func run() error {
 		vecdex.WithEmbedder(embedder),
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("init vecdex: %w", err)
 	}
 	defer client.Close()
 
 	catIdx, err := vecdex.NewIndex[Category](client, "categories")
 	if err != nil {
-		return err
+		return fmt.Errorf("init categories index: %w", err)
 	}
 	venueIdx, err := vecdex.NewIndex[Venue](client, "venues")
 	if err != nil {
-		return err
+		return fmt.Errorf("init venues index: %w", err)
 	}
 
 	srv := &server{client: client, catIdx: catIdx, venueIdx: venueIdx}
@@ -108,7 +110,17 @@ func run() error {
 	mux.HandleFunc("GET /health", srv.handleHealth)
 
 	log.Printf("fsqr listening on %s", listen)
-	return http.ListenAndServe(listen, mux)
+	httpSrv := &http.Server{
+		Addr:         listen,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	if err := httpSrv.ListenAndServe(); err != nil {
+		return fmt.Errorf("http server: %w", err)
+	}
+	return nil
 }
 
 type server struct {
@@ -167,7 +179,9 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	resp := buildResponse(catHits, results, catMs, venueMs, time.Since(totalStart).Milliseconds())
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("encode response: %v", err)
+	}
 }
 
 func (s *server) searchVenues(
@@ -175,7 +189,8 @@ func (s *server) searchVenues(
 ) ([]vecdex.SearchResult, error) {
 	// Should-фильтры: venue матчится, если category_id совпадает
 	// хотя бы с одной из найденных категорий (OR-логика).
-	var filters []vecdex.FilterCondition
+	// Без ограничения по расстоянию — KNN вернёт K ближайших где бы они ни были.
+	filters := make([]vecdex.FilterCondition, 0, len(catHits))
 	for _, h := range catHits {
 		filters = append(filters, vecdex.FilterCondition{
 			Key:   "category_id",
@@ -184,11 +199,14 @@ func (s *server) searchVenues(
 	}
 
 	opts := vecdex.SearchOptions{
-		Filters:  vecdex.FilterExpression{Should: filters},
-		MinScore: 50_000, // радиус 50 км в метрах
+		Filters: vecdex.FilterExpression{Should: filters},
 	}
 
-	return s.client.Search("venues").Geo(ctx, req.Lat, req.Lon, req.K, opts)
+	results, err := s.client.Search("venues").Geo(ctx, req.Lat, req.Lon, req.K, opts)
+	if err != nil {
+		return nil, fmt.Errorf("geo search: %w", err)
+	}
+	return results, nil
 }
 
 func buildResponse(
@@ -207,14 +225,12 @@ func buildResponse(
 
 	venues := make([]venueHit, len(venueHits))
 	for i, r := range venueHits {
-		lat, _ := r.Numerics["lat"]
-		lon, _ := r.Numerics["lon"]
 		venues[i] = venueHit{
 			ID:       r.ID,
 			Name:     r.Tags["name"],
 			CatID:    r.Tags["category_id"],
-			Lat:      lat,
-			Lon:      lon,
+			Lat:      r.Numerics["lat"],
+			Lon:      r.Numerics["lon"],
 			Distance: r.Score, // гео-поиск: score = расстояние в метрах
 		}
 	}

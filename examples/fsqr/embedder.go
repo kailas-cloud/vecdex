@@ -59,7 +59,7 @@ func (e *NebiusEmbedder) Embed(ctx context.Context, text string) (vecdex.Embeddi
 	if err != nil {
 		return vecdex.EmbeddingResult{}, fmt.Errorf("do request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return vecdex.EmbeddingResult{}, fmt.Errorf("nebius API: status %d", resp.StatusCode)

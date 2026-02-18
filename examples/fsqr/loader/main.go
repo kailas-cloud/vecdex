@@ -2,12 +2,14 @@
 // Читает JSONL, создаёт коллекции categories и venues, загружает батчами.
 //
 // Использование:
-//   go run ./examples/fsqr/loader/ -data path/to/places.jsonl
+//
+//	go run ./examples/fsqr/loader/ -data path/to/places.jsonl
 //
 // Env vars:
-//   VALKEY_ADDR      — адрес Valkey (default: localhost:6379)
-//   VALKEY_PASSWORD   — пароль Valkey
-//   NEBIUS_API_KEY    — API ключ Nebius Inference (для эмбеддингов категорий)
+//
+//	VALKEY_ADDR     — адрес Valkey (default: localhost:6379)
+//	VALKEY_PASSWORD — пароль Valkey
+//	NEBIUS_API_KEY  — API ключ Nebius Inference (для эмбеддингов категорий)
 package main
 
 import (
@@ -18,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	vecdex "github.com/kailas-cloud/vecdex/pkg/sdk"
 )
@@ -91,7 +94,7 @@ func run(dataFile string) error {
 	// Создаём и наполняем коллекцию категорий.
 	catIdx, err := vecdex.NewIndex[Category](client, "categories")
 	if err != nil {
-		return err
+		return fmt.Errorf("init categories: %w", err)
 	}
 	if err := catIdx.Ensure(ctx); err != nil {
 		return fmt.Errorf("ensure categories: %w", err)
@@ -103,7 +106,7 @@ func run(dataFile string) error {
 	// Создаём и наполняем коллекцию venues.
 	venueIdx, err := vecdex.NewIndex[Venue](client, "venues")
 	if err != nil {
-		return err
+		return fmt.Errorf("init venues: %w", err)
 	}
 	if err := venueIdx.Ensure(ctx); err != nil {
 		return fmt.Errorf("ensure venues: %w", err)
@@ -120,11 +123,12 @@ func run(dataFile string) error {
 }
 
 func readJSONL(path string) ([]fsqPlace, error) {
-	f, err := os.Open(path)
+	cleanPath := filepath.Clean(path)
+	f, err := os.Open(cleanPath)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, fmt.Errorf("open %s: %w", cleanPath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var places []fsqPlace
 	scanner := bufio.NewScanner(f)
@@ -135,7 +139,10 @@ func readJSONL(path string) ([]fsqPlace, error) {
 		}
 		places = append(places, p)
 	}
-	return places, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read JSONL: %w", err)
+	}
+	return places, nil
 }
 
 func extractCategories(places []fsqPlace) []Category {
