@@ -25,6 +25,16 @@ func (m *mockDocUpserter) Upsert(_ context.Context, _ string, _ *domdoc.Document
 	return true, m.upsertErr
 }
 
+type mockBatchUpserter struct {
+	err       error
+	callCount int
+}
+
+func (m *mockBatchUpserter) BatchUpsert(_ context.Context, _ string, _ []domdoc.Document) error {
+	m.callCount++
+	return m.err
+}
+
 type mockDocDeleter struct {
 	deleteErr error
 	callCount int
@@ -114,7 +124,7 @@ func TestUpsert_Success(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b"), makeDoc(t, "c")}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
@@ -135,7 +145,7 @@ func TestUpsert_PartialFailure(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	items := []domdoc.Document{
 		makeDoc(t, "a"), // ok — no fields
 		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // fail — unknown field
@@ -161,7 +171,7 @@ func TestUpsert_ExceedsMax(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1}}}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	items := make([]domdoc.Document, MaxBatchSize+1)
 	for i := range items {
 		items[i] = makeDoc(t, fmt.Sprintf("doc-%d", i))
@@ -181,7 +191,7 @@ func TestUpsert_CollectionNotFound(t *testing.T) {
 	colls := &mockCollReader{err: domain.ErrNotFound}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1}}}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	items := []domdoc.Document{makeDoc(t, "a")}
 	results := svc.Upsert(context.Background(), "nonexistent", items)
 
@@ -204,7 +214,7 @@ func TestUpsert_QuotaCascade(t *testing.T) {
 		failAfter: 1, // first succeeds, rest fail
 	}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b"), makeDoc(t, "c")}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
@@ -233,7 +243,7 @@ func TestUpsert_RateLimitCascade(t *testing.T) {
 		failAfter: 0, // all fail immediately
 	}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
@@ -260,7 +270,7 @@ func TestUpsert_IndividualEmbedError(t *testing.T) {
 		failAfter: 1, // first ok, second fails
 	}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b"), makeDoc(t, "c")}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
@@ -285,7 +295,7 @@ func TestUpsert_InvalidFields(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	items := []domdoc.Document{
 		makeDocWithTags(t, "a", map[string]string{"lang": "go"}),     // ok
 		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // fail
@@ -309,7 +319,7 @@ func TestDelete_Success(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	results := svc.Delete(context.Background(), "test-col", []string{"a", "b"})
 
 	if len(results) != 2 {
@@ -329,7 +339,7 @@ func TestDelete_PartialFailure(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	results := svc.Delete(context.Background(), "test-col", []string{"a", "b", "c"})
 
 	if results[0].Status() != dombatch.StatusOK {
@@ -350,7 +360,7 @@ func TestDelete_ExceedsMax(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	ids := make([]string, MaxBatchSize+1)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("doc-%d", i)
@@ -370,7 +380,7 @@ func TestDelete_CollectionNotFound(t *testing.T) {
 	colls := &mockCollReader{err: domain.ErrNotFound}
 	embed := &mockEmbedder{}
 
-	svc := New(docs, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
 	results := svc.Delete(context.Background(), "nonexistent", []string{"a"})
 
 	if results[0].Status() != dombatch.StatusError {

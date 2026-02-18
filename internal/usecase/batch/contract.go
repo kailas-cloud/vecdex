@@ -13,6 +13,11 @@ type DocumentUpserter interface {
 	Upsert(ctx context.Context, collectionName string, doc *domdoc.Document) (created bool, err error)
 }
 
+// BulkUpserter stores multiple documents in a single pipelined round-trip.
+type BulkUpserter interface {
+	BatchUpsert(ctx context.Context, collectionName string, docs []domdoc.Document) error
+}
+
 // DocumentDeleter deletes a document from storage.
 type DocumentDeleter interface {
 	Delete(ctx context.Context, collectionName, id string) error

@@ -18,6 +18,7 @@ const MaxBatchSize = 100
 // Service handles batch document operations with per-item error reporting.
 type Service struct {
 	docs         DocumentUpserter
+	batchDocs    BulkUpserter
 	del          DocumentDeleter
 	colls        CollectionReader
 	embed        Embedder
@@ -25,8 +26,15 @@ type Service struct {
 }
 
 // New creates a batch service.
-func New(docs DocumentUpserter, del DocumentDeleter, colls CollectionReader, embed Embedder) *Service {
-	return &Service{docs: docs, del: del, colls: colls, embed: embed, maxBatchSize: MaxBatchSize}
+func New(
+	docs DocumentUpserter, batchDocs BulkUpserter,
+	del DocumentDeleter, colls CollectionReader, embed Embedder,
+) *Service {
+	return &Service{
+		docs: docs, batchDocs: batchDocs,
+		del: del, colls: colls, embed: embed,
+		maxBatchSize: MaxBatchSize,
+	}
 }
 
 // WithMaxBatchSize configures the maximum batch size.
@@ -64,10 +72,63 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 		fieldTypes[f.Name()] = f.FieldType()
 	}
 
-	vectorize := s.vectorizeText
 	if col.IsGeo() {
-		vectorize = vectorizeGeo
+		return s.upsertGeoBatch(ctx, collectionName, items, fieldTypes)
 	}
+	return s.upsertTextBatch(ctx, collectionName, items, fieldTypes)
+}
+
+// upsertGeoBatch validates, vectorizes, and stores all geo docs in a single pipeline.
+func (s *Service) upsertGeoBatch(
+	ctx context.Context,
+	collectionName string,
+	items []domdoc.Document,
+	fieldTypes map[string]field.Type,
+) []dombatch.Result {
+	results := make([]dombatch.Result, len(items))
+
+	// Validate and vectorize all items; collect valid ones for batch upsert.
+	valid := make([]domdoc.Document, 0, len(items))
+	validIdx := make([]int, 0, len(items))
+
+	for i := range items {
+		if err := validateItemFields(&items[i], fieldTypes); err != nil {
+			results[i] = dombatch.NewError(items[i].ID(), err)
+			continue
+		}
+		if err := vectorizeGeo(&items[i]); err != nil {
+			results[i] = dombatch.NewError(items[i].ID(), err)
+			continue
+		}
+		valid = append(valid, items[i])
+		validIdx = append(validIdx, i)
+	}
+
+	if len(valid) == 0 {
+		return results
+	}
+
+	if err := s.batchDocs.BatchUpsert(ctx, collectionName, valid); err != nil {
+		for _, i := range validIdx {
+			results[i] = dombatch.NewError(items[i].ID(), fmt.Errorf("batch upsert: %w", err))
+		}
+		return results
+	}
+
+	for _, i := range validIdx {
+		results[i] = dombatch.NewOK(items[i].ID())
+	}
+	return results
+}
+
+// upsertTextBatch processes text documents one-by-one (embeddings are per-doc).
+func (s *Service) upsertTextBatch(
+	ctx context.Context,
+	collectionName string,
+	items []domdoc.Document,
+	fieldTypes map[string]field.Type,
+) []dombatch.Result {
+	results := make([]dombatch.Result, len(items))
 
 	for i, item := range items {
 		if err := validateItemFields(&item, fieldTypes); err != nil {
@@ -75,7 +136,7 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 			continue
 		}
 
-		cascade, err := vectorize(ctx, &item)
+		cascade, err := s.vectorizeText(ctx, &item)
 		if err != nil {
 			if cascade {
 				results[i] = dombatch.NewError(item.ID(), err)
@@ -116,23 +177,23 @@ func (s *Service) vectorizeText(
 }
 
 // vectorizeGeo sets ECEF vector from latitude/longitude numerics.
-func vectorizeGeo(_ context.Context, item *domdoc.Document) (bool, error) {
+func vectorizeGeo(item *domdoc.Document) error {
 	lat, hasLat := item.Numerics()["latitude"]
 	lon, hasLon := item.Numerics()["longitude"]
 	if !hasLat || !hasLon {
-		return false, fmt.Errorf(
+		return fmt.Errorf(
 			"geo document requires latitude and longitude numerics: %w",
 			domain.ErrInvalidSchema,
 		)
 	}
 	if !geo.ValidateCoordinates(lat, lon) {
-		return false, fmt.Errorf(
+		return fmt.Errorf(
 			"invalid coordinates: lat=%f lon=%f: %w",
 			lat, lon, domain.ErrGeoQueryInvalid,
 		)
 	}
 	item.SetVector(geo.ToVector(lat, lon))
-	return false, nil
+	return nil
 }
 
 // Delete removes documents by ID in batch.
