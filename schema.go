@@ -144,7 +144,7 @@ func (m *schemaMeta) collectionOptions() []CollectionOption {
 }
 
 // toDocument converts a typed struct to Document using schema metadata.
-func (m *schemaMeta) toDocument(item any) (Document, error) {
+func (m *schemaMeta) toDocument(item any) Document {
 	v := reflect.ValueOf(item)
 	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
@@ -170,7 +170,7 @@ func (m *schemaMeta) toDocument(item any) (Document, error) {
 	return Document{
 		ID: id, Content: content,
 		Tags: tags, Numerics: numerics,
-	}, nil
+	}
 }
 
 // fromDocument converts a Document back to a typed struct using schema metadata.

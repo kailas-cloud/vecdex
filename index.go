@@ -34,10 +34,7 @@ func (idx *TypedIndex[T]) Ensure(ctx context.Context) error {
 
 // Upsert creates or updates a single item. Returns true if created.
 func (idx *TypedIndex[T]) Upsert(ctx context.Context, item T) (bool, error) {
-	doc, err := idx.meta.toDocument(item)
-	if err != nil {
-		return false, fmt.Errorf("upsert: %w", err)
-	}
+	doc := idx.meta.toDocument(item)
 	return idx.client.Documents(idx.name).Upsert(ctx, doc)
 }
 
@@ -47,11 +44,7 @@ func (idx *TypedIndex[T]) UpsertBatch(
 ) ([]BatchResult, error) {
 	docs := make([]Document, len(items))
 	for i, item := range items {
-		var err error
-		docs[i], err = idx.meta.toDocument(item)
-		if err != nil {
-			return nil, fmt.Errorf("item %d: %w", i, err)
-		}
+		docs[i] = idx.meta.toDocument(item)
 	}
 	return idx.client.Documents(idx.name).BatchUpsert(ctx, docs)
 }
