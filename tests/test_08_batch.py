@@ -237,12 +237,12 @@ class TestBatchUpsertLimits:
 class TestBatchUpsertBoundaryP1:
     """P1 batch boundary edge cases."""
 
-    def test_batch_upsert_101_docs_returns_400(self, client, collection_factory):
-        """7.1.6: 101 docs → 400."""
+    def test_batch_upsert_over_limit_returns_400(self, client, collection_factory):
+        """7.1.6: docs exceeding max_batch_size (5000) → 400."""
         coll = collection_factory()
         docs = [
             {"id": f"over-{i}", "content": f"doc {i}"}
-            for i in range(101)
+            for i in range(5001)
         ]
         resp = client.post(
             f"/collections/{coll['name']}/documents/batch-upsert",
@@ -283,10 +283,10 @@ class TestBatchDeleteBoundaryP1:
         )
         assert resp.status_code == 200
 
-    def test_batch_delete_101_ids_returns_400(self, client, collection_factory):
-        """7.2.4: 101 IDs → 400."""
+    def test_batch_delete_over_limit_returns_400(self, client, collection_factory):
+        """7.2.4: IDs exceeding max_batch_size (5000) → 400."""
         coll = collection_factory()
-        ids = [f"over-{i}" for i in range(101)]
+        ids = [f"over-{i}" for i in range(5001)]
         resp = client.post(
             f"/collections/{coll['name']}/documents/batch-delete",
             json={"ids": ids},
