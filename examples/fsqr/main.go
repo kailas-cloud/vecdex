@@ -26,8 +26,8 @@ type Venue struct {
 	ID    string  `vecdex:"id,id"`
 	Name  string  `vecdex:"name,tag"`
 	CatID string  `vecdex:"category_id,tag"`
-	Lat   float64 `vecdex:"lat,geo_lat"`
-	Lon   float64 `vecdex:"lon,geo_lon"`
+	Lat   float64 `vecdex:"latitude,geo_lat"`
+	Lon   float64 `vecdex:"longitude,geo_lon"`
 }
 
 // Category — категория FSQ (текстовая коллекция с эмбеддингами).
@@ -230,8 +230,8 @@ func buildResponse(
 			ID:       r.ID,
 			Name:     r.Tags["name"],
 			CatID:    r.Tags["category_id"],
-			Lat:      r.Numerics["lat"],
-			Lon:      r.Numerics["lon"],
+			Lat:      r.Numerics["latitude"],
+			Lon:      r.Numerics["longitude"],
 			Distance: r.Score, // гео-поиск: score = расстояние в метрах
 		}
 	}
