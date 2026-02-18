@@ -9,12 +9,11 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
-	collectionuc "github.com/kailas-cloud/vecdex/internal/usecase/collection"
 )
 
 // CollectionService manages collections.
 type CollectionService struct {
-	svc *collectionuc.Service
+	svc collectionUseCase
 }
 
 // Create creates a new collection.

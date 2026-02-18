@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/kailas-cloud/vecdex"
+	vecdex "github.com/kailas-cloud/vecdex/pkg/sdk"
 )
 
 // Place — типизированная модель для гео-индекса.

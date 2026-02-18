@@ -8,13 +8,12 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain/search/mode"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/request"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/result"
-	searchuc "github.com/kailas-cloud/vecdex/internal/usecase/search"
 )
 
 // SearchService executes search queries against a single collection.
 type SearchService struct {
 	collection string
-	svc        *searchuc.Service
+	svc        searchUseCase
 }
 
 // SearchOptions configures a search query.

@@ -10,6 +10,13 @@ import (
 	dbRedis "github.com/kailas-cloud/vecdex/internal/db/redis"
 	dbValkey "github.com/kailas-cloud/vecdex/internal/db/valkey"
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
+	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
+	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
+	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
+	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
+	"github.com/kailas-cloud/vecdex/internal/domain/search/request"
+	"github.com/kailas-cloud/vecdex/internal/domain/search/result"
 	collectionrepo "github.com/kailas-cloud/vecdex/internal/repository/collection"
 	documentrepo "github.com/kailas-cloud/vecdex/internal/repository/document"
 	searchrepo "github.com/kailas-cloud/vecdex/internal/repository/search"
@@ -21,13 +28,39 @@ import (
 
 const defaultReadinessTimeout = 10 * time.Second
 
+// Внутренние интерфейсы для подмены в тестах.
+type collectionUseCase interface {
+	Create(ctx context.Context, name string, colType domcol.Type, fields []field.Field) (domcol.Collection, error)
+	Get(ctx context.Context, name string) (domcol.Collection, error)
+	List(ctx context.Context) ([]domcol.Collection, error)
+	Delete(ctx context.Context, name string) error
+}
+
+type documentUseCase interface {
+	Upsert(ctx context.Context, col string, doc *domdoc.Document) (bool, error)
+	Get(ctx context.Context, col, id string) (domdoc.Document, error)
+	List(ctx context.Context, col, cursor string, limit int) ([]domdoc.Document, string, error)
+	Delete(ctx context.Context, col, id string) error
+	Patch(ctx context.Context, col, id string, p patch.Patch) (domdoc.Document, error)
+	Count(ctx context.Context, col string) (int, error)
+}
+
+type batchUseCase interface {
+	Upsert(ctx context.Context, col string, docs []domdoc.Document) []dombatch.Result
+	Delete(ctx context.Context, col string, ids []string) []dombatch.Result
+}
+
+type searchUseCase interface {
+	Search(ctx context.Context, col string, req *request.Request) ([]result.Result, error)
+}
+
 // Client is the vecdex SDK entry point.
 type Client struct {
 	store     db.Store
-	collSvc   *collectionuc.Service
-	docSvc    *documentuc.Service
-	searchSvc *searchuc.Service
-	batchSvc  *batchuc.Service
+	collSvc   collectionUseCase
+	docSvc    documentUseCase
+	searchSvc searchUseCase
+	batchSvc  batchUseCase
 }
 
 // New creates a vecdex Client and connects to the database.

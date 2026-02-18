@@ -7,15 +7,13 @@ import (
 	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
-	batchuc "github.com/kailas-cloud/vecdex/internal/usecase/batch"
-	documentuc "github.com/kailas-cloud/vecdex/internal/usecase/document"
 )
 
 // DocumentService manages documents within a single collection.
 type DocumentService struct {
 	collection string
-	docSvc     *documentuc.Service
-	batchSvc   *batchuc.Service
+	docSvc     documentUseCase
+	batchSvc   batchUseCase
 }
 
 // Upsert creates or updates a document. Returns true if created.
