@@ -1,6 +1,7 @@
 exclude_paths:
   - "tests/**"
   - "cmd/**"
+  - "examples/**"
   - "internal/config/**"
   - "internal/logger/**"
   - "internal/transport/generated/**"
