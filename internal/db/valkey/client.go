@@ -15,10 +15,11 @@ var _ db.Store = (*Store)(nil)
 
 // Config holds connection parameters for a Valkey store.
 type Config struct {
-	Addrs    []string
-	Username string
-	Password string
-	DB       int
+	Addrs      []string
+	Username   string
+	Password   string
+	DB         int
+	Standalone bool // true для standalone Valkey (без CLUSTER topology discovery)
 }
 
 // Store implements db.Store via rueidis for Valkey (valkey-search).
@@ -33,12 +34,13 @@ func NewStore(cfg Config) (*Store, error) {
 	}
 
 	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  cfg.Addrs,
-		Username:     cfg.Username,
-		Password:     cfg.Password,
-		SelectDB:     cfg.DB,
-		DisableCache: true,
-		AlwaysRESP2:  true, // FT.SEARCH result parsing expects RESP2 array format
+		InitAddress:       cfg.Addrs,
+		Username:          cfg.Username,
+		Password:          cfg.Password,
+		SelectDB:          cfg.DB,
+		DisableCache:      true,
+		AlwaysRESP2:       true,           // FT.SEARCH result parsing expects RESP2 array format
+		ForceSingleClient: cfg.Standalone, // standalone Valkey — не пробуем CLUSTER topology
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client: %w", err)

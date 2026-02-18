@@ -94,8 +94,9 @@ func createStore(cfg *clientConfig) (db.Store, error) {
 	switch cfg.driver {
 	case "valkey":
 		s, err := dbValkey.NewStore(dbValkey.Config{
-			Addrs:    cfg.addrs,
-			Password: cfg.password,
+			Addrs:      cfg.addrs,
+			Password:   cfg.password,
+			Standalone: cfg.standalone,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("vecdex: create valkey store: %w", err)

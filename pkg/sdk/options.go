@@ -4,9 +4,10 @@ package vecdex
 type Option func(*clientConfig)
 
 type clientConfig struct {
-	driver   string // "valkey" or "redis"
-	addrs    []string
-	password string
+	driver     string // "valkey" or "redis"
+	addrs      []string
+	password   string
+	standalone bool
 
 	embedder Embedder
 
@@ -31,6 +32,14 @@ func WithRedis(addr, password string) Option {
 		c.driver = "redis"
 		c.addrs = []string{addr}
 		c.password = password
+	}
+}
+
+// WithStandalone disables cluster topology discovery.
+// Use for standalone Valkey/Redis instances (not managed by cluster operator).
+func WithStandalone() Option {
+	return func(c *clientConfig) {
+		c.standalone = true
 	}
 }
 
