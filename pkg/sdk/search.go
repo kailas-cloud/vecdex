@@ -150,8 +150,8 @@ func fromSearchResults(results []result.Result) []SearchResult {
 			ID:       r.ID(),
 			Score:    r.Score(),
 			Content:  r.Content(),
-			Tags:     r.Tags(),
-			Numerics: r.Numerics(),
+			Tags:     cloneTags(r.Tags()),
+			Numerics: cloneNumerics(r.Numerics()),
 			Vector:   r.Vector(),
 		}
 	}

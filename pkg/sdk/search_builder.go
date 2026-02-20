@@ -96,7 +96,7 @@ func (b *SearchBuilder[T]) doGeo(ctx context.Context) ([]Hit[T], error) {
 	if err != nil {
 		return nil, fmt.Errorf("geo search: %w", err)
 	}
-	return b.toHits(resp.Results, true), nil
+	return b.toHits(resp.Results, true)
 }
 
 func (b *SearchBuilder[T]) doText(ctx context.Context) ([]Hit[T], error) {
@@ -112,10 +112,12 @@ func (b *SearchBuilder[T]) doText(ctx context.Context) ([]Hit[T], error) {
 	if err != nil {
 		return nil, fmt.Errorf("text search: %w", err)
 	}
-	return b.toHits(resp.Results, false), nil
+	return b.toHits(resp.Results, false)
 }
 
-func (b *SearchBuilder[T]) toHits(results []SearchResult, isGeo bool) []Hit[T] {
+func (b *SearchBuilder[T]) toHits(
+	results []SearchResult, isGeo bool,
+) ([]Hit[T], error) {
 	hits := make([]Hit[T], len(results))
 	for i, r := range results {
 		doc := Document{
@@ -126,7 +128,9 @@ func (b *SearchBuilder[T]) toHits(results []SearchResult, isGeo bool) []Hit[T] {
 		}
 		item, ok := b.idx.meta.fromDocument(doc).(T)
 		if !ok {
-			continue
+			return nil, fmt.Errorf(
+				"result %d: type assertion to %T failed", i, *new(T),
+			)
 		}
 		hits[i] = Hit[T]{
 			Item:  item,
@@ -136,5 +140,5 @@ func (b *SearchBuilder[T]) toHits(results []SearchResult, isGeo bool) []Hit[T] {
 			hits[i].Distance = r.Score
 		}
 	}
-	return hits
+	return hits, nil
 }

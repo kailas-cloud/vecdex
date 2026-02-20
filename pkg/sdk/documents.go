@@ -122,9 +122,31 @@ func fromInternalDocument(d domdoc.Document) Document {
 		ID:       d.ID(),
 		Content:  d.Content(),
 		Revision: d.Revision(),
-		Tags:     d.Tags(),
-		Numerics: d.Numerics(),
+		Tags:     cloneTags(d.Tags()),
+		Numerics: cloneNumerics(d.Numerics()),
 	}
+}
+
+func cloneTags(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	c := make(map[string]string, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
+func cloneNumerics(m map[string]float64) map[string]float64 {
+	if m == nil {
+		return nil
+	}
+	c := make(map[string]float64, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
 }
 
 func toInternalPatch(p DocumentPatch) (patch.Patch, error) {
