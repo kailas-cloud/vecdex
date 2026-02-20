@@ -18,11 +18,11 @@ type Category struct {
 
 // Venue — гео-коллекция, без embeddings.
 type Venue struct {
-	ID   string  `vecdex:"id,id"`
-	Name string  `vecdex:"name,tag"`
-	Cat  int     `vecdex:"cat,numeric"`
-	Lat  float64 `vecdex:"lat,geo_lat"`
-	Lon  float64 `vecdex:"lon,geo_lon"`
+	ID        string  `vecdex:"id,id"`
+	Name      string  `vecdex:"name,tag"`
+	Cat       int     `vecdex:"cat,numeric"`
+	Latitude  float64 `vecdex:"latitude,geo_lat"`
+	Longitude float64 `vecdex:"longitude,geo_lon"`
 }
 
 // fsqPlaceRow — raw row из FSQ OS Places parquet.
@@ -38,12 +38,6 @@ type fsqPlaceRow struct {
 	FSQCategoryIDs   []string `parquet:"fsq_category_ids,list"`
 	FSQCategoryLabel []string `parquet:"fsq_category_labels,list"`
 	DateClosed       *string  `parquet:"date_closed"`
-}
-
-// fsqCategoryRow — row из categories parquet.
-type fsqCategoryRow struct {
-	ID    string  `parquet:"id"`
-	Label *string `parquet:"label"`
 }
 
 // categoryMap строит и хранит маппинг FSQ UUID → sequential int.
@@ -122,11 +116,11 @@ func toVenue(row *fsqPlaceRow, seq int, cats *categoryMap) (Venue, bool) {
 		catID = cats.Lookup(row.FSQCategoryIDs[0])
 	}
 	return Venue{
-		ID:   itoa(seq),
-		Name: row.Name,
-		Cat:  catID,
-		Lat:  *row.Latitude,
-		Lon:  *row.Longitude,
+		ID:        itoa(seq),
+		Name:      row.Name,
+		Cat:       catID,
+		Latitude:  *row.Latitude,
+		Longitude: *row.Longitude,
 	}, true
 }
 
