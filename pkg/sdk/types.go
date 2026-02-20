@@ -35,6 +35,7 @@ type CollectionInfo struct {
 	Type      CollectionType
 	Fields    []FieldInfo
 	VectorDim int
+	Revision  int
 	CreatedAt int64
 }
 
@@ -48,6 +49,7 @@ type FieldInfo struct {
 type Document struct {
 	ID       string
 	Content  string
+	Revision int
 	Tags     map[string]string
 	Numerics map[string]float64
 }

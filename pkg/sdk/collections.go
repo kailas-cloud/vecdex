@@ -104,6 +104,7 @@ func fromInternalCollection(col domcol.Collection) CollectionInfo {
 		Type:      CollectionType(col.Type()),
 		Fields:    fields,
 		VectorDim: col.VectorDim(),
+		Revision:  col.Revision(),
 		CreatedAt: col.CreatedAt(),
 	}
 }

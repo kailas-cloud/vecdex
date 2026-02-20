@@ -121,6 +121,7 @@ func fromInternalDocument(d domdoc.Document) Document {
 	return Document{
 		ID:       d.ID(),
 		Content:  d.Content(),
+		Revision: d.Revision(),
 		Tags:     d.Tags(),
 		Numerics: d.Numerics(),
 	}
