@@ -97,11 +97,11 @@ func run() error {
 	}
 	defer client.Close()
 
-	catIdx, err := vecdex.NewIndex[Category](client, "categories")
+	catIdx, err := vecdex.NewIndex[Category](client, "fsqr-categories")
 	if err != nil {
 		return fmt.Errorf("init categories index: %w", err)
 	}
-	venueIdx, err := vecdex.NewIndex[Venue](client, "venues")
+	venueIdx, err := vecdex.NewIndex[Venue](client, "fsqr-venues")
 	if err != nil {
 		return fmt.Errorf("init venues index: %w", err)
 	}
@@ -205,7 +205,7 @@ func (s *server) searchVenues(
 		Filters: vecdex.FilterExpression{Should: filters},
 	}
 
-	resp, err := s.client.Search("venues").Geo(ctx, req.Lat, req.Lon, req.K, &opts)
+	resp, err := s.client.Search("fsqr-venues").Geo(ctx, req.Lat, req.Lon, req.K, &opts)
 	if err != nil {
 		return nil, fmt.Errorf("geo search: %w", err)
 	}
