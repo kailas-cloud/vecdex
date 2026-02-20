@@ -74,6 +74,47 @@ jobs:
           echo "--- Review output ---"
           cat /tmp/review.json
 
+      - name: Resolve outdated review threads
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Find unresolved review threads from our bot and resolve them
+          QUERY='query($owner:String!,$repo:String!,$pr:Int!) {
+            repository(owner:$owner,name:$repo) {
+              pullRequest(number:$pr) {
+                reviewThreads(first:100) {
+                  nodes {
+                    id
+                    isResolved
+                    comments(first:1) {
+                      nodes { author { login } }
+                    }
+                  }
+                }
+              }
+            }
+          }'
+
+          THREADS=$(gh api graphql \
+            -f query="$QUERY" \
+            -f owner="${GITHUB_REPOSITORY_OWNER}" \
+            -f repo="${GITHUB_REPOSITORY#*/}" \
+            -F pr="$PR_NUMBER" \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[] |
+              select(.isResolved == false) |
+              select(.comments.nodes[0].author.login == "maomao-agent[bot]") |
+              .id' 2>/dev/null || true)
+
+          for THREAD_ID in $THREADS; do
+            echo "Resolving thread: $THREAD_ID"
+            gh api graphql \
+              -f query='mutation($id:ID!) { resolveReviewThread(input:{threadId:$id}) { thread { id } } }' \
+              -f id="$THREAD_ID" > /dev/null 2>&1 || true
+          done
+
+          RESOLVED=$(echo "$THREADS" | grep -c . || echo 0)
+          echo "Resolved $RESOLVED outdated thread(s)"
+
       - name: Post review and set quality gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -138,7 +179,7 @@ jobs:
             (if .suggestion then "\n  > " + .suggestion else "" end)
           ] | join("\n")' /tmp/parsed-review.json)
 
-          BODY=$(printf '## Claude Code Review\n\n%s' "$SUMMARY")
+          BODY=$(printf '## Code Review\n\n%s' "$SUMMARY")
           if [ -n "$BODY_ISSUES" ]; then
             BODY=$(printf '%s\n\n### General Issues\n\n%s' "$BODY" "$BODY_ISSUES")
           fi

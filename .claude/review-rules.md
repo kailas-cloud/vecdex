@@ -57,6 +57,7 @@ Respond with ONLY valid JSON, no markdown fences, no explanation outside JSON:
 ```
 
 Rules:
+
 - verdict is "request_changes" if ANY issue has severity "error"
 - verdict is "approve" if all issues are "warning" or there are no issues
 - line is optional (omit if not applicable to a specific line)
