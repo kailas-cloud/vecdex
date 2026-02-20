@@ -142,29 +142,29 @@ func TestToInternalPatch_Empty(t *testing.T) {
 	}
 }
 
-func TestFromBatchResults(t *testing.T) {
-	results := fromBatchResults(nil)
-	if len(results) != 0 {
-		t.Errorf("len = %d, want 0", len(results))
+func TestToBatchResponse_Nil(t *testing.T) {
+	resp := toBatchResponse(nil)
+	if len(resp.Results) != 0 {
+		t.Errorf("len = %d, want 0", len(resp.Results))
 	}
 }
 
 func TestCollectionOptionFunctions(t *testing.T) {
 	cfg := &collectionConfig{}
-	Geo()(cfg)
+	Geo().applyCollection(cfg)
 	if cfg.colType != CollectionTypeGeo {
 		t.Errorf("Geo() → colType = %q, want geo", cfg.colType)
 	}
 
 	cfg2 := &collectionConfig{}
-	Text()(cfg2)
+	Text().applyCollection(cfg2)
 	if cfg2.colType != CollectionTypeText {
 		t.Errorf("Text() → colType = %q, want text", cfg2.colType)
 	}
 
 	cfg3 := &collectionConfig{}
-	WithField("country", FieldTag)(cfg3)
-	WithField("pop", FieldNumeric)(cfg3)
+	WithField("country", FieldTag).applyCollection(cfg3)
+	WithField("pop", FieldNumeric).applyCollection(cfg3)
 	if len(cfg3.fields) != 2 {
 		t.Fatalf("len(fields) = %d, want 2", len(cfg3.fields))
 	}
@@ -277,22 +277,95 @@ func TestFromSearchResults_WithData(t *testing.T) {
 	}
 }
 
-func TestFromBatchResults_WithData(t *testing.T) {
+func TestFromSearchResults_WithVector(t *testing.T) {
+	vec := []float32{0.1, 0.2, 0.3}
+	r := result.New("doc-1", 0.9, "hi", nil, nil, vec)
+	out := fromSearchResults([]result.Result{r})
+	if len(out) != 1 {
+		t.Fatalf("len = %d, want 1", len(out))
+	}
+	if len(out[0].Vector) != 3 {
+		t.Fatalf("Vector len = %d, want 3", len(out[0].Vector))
+	}
+	if out[0].Vector[0] != 0.1 {
+		t.Errorf("Vector[0] = %f, want 0.1", out[0].Vector[0])
+	}
+}
+
+func TestFromSearchResults_MapCloning(t *testing.T) {
+	tags := map[string]string{"k": "v"}
+	nums := map[string]float64{"n": 1.0}
+	r := result.New("doc-1", 0.9, "hi", tags, nums, nil)
+	out := fromSearchResults([]result.Result{r})
+
+	// Mutate returned maps — original should be unaffected.
+	out[0].Tags["k"] = "mutated"
+	out[0].Numerics["n"] = 999
+
+	if r.Tags()["k"] == "mutated" {
+		t.Error("mutating Tags on result affected domain object")
+	}
+	if r.Numerics()["n"] == 999 {
+		t.Error("mutating Numerics on result affected domain object")
+	}
+}
+
+func TestFromInternalDocument_MapCloning(t *testing.T) {
+	d, _ := toInternalDocument(Document{
+		ID: "x", Content: "hi",
+		Tags:     map[string]string{"k": "v"},
+		Numerics: map[string]float64{"n": 1.5},
+	})
+
+	out := fromInternalDocument(d)
+	out.Tags["k"] = "mutated"
+	out.Numerics["n"] = 999
+
+	if d.Tags()["k"] == "mutated" {
+		t.Error("mutating Tags affected domain document")
+	}
+	if d.Numerics()["n"] == 999 {
+		t.Error("mutating Numerics affected domain document")
+	}
+}
+
+func TestFromInternalCollection_Revision(t *testing.T) {
+	col := domcol.Reconstruct(
+		"test", domcol.TypeText, nil, 1024, 1000, 5,
+	)
+	info := fromInternalCollection(col)
+	if info.Revision != 5 {
+		t.Errorf("Revision = %d, want 5", info.Revision)
+	}
+}
+
+func TestFromInternalDocument_Revision(t *testing.T) {
+	d, _ := toInternalDocument(Document{ID: "doc-1", Content: "hi"})
+	out := fromInternalDocument(d)
+	if out.Revision != 1 {
+		t.Errorf("Revision = %d, want 1 (default from New)", out.Revision)
+	}
+}
+
+func TestToBatchResponse_WithData(t *testing.T) {
 	ok := dombatch.NewOK("doc-1")
 	fail := dombatch.NewError("doc-2", errors.New("conflict"))
 
-	out := fromBatchResults([]dombatch.Result{ok, fail})
-	if len(out) != 2 {
-		t.Fatalf("len = %d, want 2", len(out))
+	resp := toBatchResponse([]dombatch.Result{ok, fail})
+	if len(resp.Results) != 2 {
+		t.Fatalf("len = %d, want 2", len(resp.Results))
 	}
-	if out[0].ID != "doc-1" || !out[0].OK {
-		t.Errorf("result[0] = %+v, want doc-1/OK", out[0])
+	if resp.Results[0].ID != "doc-1" || !resp.Results[0].OK {
+		t.Errorf("result[0] = %+v, want doc-1/OK", resp.Results[0])
 	}
-	if out[1].ID != "doc-2" || out[1].OK {
-		t.Errorf("result[1] = %+v, want doc-2/error", out[1])
+	if resp.Results[1].ID != "doc-2" || resp.Results[1].OK {
+		t.Errorf("result[1] = %+v, want doc-2/error", resp.Results[1])
 	}
-	if out[1].Err == nil {
+	if resp.Results[1].Err == nil {
 		t.Error("expected non-nil error for failed result")
+	}
+	if resp.Succeeded != 1 || resp.Failed != 1 {
+		t.Errorf("succeeded=%d failed=%d, want 1/1", resp.Succeeded, resp.Failed)
 	}
 }
 

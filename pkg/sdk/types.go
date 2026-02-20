@@ -35,6 +35,7 @@ type CollectionInfo struct {
 	Type      CollectionType
 	Fields    []FieldInfo
 	VectorDim int
+	Revision  int
 	CreatedAt int64
 }
 
@@ -48,6 +49,7 @@ type FieldInfo struct {
 type Document struct {
 	ID       string
 	Content  string
+	Revision int
 	Tags     map[string]string
 	Numerics map[string]float64
 }
@@ -67,6 +69,14 @@ type SearchResult struct {
 	Content  string
 	Tags     map[string]string
 	Numerics map[string]float64
+	Vector   []float32 // nil when not requested (IncludeVectors=false)
+}
+
+// SearchResponse wraps search results with metadata.
+type SearchResponse struct {
+	Results []SearchResult
+	Total   int // candidates passing min_score in top_k window (before limit)
+	Limit   int
 }
 
 // BatchResult is the outcome of one item in a batch operation.
@@ -76,10 +86,24 @@ type BatchResult struct {
 	Err error
 }
 
+// BatchResponse wraps batch results with summary counts.
+type BatchResponse struct {
+	Results   []BatchResult
+	Succeeded int
+	Failed    int
+}
+
 // ListResult is a paginated list of documents.
 type ListResult struct {
 	Documents  []Document
 	NextCursor string
+}
+
+// CollectionListResult is a paginated list of collections.
+type CollectionListResult struct {
+	Collections []CollectionInfo
+	NextCursor  string
+	HasMore     bool
 }
 
 // FilterExpression is a set of must/should/must_not filter conditions.

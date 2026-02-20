@@ -41,7 +41,7 @@ func (idx *TypedIndex[T]) Upsert(ctx context.Context, item T) (bool, error) {
 // UpsertBatch creates or updates items in batch.
 func (idx *TypedIndex[T]) UpsertBatch(
 	ctx context.Context, items []T,
-) ([]BatchResult, error) {
+) (BatchResponse, error) {
 	docs := make([]Document, len(items))
 	for i, item := range items {
 		docs[i] = idx.meta.toDocument(item)

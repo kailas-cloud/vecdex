@@ -29,27 +29,29 @@ func New(repo Repository, colls CollectionReader, embed Embedder) *Service {
 }
 
 // Search executes a document search across semantic, keyword, hybrid, or geo modes.
+// Returns results (post-filtered and limited), total candidates (post min_score, pre limit), and error.
 func (s *Service) Search(
 	ctx context.Context, collectionName string, req *request.Request,
-) ([]result.Result, error) {
+) ([]result.Result, int, error) {
 	col, err := s.colls.Get(ctx, collectionName)
 	if err != nil {
-		return nil, fmt.Errorf("get collection: %w", err)
+		return nil, 0, fmt.Errorf("get collection: %w", err)
 	}
 
 	if err = validateFiltersAgainstSchema(req.Filters(), col); err != nil {
-		return nil, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
+		return nil, 0, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
 	}
 	if err := validateSearchMode(req.Mode(), col.IsGeo()); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	results, err := s.dispatch(ctx, collectionName, req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return applyPostFilters(results, req.MinScore(), req.Limit(), req.Mode()), nil
+	filtered, total := applyPostFilters(results, req.MinScore(), req.Limit(), req.Mode())
+	return filtered, total, nil
 }
 
 // validateSearchMode ensures the search mode matches the collection type.
@@ -82,16 +84,20 @@ func (s *Service) dispatch(
 }
 
 // applyPostFilters applies min_score threshold and limit to search results.
+// Returns filtered results and total count (after min_score, before limit).
 // For geo mode, min_score is a max-distance threshold (lower = closer),
 // so we keep results with score <= minScore. For other modes, higher is better.
-func applyPostFilters(results []result.Result, minScore float64, limit int, m mode.Mode) []result.Result {
+func applyPostFilters(
+	results []result.Result, minScore float64, limit int, m mode.Mode,
+) (filtered []result.Result, total int) {
 	if minScore > 0 {
 		results = filterByScore(results, minScore, m)
 	}
+	total = len(results)
 	if len(results) > limit {
 		results = results[:limit]
 	}
-	return results
+	return results, total
 }
 
 func filterByScore(results []result.Result, minScore float64, m mode.Mode) []result.Result {

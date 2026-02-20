@@ -113,7 +113,10 @@ func TestSearchBuilder_ToHits_Geo(t *testing.T) {
 		},
 	}
 
-	hits := b.toHits(results, true)
+	hits, err := b.toHits(results, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(hits) != 1 {
 		t.Fatalf("len = %d, want 1", len(hits))
 	}
@@ -150,7 +153,10 @@ func TestSearchBuilder_ToHits_Text(t *testing.T) {
 		},
 	}
 
-	hits := b.toHits(results, false)
+	hits, err := b.toHits(results, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(hits) != 1 {
 		t.Fatalf("len = %d, want 1", len(hits))
 	}
@@ -174,7 +180,10 @@ func TestSearchBuilder_ToHits_Empty(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	hits := idx.Search().toHits(nil, false)
+	hits, err := idx.Search().toHits(nil, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(hits) != 0 {
 		t.Errorf("len = %d, want 0", len(hits))
 	}

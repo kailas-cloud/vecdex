@@ -1,0 +1,41 @@
+package vecdex
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	healthuc "github.com/kailas-cloud/vecdex/internal/usecase/health"
+)
+
+// HealthStatus represents the aggregated system health.
+type HealthStatus struct {
+	Status string            // "ok", "degraded", "error"
+	Checks map[string]string // component → "ok"/"error"
+}
+
+// Health checks the health of all system components.
+// Observer records status "error" when any component is not healthy.
+func (c *Client) Health(ctx context.Context) HealthStatus {
+	start := time.Now()
+	var obsErr error
+	defer func() { c.obs.observe("health", start, obsErr) }()
+
+	report := c.healthSvc.Check(ctx)
+	if report.Status != healthuc.Healthy {
+		obsErr = fmt.Errorf("health: %s", report.Status)
+	}
+	checks := make(map[string]string, len(report.Checks))
+	for k, v := range report.Checks {
+		checks[k] = string(v)
+	}
+	return HealthStatus{
+		Status: string(report.Status),
+		Checks: checks,
+	}
+}
+
+// healthUseCase is the internal interface for health checks.
+type healthUseCase interface {
+	Check(ctx context.Context) healthuc.Report
+}

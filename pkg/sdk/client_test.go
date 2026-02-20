@@ -3,11 +3,15 @@ package vecdex
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestNew_NoAddress(t *testing.T) {
-	_, err := New()
+	_, err := New(context.Background())
 	if err == nil {
 		t.Fatal("expected error when no address provided")
 	}
@@ -75,7 +79,7 @@ func TestEmbedderAdapter_Error(t *testing.T) {
 func TestClientOptions(t *testing.T) {
 	cfg := &clientConfig{}
 
-	WithValkey("localhost:6379", "secret")(cfg)
+	WithValkey("localhost:6379", "secret").apply(cfg)
 	if cfg.driver != "valkey" {
 		t.Errorf("driver = %q, want valkey", cfg.driver)
 	}
@@ -87,25 +91,39 @@ func TestClientOptions(t *testing.T) {
 	}
 
 	cfg2 := &clientConfig{}
-	WithRedis("localhost:6380", "pass")(cfg2)
+	WithRedis("localhost:6380", "pass").apply(cfg2)
 	if cfg2.driver != "redis" {
 		t.Errorf("driver = %q, want redis", cfg2.driver)
 	}
 
 	cfg3 := &clientConfig{}
-	WithVectorDimensions(768)(cfg3)
+	WithVectorDimensions(768).apply(cfg3)
 	if cfg3.vectorDimensions != 768 {
 		t.Errorf("vectorDimensions = %d, want 768", cfg3.vectorDimensions)
 	}
 
-	WithHNSW(16, 200)(cfg3)
+	WithHNSW(16, 200).apply(cfg3)
 	if cfg3.hnswM != 16 || cfg3.hnswEFConstruct != 200 {
 		t.Errorf("hnsw = (%d, %d), want (16, 200)", cfg3.hnswM, cfg3.hnswEFConstruct)
 	}
 
-	WithMaxBatchSize(5000)(cfg3)
+	WithMaxBatchSize(5000).apply(cfg3)
 	if cfg3.maxBatchSize != 5000 {
 		t.Errorf("maxBatchSize = %d, want 5000", cfg3.maxBatchSize)
+	}
+
+	cfg4 := &clientConfig{}
+	logger := slog.Default()
+	WithLogger(logger).apply(cfg4)
+	if cfg4.logger != logger {
+		t.Error("expected logger to be set")
+	}
+
+	cfg5 := &clientConfig{}
+	reg := prometheus.NewRegistry()
+	WithPrometheus(reg).apply(cfg5)
+	if cfg5.metricsReg != reg {
+		t.Error("expected metricsReg to be set")
 	}
 }
 
@@ -122,10 +140,71 @@ func TestWithEmbedder(t *testing.T) {
 		},
 	}
 	cfg := &clientConfig{}
-	WithEmbedder(mock)(cfg)
+	WithEmbedder(mock).apply(cfg)
 	if cfg.embedder == nil {
 		t.Error("expected non-nil embedder")
 	}
+}
+
+func TestObserver_NilSafe(t *testing.T) {
+	// nil observer should not panic.
+	var obs *observer
+	obs.observe("test", time.Now(), nil)
+	obs.observe("test", time.Now(), errors.New("err"))
+}
+
+func TestObserver_WithPrometheus(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	obs, err := newObserver(nil, reg)
+	if err != nil {
+		t.Fatalf("newObserver: %v", err)
+	}
+
+	obs.observe("document.get", time.Now().Add(-10*time.Millisecond), nil)
+	obs.observe("document.get", time.Now(), errors.New("fail"))
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	if len(families) == 0 {
+		t.Fatal("expected metrics to be registered")
+	}
+
+	// Verify operations counter has both ok and error.
+	found := false
+	for _, f := range families {
+		if f.GetName() == "vecdex_sdk_operations_total" {
+			found = true
+			if len(f.GetMetric()) != 2 {
+				t.Errorf("expected 2 metric samples, got %d",
+					len(f.GetMetric()))
+			}
+		}
+	}
+	if !found {
+		t.Error("vecdex_sdk_operations_total not found")
+	}
+}
+
+func TestObserver_WithLogger(t *testing.T) {
+	// Проверяем что логгер не паникует при вызове.
+	logger := slog.Default()
+	obs, err := newObserver(logger, nil)
+	if err != nil {
+		t.Fatalf("newObserver: %v", err)
+	}
+	obs.observe("test.op", time.Now(), nil)
+	obs.observe("test.op", time.Now(), errors.New("test error"))
+}
+
+func TestObserver_NoMetricsNoLogger(t *testing.T) {
+	obs, err := newObserver(nil, nil)
+	if err != nil {
+		t.Fatalf("newObserver: %v", err)
+	}
+	// Не должно паниковать.
+	obs.observe("noop", time.Now(), nil)
 }
 
 type mockEmbedder struct {

@@ -73,6 +73,7 @@ func run(dataFile string) error {
 	embedder := NewNebiusEmbedder(apiKey)
 
 	client, err := vecdex.New(
+		ctx,
 		vecdex.WithRedis(addr, password),
 		vecdex.WithEmbedder(embedder),
 		vecdex.WithVectorDimensions(4096),
@@ -214,11 +215,11 @@ func loadVenues(ctx context.Context, idx *vecdex.TypedIndex[Venue], places []fsq
 }
 
 func upsertBatch(ctx context.Context, idx *vecdex.TypedIndex[Venue], batch []Venue) error {
-	results, err := idx.UpsertBatch(ctx, batch)
+	resp, err := idx.UpsertBatch(ctx, batch)
 	if err != nil {
 		return fmt.Errorf("batch upsert: %w", err)
 	}
-	for _, r := range results {
+	for _, r := range resp.Results {
 		if !r.OK {
 			log.Printf("warning: failed to upsert %s: %v", r.ID, r.Err)
 		}

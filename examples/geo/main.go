@@ -34,7 +34,7 @@ func main() {
 func run() error {
 	ctx := context.Background()
 
-	client, err := vecdex.New(vecdex.WithValkey("localhost:6379", ""))
+	client, err := vecdex.New(ctx, vecdex.WithValkey("localhost:6379", ""))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -65,11 +65,11 @@ func seedPlaces(ctx context.Context, idx *vecdex.TypedIndex[Place]) error {
 		{ID: "limassol-castle", Name: "Limassol Castle", Country: "CY", Lat: 34.6712, Lon: 33.0425},
 	}
 
-	results, err := idx.UpsertBatch(ctx, places)
+	resp, err := idx.UpsertBatch(ctx, places)
 	if err != nil {
 		return fmt.Errorf("batch upsert: %w", err)
 	}
-	for _, r := range results {
+	for _, r := range resp.Results {
 		if !r.OK {
 			log.Printf("failed to upsert %s: %v", r.ID, r.Err)
 		}

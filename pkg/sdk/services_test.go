@@ -12,6 +12,10 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/request"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/result"
+	domusage "github.com/kailas-cloud/vecdex/internal/domain/usage"
+	"github.com/kailas-cloud/vecdex/internal/domain/usage/budget"
+	"github.com/kailas-cloud/vecdex/internal/domain/usage/metrics"
+	healthuc "github.com/kailas-cloud/vecdex/internal/usecase/health"
 )
 
 // --- CollectionService ---
@@ -94,12 +98,12 @@ func TestCollectionService_List(t *testing.T) {
 	}
 
 	svc := &CollectionService{svc: mock}
-	list, err := svc.List(context.Background())
+	lr, err := svc.List(context.Background(), "", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(list) != 1 {
-		t.Fatalf("len = %d, want 1", len(list))
+	if len(lr.Collections) != 1 {
+		t.Fatalf("len = %d, want 1", len(lr.Collections))
 	}
 }
 
@@ -111,7 +115,7 @@ func TestCollectionService_List_Error(t *testing.T) {
 	}
 
 	svc := &CollectionService{svc: mock}
-	_, err := svc.List(context.Background())
+	_, err := svc.List(context.Background(), "", 0)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -384,12 +388,15 @@ func TestDocumentService_BatchUpsert(t *testing.T) {
 	}
 
 	svc := newDocSvc(nil, batch)
-	results, err := svc.BatchUpsert(context.Background(), []Document{{ID: "doc-1"}})
+	resp, err := svc.BatchUpsert(context.Background(), []Document{{ID: "doc-1"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 1 || !results[0].OK {
-		t.Errorf("results = %+v", results)
+	if len(resp.Results) != 1 || !resp.Results[0].OK {
+		t.Errorf("results = %+v", resp.Results)
+	}
+	if resp.Succeeded != 1 || resp.Failed != 0 {
+		t.Errorf("succeeded=%d failed=%d, want 1/0", resp.Succeeded, resp.Failed)
 	}
 }
 
@@ -401,9 +408,12 @@ func TestDocumentService_BatchDelete(t *testing.T) {
 	}
 
 	svc := newDocSvc(nil, batch)
-	results := svc.BatchDelete(context.Background(), []string{"doc-1"})
-	if len(results) != 1 || !results[0].OK {
-		t.Errorf("results = %+v", results)
+	resp := svc.BatchDelete(context.Background(), []string{"doc-1"})
+	if len(resp.Results) != 1 || !resp.Results[0].OK {
+		t.Errorf("results = %+v", resp.Results)
+	}
+	if resp.Succeeded != 1 || resp.Failed != 0 {
+		t.Errorf("succeeded=%d failed=%d, want 1/0", resp.Succeeded, resp.Failed)
 	}
 }
 
@@ -411,28 +421,31 @@ func TestDocumentService_BatchDelete(t *testing.T) {
 
 func TestSearchService_Query(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return []result.Result{result.New("doc-1", 0.9, "hi", nil, nil, nil)}, nil
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return []result.Result{result.New("doc-1", 0.9, "hi", nil, nil, nil)}, 1, nil
 		},
 	}
 
 	svc := &SearchService{collection: "test", svc: mock}
-	results, err := svc.Query(context.Background(), "hello", nil)
+	resp, err := svc.Query(context.Background(), "hello", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("len = %d, want 1", len(results))
+	if len(resp.Results) != 1 {
+		t.Fatalf("len = %d, want 1", len(resp.Results))
 	}
-	if results[0].ID != "doc-1" {
-		t.Errorf("ID = %q, want doc-1", results[0].ID)
+	if resp.Results[0].ID != "doc-1" {
+		t.Errorf("ID = %q, want doc-1", resp.Results[0].ID)
+	}
+	if resp.Total != 1 {
+		t.Errorf("Total = %d, want 1", resp.Total)
 	}
 }
 
 func TestSearchService_Query_WithOpts(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return nil, nil
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return nil, 0, nil
 		},
 	}
 
@@ -446,8 +459,8 @@ func TestSearchService_Query_WithOpts(t *testing.T) {
 
 func TestSearchService_Query_Error(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return nil, errors.New("fail")
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return nil, 0, errors.New("fail")
 		},
 	}
 
@@ -460,30 +473,30 @@ func TestSearchService_Query_Error(t *testing.T) {
 
 func TestSearchService_Geo(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return []result.Result{result.New("place-1", 500, "", nil, nil, nil)}, nil
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return []result.Result{result.New("place-1", 500, "", nil, nil, nil)}, 1, nil
 		},
 	}
 
 	svc := &SearchService{collection: "test", svc: mock}
-	results, err := svc.Geo(context.Background(), 34.77, 32.42, 10)
+	resp, err := svc.Geo(context.Background(), 34.77, 32.42, 10, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("len = %d, want 1", len(results))
+	if len(resp.Results) != 1 {
+		t.Fatalf("len = %d, want 1", len(resp.Results))
 	}
 }
 
 func TestSearchService_Geo_WithOpts(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return nil, nil
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return nil, 0, nil
 		},
 	}
 
 	svc := &SearchService{collection: "test", svc: mock}
-	opts := SearchOptions{
+	opts := &SearchOptions{
 		Filters: FilterExpression{Must: []FilterCondition{{Key: "country", Match: "CY"}}},
 	}
 	_, err := svc.Geo(context.Background(), 34.77, 32.42, 10, opts)
@@ -494,15 +507,185 @@ func TestSearchService_Geo_WithOpts(t *testing.T) {
 
 func TestSearchService_Geo_Error(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return nil, errors.New("fail")
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return nil, 0, errors.New("fail")
 		},
 	}
 
 	svc := &SearchService{collection: "test", svc: mock}
-	_, err := svc.Geo(context.Background(), 34.77, 32.42, 10)
+	_, err := svc.Geo(context.Background(), 34.77, 32.42, 10, nil)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// --- Health ---
+
+func TestClient_Health(t *testing.T) {
+	mock := &mockHealthUC{
+		checkFn: func(_ context.Context) healthuc.Report {
+			return healthuc.Report{
+				Status: healthuc.Healthy,
+				Checks: map[string]healthuc.CheckResult{
+					"database": healthuc.CheckOK,
+				},
+			}
+		},
+	}
+
+	c := &Client{healthSvc: mock}
+	status := c.Health(context.Background())
+
+	if status.Status != "ok" {
+		t.Errorf("Status = %q, want ok", status.Status)
+	}
+	if status.Checks["database"] != "ok" {
+		t.Errorf("Checks[database] = %q, want ok", status.Checks["database"])
+	}
+}
+
+func TestClient_Health_Degraded(t *testing.T) {
+	mock := &mockHealthUC{
+		checkFn: func(_ context.Context) healthuc.Report {
+			return healthuc.Report{
+				Status: healthuc.Degraded,
+				Checks: map[string]healthuc.CheckResult{
+					"database":  healthuc.CheckOK,
+					"embedding": healthuc.CheckError,
+				},
+			}
+		},
+	}
+
+	c := &Client{healthSvc: mock}
+	status := c.Health(context.Background())
+
+	if status.Status != "degraded" {
+		t.Errorf("Status = %q, want degraded", status.Status)
+	}
+	if status.Checks["embedding"] != "error" {
+		t.Errorf("Checks[embedding] = %q, want error",
+			status.Checks["embedding"])
+	}
+}
+
+// --- Usage ---
+
+func TestClient_Usage(t *testing.T) {
+	mock := &mockUsageUC{
+		getReportFn: func(
+			_ context.Context, period domusage.Period,
+		) domusage.Report {
+			if period != domusage.PeriodDay {
+				t.Errorf("period = %q, want day", period)
+			}
+			m := metrics.New(10, 5000, 100)
+			b := budget.New(100000, 95000, false, 1700000000000)
+			return domusage.NewReport(
+				period, 1699920000000, 1700006400000, "", m, b,
+			)
+		},
+	}
+
+	c := &Client{usageSvc: mock}
+	report := c.Usage(context.Background(), PeriodDay)
+
+	if report.Period != PeriodDay {
+		t.Errorf("Period = %q, want day", report.Period)
+	}
+	if report.Metrics.EmbeddingRequests != 10 {
+		t.Errorf("EmbeddingRequests = %d, want 10",
+			report.Metrics.EmbeddingRequests)
+	}
+	if report.Metrics.Tokens != 5000 {
+		t.Errorf("Tokens = %d, want 5000", report.Metrics.Tokens)
+	}
+	if report.Budget.TokensLimit != 100000 {
+		t.Errorf("TokensLimit = %d, want 100000",
+			report.Budget.TokensLimit)
+	}
+	if report.Budget.TokensRemaining != 95000 {
+		t.Errorf("TokensRemaining = %d, want 95000",
+			report.Budget.TokensRemaining)
+	}
+	if report.Budget.IsExhausted {
+		t.Error("expected IsExhausted=false")
+	}
+}
+
+// --- Collection list pagination ---
+
+func TestCollectionService_List_Pagination(t *testing.T) {
+	cols := make([]domcol.Collection, 5)
+	for i := range cols {
+		name := string(rune('a' + i))
+		cols[i] = domcol.Reconstruct(
+			name, domcol.TypeText, nil, 1024, int64(1000+i), 1,
+		)
+	}
+	mock := &mockCollectionUC{
+		listFn: func(_ context.Context) ([]domcol.Collection, error) {
+			return cols, nil
+		},
+	}
+
+	svc := &CollectionService{svc: mock}
+
+	// First page: limit=2.
+	lr, err := svc.List(context.Background(), "", 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(lr.Collections) != 2 {
+		t.Fatalf("len = %d, want 2", len(lr.Collections))
+	}
+	if !lr.HasMore {
+		t.Error("expected HasMore=true")
+	}
+	if lr.NextCursor != "b" {
+		t.Errorf("NextCursor = %q, want b", lr.NextCursor)
+	}
+
+	// Second page: cursor=b, limit=2.
+	lr2, err := svc.List(context.Background(), "b", 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(lr2.Collections) != 2 {
+		t.Fatalf("len = %d, want 2", len(lr2.Collections))
+	}
+	if lr2.Collections[0].Name != "c" {
+		t.Errorf("first = %q, want c", lr2.Collections[0].Name)
+	}
+
+	// Last page: cursor=d, limit=2 → only "e" left.
+	lr3, err := svc.List(context.Background(), "d", 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(lr3.Collections) != 1 {
+		t.Fatalf("len = %d, want 1", len(lr3.Collections))
+	}
+	if lr3.HasMore {
+		t.Error("expected HasMore=false")
+	}
+}
+
+func TestCollectionService_List_CursorNotFound(t *testing.T) {
+	col := domcol.Reconstruct("a", domcol.TypeText, nil, 1024, 1000, 1)
+	mock := &mockCollectionUC{
+		listFn: func(_ context.Context) ([]domcol.Collection, error) {
+			return []domcol.Collection{col}, nil
+		},
+	}
+
+	svc := &CollectionService{svc: mock}
+	lr, err := svc.List(context.Background(), "nonexistent", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(lr.Collections) != 0 {
+		t.Errorf("len = %d, want 0", len(lr.Collections))
 	}
 }
 

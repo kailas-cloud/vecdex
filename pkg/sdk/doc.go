@@ -7,12 +7,15 @@
 //
 // # Low-level API — explicit control
 //
-//	client, _ := vecdex.New(vecdex.WithValkey("localhost:6379", ""))
+//	client, _ := vecdex.New(ctx, vecdex.WithValkey("localhost:6379", ""))
+//	defer client.Close()
+//
 //	client.Collections().Create(ctx, "places", vecdex.Geo(),
 //	    vecdex.WithField("country", vecdex.FieldTag),
 //	)
 //	client.Documents("places").BatchUpsert(ctx, docs)
-//	results, _ := client.Search("places").Geo(ctx, 55.75, 37.62, 10)
+//	resp, _ := client.Search("places").Geo(ctx, 55.75, 37.62, 10, nil)
+//	for _, r := range resp.Results { ... }
 //
 // # High-level API — schema-first with Go generics
 //
@@ -24,8 +27,13 @@
 //	    Lon     float64 `vecdex:"lon,geo_lon"`
 //	}
 //
-//	idx := vecdex.NewIndex[Place](client, "places")
+//	idx, _ := vecdex.NewIndex[Place](client, "places")
 //	_ = idx.Ensure(ctx)
 //	_ = idx.UpsertBatch(ctx, places)
-//	res, _ := idx.Search().Near(55.75, 37.62).Km(10).Limit(50).Do(ctx)
+//	hits, _ := idx.Search().Near(55.75, 37.62).Km(10).Limit(50).Do(ctx)
+//
+// # Health and Usage
+//
+//	status := client.Health(ctx)
+//	report := client.Usage(ctx, vecdex.PeriodDay)
 package vecdex

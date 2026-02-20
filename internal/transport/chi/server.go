@@ -392,7 +392,7 @@ func (s *Server) SearchDocuments(
 	}
 
 	ctx, usage := domain.NewContextWithUsage(r.Context())
-	results, err := s.search.Search(ctx, collection, &searchReq)
+	results, total, err := s.search.Search(ctx, collection, &searchReq)
 	if err != nil {
 		s.handleDomainError(w, err)
 		return
@@ -412,7 +412,7 @@ func (s *Server) SearchDocuments(
 	writeJSON(w, http.StatusOK, gen.SearchResultListResponse{
 		Items: items,
 		Limit: limit,
-		Total: len(items),
+		Total: total,
 	})
 }
 

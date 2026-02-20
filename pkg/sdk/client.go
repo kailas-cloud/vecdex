@@ -23,7 +23,9 @@ import (
 	batchuc "github.com/kailas-cloud/vecdex/internal/usecase/batch"
 	collectionuc "github.com/kailas-cloud/vecdex/internal/usecase/collection"
 	documentuc "github.com/kailas-cloud/vecdex/internal/usecase/document"
+	healthuc "github.com/kailas-cloud/vecdex/internal/usecase/health"
 	searchuc "github.com/kailas-cloud/vecdex/internal/usecase/search"
+	usageuc "github.com/kailas-cloud/vecdex/internal/usecase/usage"
 )
 
 const defaultReadinessTimeout = 10 * time.Second
@@ -51,7 +53,7 @@ type batchUseCase interface {
 }
 
 type searchUseCase interface {
-	Search(ctx context.Context, col string, req *request.Request) ([]result.Result, error)
+	Search(ctx context.Context, col string, req *request.Request) ([]result.Result, int, error)
 }
 
 // Client is the vecdex SDK entry point.
@@ -61,15 +63,19 @@ type Client struct {
 	docSvc    documentUseCase
 	searchSvc searchUseCase
 	batchSvc  batchUseCase
+	healthSvc healthUseCase
+	usageSvc  usageUseCase
+	obs       *observer
 }
 
 // New creates a vecdex Client and connects to the database.
-func New(opts ...Option) (*Client, error) {
+// The provided context is used for the initial readiness check.
+func New(ctx context.Context, opts ...Option) (*Client, error) {
 	cfg := &clientConfig{
 		vectorDimensions: domain.DefaultVectorConfig().Dimensions,
 	}
 	for _, o := range opts {
-		o(cfg)
+		o.apply(cfg)
 	}
 
 	if len(cfg.addrs) == 0 {
@@ -81,13 +87,17 @@ func New(opts ...Option) (*Client, error) {
 		return nil, err
 	}
 
-	ctx := context.Background()
 	if err := store.WaitForReady(ctx, defaultReadinessTimeout); err != nil {
 		store.Close()
 		return nil, fmt.Errorf("vecdex: database not ready: %w", err)
 	}
 
-	return wireClient(store, cfg)
+	obs, err := newObserver(cfg.logger, cfg.metricsReg)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+	return wireClient(store, cfg, obs)
 }
 
 func createStore(cfg *clientConfig) (db.Store, error) {
@@ -115,7 +125,7 @@ func createStore(cfg *clientConfig) (db.Store, error) {
 	}
 }
 
-func wireClient(store db.Store, cfg *clientConfig) (*Client, error) {
+func wireClient(store db.Store, cfg *clientConfig, obs *observer) (*Client, error) {
 	vectorDim := cfg.vectorDimensions
 
 	collRepo := collectionrepo.New(store, vectorDim)
@@ -142,12 +152,18 @@ func wireClient(store db.Store, cfg *clientConfig) (*Client, error) {
 		batchSvc = batchSvc.WithMaxBatchSize(cfg.maxBatchSize)
 	}
 
+	healthSvc := healthuc.New(store, nil)
+	usageSvc := usageuc.New(nil) // nil = unlimited mode (no budget tracking in SDK)
+
 	return &Client{
 		store:     store,
 		collSvc:   collSvc,
 		docSvc:    docSvc,
 		searchSvc: searchSvc,
 		batchSvc:  batchSvc,
+		healthSvc: healthSvc,
+		usageSvc:  usageSvc,
+		obs:       obs,
 	}, nil
 }
 
@@ -159,8 +175,11 @@ func (c *Client) Close() {
 }
 
 // Ping checks database connectivity.
-func (c *Client) Ping(ctx context.Context) error {
-	if err := c.store.Ping(ctx); err != nil {
+func (c *Client) Ping(ctx context.Context) (err error) {
+	start := time.Now()
+	defer func() { c.obs.observe("ping", start, err) }()
+
+	if err = c.store.Ping(ctx); err != nil {
 		return fmt.Errorf("ping: %w", err)
 	}
 	return nil
@@ -168,7 +187,7 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Collections returns the collection management service.
 func (c *Client) Collections() *CollectionService {
-	return &CollectionService{svc: c.collSvc}
+	return &CollectionService{svc: c.collSvc, obs: c.obs}
 }
 
 // Documents returns the document service for a given collection.
@@ -177,12 +196,17 @@ func (c *Client) Documents(collection string) *DocumentService {
 		collection: collection,
 		docSvc:     c.docSvc,
 		batchSvc:   c.batchSvc,
+		obs:        c.obs,
 	}
 }
 
 // Search returns the search service for a given collection.
 func (c *Client) Search(collection string) *SearchService {
-	return &SearchService{collection: collection, svc: c.searchSvc}
+	return &SearchService{
+		collection: collection,
+		svc:        c.searchSvc,
+		obs:        c.obs,
+	}
 }
 
 // embedderAdapter wraps public Embedder to satisfy internal domain.Embedder.
