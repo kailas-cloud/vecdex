@@ -25,6 +25,131 @@ Most vector databases are **heavy, cloud-locked, or expensive**. vecdex takes a 
 - **Budget controls** — daily/monthly token limits with automatic tracking
 - **300+ E2E tests** — battle-tested across both backends
 
+## Examples
+
+### Semantic code search
+
+Define a struct, tag the fields, search with one line:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    vecdex "github.com/kailas-cloud/vecdex/pkg/sdk"
+)
+
+type CodeChunk struct {
+    ID       string `vecdex:"id"`
+    Content  string `vecdex:"content,content"`
+    Language string `vecdex:"language,tag"`
+    Repo     string `vecdex:"repo,tag"`
+}
+
+func main() {
+    ctx := context.Background()
+    client, _ := vecdex.New(ctx,
+        vecdex.WithValkey("localhost:6379", ""),
+        vecdex.WithEmbedder(myEmbedder),       // any OpenAI-compatible provider
+    )
+    defer client.Close()
+
+    idx, _ := vecdex.NewIndex[CodeChunk](client, "code-chunks")
+    _ = idx.Ensure(ctx)
+
+    // Index some code
+    _ = idx.UpsertBatch(ctx, []CodeChunk{
+        {ID: "1", Content: "CreateCollection validates the name and builds an FT index", Language: "go", Repo: "vecdex"},
+        {ID: "2", Content: "SearchBuilder chains Near, Km, Where, Limit into a query", Language: "go", Repo: "vecdex"},
+        {ID: "3", Content: "BudgetTracker enforces daily and monthly token limits", Language: "go", Repo: "vecdex"},
+    })
+
+    // Semantic search — one line
+    hits, _ := idx.Search().
+        Query("how does collection creation work").
+        Mode(vecdex.ModeSemantic).
+        Where("language", "go").
+        Limit(5).
+        Do(ctx)
+
+    for _, h := range hits {
+        fmt.Printf("%.2f  %s\n", h.Score, h.Item.Content)
+    }
+}
+```
+
+### Find places nearby
+
+Geo collections need no embedder — distance is computed from coordinates:
+
+```go
+type Cafe struct {
+    ID   string  `vecdex:"id"`
+    Name string  `vecdex:"name,content"`
+    City string  `vecdex:"city,tag"`
+    Lat  float64 `vecdex:"lat,geo_lat"`
+    Lon  float64 `vecdex:"lon,geo_lon"`
+}
+
+idx, _ := vecdex.NewIndex[Cafe](client, "cafes")
+_ = idx.Ensure(ctx)
+
+_ = idx.UpsertBatch(ctx, []Cafe{
+    {ID: "1", Name: "Skuratov",  City: "moscow", Lat: 55.7558, Lon: 37.6173},
+    {ID: "2", Name: "Surf Coffee", City: "moscow", Lat: 55.7601, Lon: 37.6186},
+})
+
+// Find cafes within 2 km of Red Square
+hits, _ := idx.Search().
+    Near(55.7539, 37.6208).
+    Km(2).
+    Where("city", "moscow").
+    Limit(10).
+    Do(ctx)
+
+for _, h := range hits {
+    fmt.Printf("%s — %.0f m away\n", h.Item.Name, h.Distance)
+}
+```
+
+### Low-level API
+
+For full control without struct tags:
+
+```go
+client, _ := vecdex.New(ctx,
+    vecdex.WithRedis("localhost:6379", ""),
+    vecdex.WithEmbedder(myEmbedder),
+)
+defer client.Close()
+
+// Create collection with filterable fields
+client.Collections().Create(ctx, "articles",
+    vecdex.WithField("author", vecdex.FieldTag),
+    vecdex.WithField("year", vecdex.FieldNumeric),
+)
+
+// Upsert a document — embedding happens automatically
+client.Documents("articles").Upsert(ctx, vecdex.Document{
+    ID:       "article-1",
+    Content:  "Vector search with HNSW indexes in Redis",
+    Tags:     map[string]string{"author": "alice"},
+    Numerics: map[string]float64{"year": 2025},
+})
+
+// Hybrid search (vector KNN + BM25 fused via RRF)
+resp, _ := client.Search("articles").Query(ctx, "HNSW performance", &vecdex.SearchOptions{
+    Mode:  vecdex.ModeHybrid,
+    Limit: 10,
+})
+
+for _, r := range resp.Results {
+    fmt.Printf("%.2f  %s\n", r.Score, r.Content)
+}
+```
+
 ## How it compares
 
 | | vecdex | Pinecone | Qdrant | Weaviate | pgvector |
@@ -35,100 +160,9 @@ Most vector databases are **heavy, cloud-locked, or expensive**. vecdex takes a 
 | Auto-embedding | Yes | No | No | Yes | No |
 | Hybrid search (RRF) | Yes | Yes | Yes | Yes | No |
 | Token budget tracking | Yes | No | No | No | No |
-| Batch operations | Yes | Yes | Yes | Yes | Yes |
+| Go SDK with generics | Yes | No | Yes | No | No |
 | Setup complexity | Low | None | Medium | High | Low |
 | License | Apache 2.0 | Proprietary | Apache 2.0 | BSD-3 | PostgreSQL |
-
-## Backend support
-
-| Backend | Status | Notes |
-|---------|--------|-------|
-| **Valkey 9+** (valkey-search) | Supported | Semantic search. Keyword/hybrid when valkey-search adds BM25 |
-| **Redis 8+** (Redis Search) | Supported | Full hybrid search (semantic + keyword + RRF) |
-| AWS ElastiCache | Planned | |
-| PostgreSQL + pgvector | Planned | |
-
----
-
-## 30-second demo
-
-#### 1. Create a collection
-
-```bash
-curl -s -X POST http://localhost:8080/collections \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "code-chunks",
-    "fields": [
-      {"name": "language", "type": "tag"},
-      {"name": "priority", "type": "numeric"}
-    ]
-  }'
-```
-
-#### 2. Add a document (auto-vectorized)
-
-```bash
-curl -s -X PUT http://localhost:8080/collections/code-chunks/documents/chunk-1 \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "content": "CreateCollection validates the name, builds an FT index, and stores metadata",
-    "tags": {"language": "go"},
-    "numerics": {"priority": 3}
-  }'
-```
-
-#### 3. Search (hybrid mode — RRF of vector KNN + BM25)
-
-```bash
-curl -s -X POST http://localhost:8080/collections/code-chunks/documents/search \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "how are collections created",
-    "mode": "hybrid",
-    "limit": 5,
-    "filters": {
-      "must": [{"key": "language", "match": "go"}]
-    }
-  }'
-```
-
-Response:
-```json
-{
-  "items": [
-    {
-      "id": "chunk-1",
-      "score": 0.87,
-      "content": "CreateCollection validates the name, builds an FT index, and stores metadata",
-      "tags": {"language": "go"},
-      "numerics": {"priority": 3}
-    }
-  ],
-  "total": 1,
-  "limit": 5
-}
-```
-
-## Key features
-
-| Feature | Description |
-|---------|-------------|
-| **Hybrid search** | Reciprocal Rank Fusion combining vector KNN and BM25 keyword search |
-| **Semantic search** | Pure cosine-similarity KNN over HNSW vectors |
-| **Keyword search** | BM25 full-text search — zero embedding tokens consumed |
-| **Structured filters** | `must` / `should` / `must_not` with tag match and numeric range operators |
-| **Auto-embedding** | Send text, get vectors via any OpenAI-compatible provider |
-| **Optimistic concurrency** | `If-Match` / `ETag` headers for conflict-free updates |
-| **Partial updates** | PATCH documents — update metadata without re-vectorizing |
-| **Batch operations** | Upsert/delete up to 100 documents per request with per-item status |
-| **Token budget** | Daily/monthly limits with warn or reject policies |
-| **Cursor pagination** | Stable, opaque-cursor pagination for collections and documents |
-| **Embedding cache** | SHA256-keyed cache in Valkey — identical content is never re-embedded |
-| **Prometheus metrics** | Request latency, embedding tokens, budget, cache hit/miss |
 
 ## Search modes
 
@@ -137,34 +171,49 @@ Response:
 | `hybrid` (default) | Vector KNN + BM25 fused via Reciprocal Rank Fusion | 1 call | Redis 8 |
 | `semantic` | Pure cosine-similarity KNN | 1 call | Redis 8, Valkey 9 |
 | `keyword` | BM25 full-text search | 0 calls | Redis 8 |
+| `geo` | ECEF-based geographic proximity | 0 calls | Redis 8, Valkey 9 |
 
-Filters work with all modes:
+## Backend support
 
-```json
-{
-  "filters": {
-    "must":     [{"key": "language", "match": "go"}],
-    "should":   [{"key": "repo", "match": "vecdex"}, {"key": "repo", "match": "redcat"}],
-    "must_not": [{"key": "priority", "range": {"gte": 100}}]
-  }
-}
-```
+| Backend | Status | Notes |
+|---------|--------|-------|
+| **Valkey 9+** (valkey-search) | Supported | Semantic + geo search. Keyword/hybrid when valkey-search adds BM25 |
+| **Redis 8+** (Redis Search) | Supported | Full hybrid search (semantic + keyword + RRF + geo) |
+| AWS ElastiCache | Planned | |
+| PostgreSQL + pgvector | Planned | |
 
-- **Tag filters:** `{"key": "field", "match": "value"}` — exact string match
-- **Numeric filters:** `{"key": "field", "range": {"gte": 10, "lt": 50}}` — range with `gt`/`gte`/`lt`/`lte`
+## Key features
+
+| Feature | Description |
+|---------|-------------|
+| **Hybrid search** | Reciprocal Rank Fusion combining vector KNN and BM25 keyword search |
+| **Semantic search** | Pure cosine-similarity KNN over HNSW vectors |
+| **Keyword search** | BM25 full-text search — zero embedding tokens consumed |
+| **Geo search** | ECEF-based geographic proximity with radius filtering |
+| **Structured filters** | `must` / `should` / `must_not` with tag match and numeric range operators |
+| **Auto-embedding** | Send text, get vectors via any OpenAI-compatible provider |
+| **Typed Go SDK** | Schema-first generics with `TypedIndex[T]` and fluent search builder |
+| **Batch operations** | Upsert/delete up to 100 items per call with per-item status |
+| **Token budget** | Daily/monthly limits with warn or reject policies |
+| **Cursor pagination** | Stable, opaque-cursor pagination for collections and documents |
+| **Embedding cache** | SHA256-keyed cache in Valkey — identical content is never re-embedded |
+| **Prometheus metrics** | Request latency, embedding tokens, budget, cache hit/miss |
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    HTTP (Chi)                        │
-│  Auth · Metrics · Wide-event logging · Recovery      │
+│              Go SDK  (pkg/sdk)                       │
+│  TypedIndex[T] · SearchBuilder · Fluent API          │
 ├─────────────────────────────────────────────────────┤
-│                   Use Cases                          │
-│  Collection · Document · Search (hybrid/sem/kw)      │
+│              HTTP API  (Chi)                          │
+│  Auth · Metrics · Wide-event logging · Recovery       │
 ├─────────────────────────────────────────────────────┤
-│                  Repositories                        │
-│  Consumer interfaces (ISP) over Store facade         │
+│                 Use Cases                             │
+│  Collection · Document · Search · Batch · Embedding   │
+├─────────────────────────────────────────────────────┤
+│                Repositories                           │
+│  Consumer interfaces (ISP) over Store facade          │
 ├──────────────────────┬──────────────────────────────┤
 │    Redis backend     │     Valkey backend            │
 │  (rueidis, RESP2)    │   (rueidis, RESP2)            │
@@ -183,7 +232,26 @@ OpenAIProvider → CachedProvider → InstrumentedProvider → StringVectorizer
 
 ## API reference
 
-### Endpoints
+### Go SDK
+
+```
+go get github.com/kailas-cloud/vecdex
+```
+
+| Type | Description |
+|------|-------------|
+| `vecdex.Client` | Connection to Valkey/Redis, entry point for all operations |
+| `vecdex.TypedIndex[T]` | Generic index with schema inferred from struct tags |
+| `vecdex.SearchBuilder[T]` | Fluent search: `.Query()`, `.Near()`, `.Where()`, `.Limit()`, `.Do()` |
+| `vecdex.Hit[T]` | Search result with `.Item`, `.Score`, `.Distance` |
+| `vecdex.Document` | Untyped document for low-level API |
+| `vecdex.Embedder` | Interface for text-to-vector providers |
+
+Struct tag format: `vecdex:"name,modifier"` — modifiers: `id`, `content`, `tag`, `numeric`, `geo_lat`, `geo_lon`.
+
+### REST API
+
+Full OpenAPI 3.0 specification: [`api/openapi.yaml`](api/openapi.yaml)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -193,7 +261,7 @@ OpenAIProvider → CachedProvider → InstrumentedProvider → StringVectorizer
 | `DELETE` | `/collections/{name}` | Delete collection |
 | `PUT` | `/collections/{name}/documents/{id}` | Upsert document (auto-embeds) |
 | `GET` | `/collections/{name}/documents/{id}` | Get document |
-| `PATCH` | `/collections/{name}/documents/{id}` | Partial update (metadata or content) |
+| `PATCH` | `/collections/{name}/documents/{id}` | Partial update (no re-vectorization) |
 | `DELETE` | `/collections/{name}/documents/{id}` | Delete document |
 | `GET` | `/collections/{name}/documents` | List documents (cursor pagination) |
 | `POST` | `/collections/{name}/documents/search` | Search documents |
@@ -202,39 +270,6 @@ OpenAIProvider → CachedProvider → InstrumentedProvider → StringVectorizer
 | `GET` | `/usage` | Embedding usage & budget info |
 | `GET` | `/health` | Health check |
 | `GET` | `/metrics` | Prometheus metrics |
-
-### Search with filters
-
-```bash
-curl -s -X POST http://localhost:8080/collections/code-chunks/documents/search \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "error handling",
-    "mode": "semantic",
-    "top_k": 50,
-    "limit": 10,
-    "min_score": 0.5,
-    "filters": {
-      "must": [{"key": "language", "match": "go"}],
-      "must_not": [{"key": "priority", "range": {"gte": 100}}]
-    }
-  }'
-```
-
-### Partial update (no re-vectorization)
-
-```bash
-curl -s -X PATCH http://localhost:8080/collections/code-chunks/documents/chunk-1 \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tags": {"reviewed": "true"},
-    "numerics": {"priority": 10}
-  }'
-```
-
-Full OpenAPI 3.0 specification: [`api/openapi.yaml`](api/openapi.yaml)
 
 ## Quick start
 
@@ -280,73 +315,14 @@ vecdex uses YAML config files from `config/` selected by the `ENV` environment v
 | `NEBIUS_API_KEY` | Nebius AI embedding API key | — |
 | `VECDEX_API_KEY` | API authentication key | — |
 
-Example config (`config/dev.yaml`):
-
-```yaml
-http:
-  port: 8080
-
-database:
-  driver: valkey    # or "redis"
-  addrs:
-    - valkey:6379
-
-auth:
-  api_keys:
-    - ${VECDEX_API_KEY}
-
-embedding:
-  providers:
-    nebius:
-      api_key: ${NEBIUS_API_KEY}
-      base_url: https://api.tokenfactory.nebius.com/v1/
-      budget:
-        daily_token_limit: 10000000
-        monthly_token_limit: 200000000
-        action: warn    # or "reject"
-  vectorizers:
-    json:
-      provider: nebius
-      model: Qwen3-Embedding-8B
-      dimensions: 1024
-```
-
-## Use as Go library
-
-```go
-import (
-    dbRedis "github.com/kailas-cloud/vecdex/internal/db/redis"
-    collectionrepo "github.com/kailas-cloud/vecdex/internal/repository/collection"
-)
-
-// Create database store
-store, _ := dbRedis.NewStore(dbRedis.Config{
-    Addrs:    []string{"localhost:6379"},
-    Password: "secret",
-})
-defer store.Close()
-
-// Create repository (accepts narrow consumer interface via ISP)
-repo := collectionrepo.New(store, 1024)
-```
-
 ## Testing
 
 ```bash
-# Unit tests (no Valkey needed)
-just test-unit
-
-# E2E tests — Valkey backend (300+ pytest tests)
-just test-pytest-valkey
-
-# E2E tests — Redis backend
-just test-pytest-redis
-
-# E2E tests — both backends sequentially
-just test-pytest
-
-# Quick pre-commit check (build + lint + unit)
-just pre-commit
+just test-unit              # Unit tests (no Valkey needed)
+just test-pytest-valkey     # E2E — Valkey backend (300+ pytest tests)
+just test-pytest-redis      # E2E — Redis backend
+just test-pytest            # E2E — both backends sequentially
+just pre-commit             # build + lint + unit tests
 ```
 
 The pytest E2E suite runs in Docker Compose with a mock embedding server — no API keys required for CI.
@@ -375,7 +351,6 @@ The pytest E2E suite runs in Docker Compose with a mock embedding server — no 
 Contributions are welcome! Please open an issue first to discuss what you'd like to change.
 
 ```bash
-# Development workflow
 just build          # Build + fmt + vet
 just lint           # Run linter
 just test-unit      # Fast unit tests
