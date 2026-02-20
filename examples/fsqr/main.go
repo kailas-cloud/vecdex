@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	vecdex "github.com/kailas-cloud/vecdex/pkg/sdk"
@@ -23,11 +24,11 @@ import (
 
 // Venue — место из FSQ Open Places (гео-коллекция).
 type Venue struct {
-	ID    string  `vecdex:"id,id"`
-	Name  string  `vecdex:"name,tag"`
-	CatID string  `vecdex:"category_id,tag"`
-	Lat   float64 `vecdex:"latitude,geo_lat"`
-	Lon   float64 `vecdex:"longitude,geo_lon"`
+	ID   string  `vecdex:"id,id"`
+	Name string  `vecdex:"name,tag"`
+	Cat  int     `vecdex:"cat,numeric"`
+	Lat  float64 `vecdex:"latitude,geo_lat"`
+	Lon  float64 `vecdex:"longitude,geo_lon"`
 }
 
 // Category — категория FSQ (текстовая коллекция с эмбеддингами).
@@ -52,7 +53,7 @@ type searchResponse struct {
 type venueHit struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
-	CatID    string  `json:"category_id"`
+	Cat      int     `json:"cat"`
 	Lat      float64 `json:"lat"`
 	Lon      float64 `json:"lon"`
 	Distance float64 `json:"distance_m"`
@@ -190,14 +191,18 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 func (s *server) searchVenues(
 	ctx context.Context, req searchRequest, catHits []vecdex.Hit[Category],
 ) ([]vecdex.SearchResult, error) {
-	// Should-фильтры: venue матчится, если category_id совпадает
+	// Should-фильтры: venue матчится, если cat совпадает
 	// хотя бы с одной из найденных категорий (OR-логика).
 	// Без ограничения по расстоянию — KNN вернёт K ближайших где бы они ни были.
 	filters := make([]vecdex.FilterCondition, 0, len(catHits))
 	for _, h := range catHits {
+		catID, err := strconv.ParseFloat(h.Item.ID, 64)
+		if err != nil {
+			continue
+		}
 		filters = append(filters, vecdex.FilterCondition{
-			Key:   "category_id",
-			Match: h.Item.ID,
+			Key:   "cat",
+			Range: &vecdex.RangeFilter{GTE: &catID, LTE: &catID},
 		})
 	}
 
@@ -231,7 +236,7 @@ func buildResponse(
 		venues[i] = venueHit{
 			ID:       r.ID,
 			Name:     r.Tags["name"],
-			CatID:    r.Tags["category_id"],
+			Cat:      int(r.Numerics["cat"]),
 			Lat:      r.Numerics["latitude"],
 			Lon:      r.Numerics["longitude"],
 			Distance: r.Score, // гео-поиск: score = расстояние в метрах
