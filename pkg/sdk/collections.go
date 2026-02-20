@@ -61,17 +61,48 @@ func (s *CollectionService) Get(ctx context.Context, name string) (CollectionInf
 	return fromInternalCollection(col), nil
 }
 
-// List returns all collections.
-func (s *CollectionService) List(ctx context.Context) ([]CollectionInfo, error) {
+// List returns a paginated list of collections.
+// Cursor is a collection name to start after (empty for first page).
+// Limit controls page size (0 = return all).
+func (s *CollectionService) List(
+	ctx context.Context, cursor string, limit int,
+) (CollectionListResult, error) {
 	cols, err := s.svc.List(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list collections: %w", err)
+		return CollectionListResult{}, fmt.Errorf("list collections: %w", err)
 	}
-	out := make([]CollectionInfo, len(cols))
+
+	all := make([]CollectionInfo, len(cols))
 	for i, c := range cols {
-		out[i] = fromInternalCollection(c)
+		all[i] = fromInternalCollection(c)
 	}
-	return out, nil
+
+	// Client-side cursor pagination (collections are small, tens at most).
+	if cursor != "" {
+		startIdx := -1
+		for i, c := range all {
+			if c.Name == cursor {
+				startIdx = i
+				break
+			}
+		}
+		if startIdx >= 0 && startIdx+1 < len(all) {
+			all = all[startIdx+1:]
+		} else {
+			all = nil
+		}
+	}
+
+	if limit <= 0 || limit >= len(all) {
+		return CollectionListResult{Collections: all}, nil
+	}
+
+	page := all[:limit]
+	return CollectionListResult{
+		Collections: page,
+		NextCursor:  page[len(page)-1].Name,
+		HasMore:     true,
+	}, nil
 }
 
 // Delete removes a collection.

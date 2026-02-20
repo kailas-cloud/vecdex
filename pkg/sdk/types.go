@@ -99,6 +99,13 @@ type ListResult struct {
 	NextCursor string
 }
 
+// CollectionListResult is a paginated list of collections.
+type CollectionListResult struct {
+	Collections []CollectionInfo
+	NextCursor  string
+	HasMore     bool
+}
+
 // FilterExpression is a set of must/should/must_not filter conditions.
 type FilterExpression struct {
 	Must    []FilterCondition

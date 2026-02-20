@@ -94,12 +94,12 @@ func TestCollectionService_List(t *testing.T) {
 	}
 
 	svc := &CollectionService{svc: mock}
-	list, err := svc.List(context.Background())
+	lr, err := svc.List(context.Background(), "", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(list) != 1 {
-		t.Fatalf("len = %d, want 1", len(list))
+	if len(lr.Collections) != 1 {
+		t.Fatalf("len = %d, want 1", len(lr.Collections))
 	}
 }
 
@@ -111,7 +111,7 @@ func TestCollectionService_List_Error(t *testing.T) {
 	}
 
 	svc := &CollectionService{svc: mock}
-	_, err := svc.List(context.Background())
+	_, err := svc.List(context.Background(), "", 0)
 	if err == nil {
 		t.Fatal("expected error")
 	}
