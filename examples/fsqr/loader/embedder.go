@@ -60,7 +60,8 @@ func (e *NebiusEmbedder) BatchEmbed(ctx context.Context, texts []string) (vecdex
 		return vecdex.BatchEmbeddingResult{}, err
 	}
 	if len(res.Data) != len(texts) {
-		return vecdex.BatchEmbeddingResult{}, fmt.Errorf("nebius API: got %d embeddings, expected %d", len(res.Data), len(texts))
+		return vecdex.BatchEmbeddingResult{}, fmt.Errorf(
+			"nebius API: got %d embeddings, expected %d", len(res.Data), len(texts))
 	}
 	embeddings := make([][]float32, len(res.Data))
 	for i, d := range res.Data {
