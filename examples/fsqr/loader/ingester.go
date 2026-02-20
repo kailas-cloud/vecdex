@@ -214,33 +214,52 @@ func (ing *ingester) processBatch(
 	}
 }
 
-// loadCategories загружает категории в vecdex с embeddings.
+// loadCategories загружает категории в vecdex батчами с batch embeddings.
 func loadCategories(
 	ctx context.Context,
 	idx *vecdex.TypedIndex[Category],
 	cats *categoryMap,
 	m *loaderMetrics,
 ) {
+	const batchSize = 50
 	all := cats.Categories()
-	log.Printf("loading %d categories into vecdex...", len(all))
+	log.Printf("loading %d categories into vecdex (batch size %d)...", len(all), batchSize)
 
-	for i, cat := range all {
-		if _, err := idx.Upsert(ctx, cat); err != nil {
-			log.Printf("category upsert failed: %s: %v", cat.ID, err)
+	var succeeded, failed int
+	for i := 0; i < len(all); i += batchSize {
+		end := i + batchSize
+		if end > len(all) {
+			end = len(all)
+		}
+		batch := all[i:end]
+
+		resp, err := idx.UpsertBatch(ctx, batch)
+		if err != nil {
+			log.Printf("category batch upsert failed at offset %d: %v", i, err)
+			failed += len(batch)
 			if m != nil {
 				m.rowsFailed.WithLabelValues(
-					"categories", "upsert_error",
-				).Inc()
+					"categories", "batch_error",
+				).Add(float64(len(batch)))
 			}
 			continue
 		}
+
+		succeeded += resp.Succeeded
+		failed += resp.Failed
 		if m != nil {
-			m.rowsProcessed.WithLabelValues("categories").Inc()
+			m.rowsProcessed.WithLabelValues("categories").Add(float64(resp.Succeeded))
+			if resp.Failed > 0 {
+				m.rowsFailed.WithLabelValues(
+					"categories", "item_error",
+				).Add(float64(resp.Failed))
+			}
 		}
-		if (i+1)%100 == 0 {
-			log.Printf("categories: %d/%d", i+1, len(all))
+
+		if end%100 == 0 || end == len(all) {
+			log.Printf("categories: %d/%d", end, len(all))
 		}
 	}
 
-	log.Printf("categories: %d/%d done", len(all), len(all))
+	log.Printf("categories: %d/%d done (%d failed)", succeeded, len(all), failed)
 }

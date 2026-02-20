@@ -54,6 +54,9 @@ type config struct {
 	metricsPort    string
 	cursorInterval int
 	reset          bool
+	skipDownload   bool
+	skipCategories bool
+	skipVenues     bool
 }
 
 func parseFlags() config {
@@ -66,6 +69,9 @@ func parseFlags() config {
 	flag.StringVar(&cfg.metricsPort, "metrics-port", "9090", "Prometheus metrics port")
 	flag.IntVar(&cfg.cursorInterval, "cursor-interval", 10000, "save cursor every N rows")
 	flag.BoolVar(&cfg.reset, "reset", false, "reset cursor and start from scratch")
+	flag.BoolVar(&cfg.skipDownload, "skip-download", false, "skip HuggingFace download stage")
+	flag.BoolVar(&cfg.skipCategories, "skip-categories", false, "skip categories loading stage")
+	flag.BoolVar(&cfg.skipVenues, "skip-venues", false, "skip venues loading stage")
 	flag.Parse()
 	return cfg
 }
@@ -91,8 +97,12 @@ func run(ctx context.Context, cfg config) error {
 		log.Println("cursor reset, starting from scratch")
 	}
 
-	if err := stageDownload(ctx, cfg); err != nil {
-		return err
+	if !cfg.skipDownload {
+		if err := stageDownload(ctx, cfg); err != nil {
+			return err
+		}
+	} else {
+		log.Println("=== Stage 1: Download === SKIPPED")
 	}
 
 	client, err := connectVecdex(ctx)
@@ -104,19 +114,33 @@ func run(ctx context.Context, cfg config) error {
 	closePoller := startValkeyPoller(ctx, metrics)
 	defer closePoller()
 
-	cats, err := stageCategories(ctx, client, cfg, cursor, metrics)
-	if err != nil {
-		return err
+	var cats *categoryMap
+	if !cfg.skipCategories {
+		cats, err = stageCategories(ctx, client, cfg, cursor, metrics)
+		if err != nil {
+			return err
+		}
+	} else {
+		log.Println("=== Stage 2: Categories === SKIPPED")
+		// Всё равно читаем parquet для маппинга category_id → int при загрузке venues.
+		cats = newCategoryMap()
+		catDir := filepath.Join(cfg.dataDir, "categories")
+		if catReader, catErr := newParquetReader(catDir); catErr == nil {
+			_ = catReader.ReadCategories(catReader.files[0], cats)
+		}
 	}
 
-	venueIdx, result, err := stageVenues(ctx, client, cfg, cursor, cats, metrics)
-	if err != nil {
-		return err
+	if !cfg.skipVenues {
+		venueIdx, result, err := stageVenues(ctx, client, cfg, cursor, cats, metrics)
+		if err != nil {
+			return err
+		}
+		stageReport(ctx, venueIdx, cats, result, start)
+	} else {
+		log.Println("=== Stage 3: Venues === SKIPPED")
 	}
 
-	stageReport(ctx, venueIdx, cats, result, start)
 	cursor.Done()
-
 	return nil
 }
 
