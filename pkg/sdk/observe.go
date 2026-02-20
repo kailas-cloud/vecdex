@@ -1,6 +1,8 @@
 package vecdex
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -13,7 +15,7 @@ type sdkMetrics struct {
 	duration   *prometheus.HistogramVec
 }
 
-func newSDKMetrics(reg prometheus.Registerer) *sdkMetrics {
+func newSDKMetrics(reg prometheus.Registerer) (*sdkMetrics, error) {
 	m := &sdkMetrics{
 		operations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "vecdex",
@@ -29,8 +31,26 @@ func newSDKMetrics(reg prometheus.Registerer) *sdkMetrics {
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"operation"}),
 	}
-	reg.MustRegister(m.operations, m.duration)
-	return m
+	if err := registerOrReuse(reg, &m.operations); err != nil {
+		return nil, err
+	}
+	if err := registerOrReuse(reg, &m.duration); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// registerOrReuse registers a collector or reuses an existing one.
+func registerOrReuse[T prometheus.Collector](reg prometheus.Registerer, c *T) error {
+	if err := reg.Register(*c); err != nil {
+		var are prometheus.AlreadyRegisteredError
+		if errors.As(err, &are) {
+			*c = are.ExistingCollector.(T)
+			return nil
+		}
+		return fmt.Errorf("vecdex: register metric: %w", err)
+	}
+	return nil
 }
 
 // observer provides logging and metrics for SDK operations.
@@ -39,12 +59,16 @@ type observer struct {
 	metrics *sdkMetrics
 }
 
-func newObserver(logger *slog.Logger, reg prometheus.Registerer) *observer {
+func newObserver(logger *slog.Logger, reg prometheus.Registerer) (*observer, error) {
 	var m *sdkMetrics
 	if reg != nil {
-		m = newSDKMetrics(reg)
+		var err error
+		m, err = newSDKMetrics(reg)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return &observer{logger: logger, metrics: m}
+	return &observer{logger: logger, metrics: m}, nil
 }
 
 func (o *observer) observe(

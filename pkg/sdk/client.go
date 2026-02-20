@@ -92,7 +92,11 @@ func New(ctx context.Context, opts ...Option) (*Client, error) {
 		return nil, fmt.Errorf("vecdex: database not ready: %w", err)
 	}
 
-	obs := newObserver(cfg.logger, cfg.metricsReg)
+	obs, err := newObserver(cfg.logger, cfg.metricsReg)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
 	return wireClient(store, cfg, obs)
 }
 

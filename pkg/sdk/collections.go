@@ -49,14 +49,29 @@ func (s *CollectionService) Ensure(
 	start := time.Now()
 	defer func() { s.obs.observe("collection.ensure", start, err) }()
 
-	info, err := s.Create(ctx, name, opts...)
+	cfg := &collectionConfig{colType: CollectionTypeText}
+	for _, o := range opts {
+		o.applyCollection(cfg)
+	}
+
+	fields, err := toInternalFields(cfg.fields)
+	if err != nil {
+		return CollectionInfo{}, fmt.Errorf("ensure collection: %w", err)
+	}
+
+	col, err := s.svc.Create(ctx, name, domcol.Type(cfg.colType), fields)
 	if err == nil {
-		return info, nil
+		return fromInternalCollection(col), nil
 	}
 	if !errors.Is(err, domain.ErrAlreadyExists) {
-		return CollectionInfo{}, err
+		return CollectionInfo{}, fmt.Errorf("ensure collection: %w", err)
 	}
-	return s.Get(ctx, name)
+
+	existing, err := s.svc.Get(ctx, name)
+	if err != nil {
+		return CollectionInfo{}, fmt.Errorf("ensure collection: %w", err)
+	}
+	return fromInternalCollection(existing), nil
 }
 
 // Get retrieves collection metadata by name.
@@ -75,6 +90,8 @@ func (s *CollectionService) Get(
 
 // List returns a paginated list of collections.
 // Cursor is a collection name to start after (empty for first page).
+// If cursor references a deleted or non-existent collection, an empty page is
+// returned (HasMore=false). Callers should treat this as end-of-list.
 // Limit controls page size (0 = return all).
 func (s *CollectionService) List(
 	ctx context.Context, cursor string, limit int,

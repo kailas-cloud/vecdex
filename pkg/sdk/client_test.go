@@ -155,7 +155,10 @@ func TestObserver_NilSafe(t *testing.T) {
 
 func TestObserver_WithPrometheus(t *testing.T) {
 	reg := prometheus.NewRegistry()
-	obs := newObserver(nil, reg)
+	obs, err := newObserver(nil, reg)
+	if err != nil {
+		t.Fatalf("newObserver: %v", err)
+	}
 
 	obs.observe("document.get", time.Now().Add(-10*time.Millisecond), nil)
 	obs.observe("document.get", time.Now(), errors.New("fail"))
@@ -187,13 +190,19 @@ func TestObserver_WithPrometheus(t *testing.T) {
 func TestObserver_WithLogger(t *testing.T) {
 	// Проверяем что логгер не паникует при вызове.
 	logger := slog.Default()
-	obs := newObserver(logger, nil)
+	obs, err := newObserver(logger, nil)
+	if err != nil {
+		t.Fatalf("newObserver: %v", err)
+	}
 	obs.observe("test.op", time.Now(), nil)
 	obs.observe("test.op", time.Now(), errors.New("test error"))
 }
 
 func TestObserver_NoMetricsNoLogger(t *testing.T) {
-	obs := newObserver(nil, nil)
+	obs, err := newObserver(nil, nil)
+	if err != nil {
+		t.Fatalf("newObserver: %v", err)
+	}
 	// Не должно паниковать.
 	obs.observe("noop", time.Now(), nil)
 }
