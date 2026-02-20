@@ -1,0 +1,124 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REVIEW_APP_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get PR diff
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr.diff
+
+      - name: Resolve Claude auth
+        id: claude-auth
+        env:
+          HAS_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_APIKEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          if [ "$HAS_OAUTH" = "true" ]; then
+            echo "method=oauth" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_APIKEY" = "true" ]; then
+            echo "method=apikey" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No Claude auth configured. Set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY secret"
+            exit 1
+          fi
+
+      - name: Run Claude Code Review
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUTH_METHOD: ${{ steps.claude-auth.outputs.method }}
+        run: |
+          AUTH_ARGS=""
+          if [ "$AUTH_METHOD" = "oauth" ]; then
+            AUTH_ARGS="-e CLAUDE_CODE_OAUTH_TOKEN"
+          else
+            AUTH_ARGS="-e ANTHROPIC_API_KEY"
+          fi
+
+          docker run --rm \
+            $AUTH_ARGS \
+            -v "${{ github.workspace }}:/workspace:ro" \
+            -v /tmp/pr.diff:/tmp/pr.diff:ro \
+            -w /workspace \
+            ghcr.io/kailas-cloud/claudocker:latest \
+            sh -c 'cat /workspace/.claude/review-rules.md /tmp/pr.diff | claude -p "$(cat /dev/stdin)" --output-format json --max-turns 1' \
+            > /tmp/review.json
+
+          echo "--- Review output ---"
+          cat /tmp/review.json
+
+      - name: Post review and set quality gate
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Extract verdict from Claude's JSON response
+          # Claude --output-format json wraps result in {"type":"result","result":"..."}
+          # The inner result is our review JSON
+          INNER=$(jq -r '.result' /tmp/review.json)
+
+          # Parse the inner JSON
+          VERDICT=$(echo "$INNER" | jq -r '.verdict // "approve"')
+          SUMMARY=$(echo "$INNER" | jq -r '.summary // "No summary provided"')
+
+          echo "Verdict: $VERDICT"
+          echo "Summary: $SUMMARY"
+
+          # Build review body
+          BODY=$(echo "$INNER" | jq -r '
+            "## Claude Code Review\n\n" +
+            (.summary // "No summary") + "\n\n" +
+            if (.issues | length) > 0 then
+              "### Issues (" + (.issues | length | tostring) + ")\n\n" +
+              ([.issues[] |
+                "- **[" + (.severity | ascii_upcase) + "]** `" + .file +
+                (if .line then ":" + (.line | tostring) else "" end) +
+                "` — " + .message +
+                (if .suggestion then "\n  > " + .suggestion else "" end)
+              ] | join("\n"))
+            else
+              "No issues found."
+            end
+          ')
+
+          if [ "$VERDICT" = "request_changes" ]; then
+            gh pr review ${{ github.event.pull_request.number }} \
+              --request-changes --body "$BODY"
+            echo "::error::Claude Review: changes requested"
+            exit 1
+          else
+            gh pr review ${{ github.event.pull_request.number }} \
+              --approve --body "$BODY"
+          fi
