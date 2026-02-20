@@ -160,7 +160,12 @@ func main() {
 	docSvc := documentuc.New(docRepo, collRepo, docEmbedder, queryEmbedder).
 		WithPagination(cfg.Index.DefaultPageSize, cfg.Index.MaxPageSize)
 	searchSvc := searchuc.New(searchRepo, collRepo, queryEmbedder)
-	batchSvc := batchuc.New(docRepo, docRepo, docRepo, collRepo, docEmbedder).
+	// Type-assert: если docEmbedder поддерживает batch — передаём в batch service
+	var batchEmb batchuc.BulkEmbedder
+	if be, ok := docEmbedder.(domain.BatchEmbedder); ok {
+		batchEmb = be
+	}
+	batchSvc := batchuc.New(docRepo, docRepo, docRepo, collRepo, docEmbedder, batchEmb).
 		WithMaxBatchSize(cfg.Index.MaxBatchSize)
 
 	// Usage service — reads from shared BudgetTracker

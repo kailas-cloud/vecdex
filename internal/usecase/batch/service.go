@@ -2,7 +2,6 @@ package batch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
@@ -22,17 +21,20 @@ type Service struct {
 	del          DocumentDeleter
 	colls        CollectionReader
 	embed        Embedder
+	batchEmbed   BulkEmbedder
 	maxBatchSize int
 }
 
-// New creates a batch service.
+// New creates a batch service. batchEmbed может быть nil — тогда fallback на поштучный Embed.
 func New(
 	docs DocumentUpserter, batchDocs BulkUpserter,
 	del DocumentDeleter, colls CollectionReader, embed Embedder,
+	batchEmbed BulkEmbedder,
 ) *Service {
 	return &Service{
 		docs: docs, batchDocs: batchDocs,
 		del: del, colls: colls, embed: embed,
+		batchEmbed:   batchEmbed,
 		maxBatchSize: MaxBatchSize,
 	}
 }
@@ -121,7 +123,7 @@ func (s *Service) upsertGeoBatch(
 	return results
 }
 
-// upsertTextBatch processes text documents one-by-one (embeddings are per-doc).
+// upsertTextBatch validates all docs first, then batch-embeds, then bulk upserts.
 func (s *Service) upsertTextBatch(
 	ctx context.Context,
 	collectionName string,
@@ -130,50 +132,76 @@ func (s *Service) upsertTextBatch(
 ) []dombatch.Result {
 	results := make([]dombatch.Result, len(items))
 
-	for i, item := range items {
-		if err := validateItemFields(&item, fieldTypes); err != nil {
-			results[i] = dombatch.NewError(item.ID(), err)
+	// Фаза 1: валидация — отсеиваем невалидные ДО эмбеддинга
+	var validItems []domdoc.Document
+	var validIdx []int
+
+	for i := range items {
+		if err := validateItemFields(&items[i], fieldTypes); err != nil {
+			results[i] = dombatch.NewError(items[i].ID(), err)
 			continue
 		}
-
-		cascade, err := s.vectorizeText(ctx, &item)
-		if err != nil {
-			if cascade {
-				results[i] = dombatch.NewError(item.ID(), err)
-				for j := i + 1; j < len(items); j++ {
-					results[j] = dombatch.NewError(items[j].ID(), err)
-				}
-				return results
-			}
-			results[i] = dombatch.NewError(item.ID(), err)
-			continue
-		}
-
-		if _, err := s.docs.Upsert(ctx, collectionName, &item); err != nil {
-			results[i] = dombatch.NewError(item.ID(), fmt.Errorf("upsert: %w", err))
-			continue
-		}
-
-		results[i] = dombatch.NewOK(item.ID())
+		validItems = append(validItems, items[i])
+		validIdx = append(validIdx, i)
 	}
 
+	if len(validItems) == 0 {
+		return results
+	}
+
+	// Фаза 2: batch embed
+	texts := make([]string, len(validItems))
+	for j, item := range validItems {
+		texts[j] = item.Content()
+	}
+
+	embResult, err := s.doBatchEmbed(ctx, texts)
+	if err != nil {
+		// Каскадная ошибка — все валидные фейлятся
+		embErr := fmt.Errorf("vectorize: %w", err)
+		for _, i := range validIdx {
+			results[i] = dombatch.NewError(items[i].ID(), embErr)
+		}
+		return results
+	}
+
+	// Раздаём вектора по документам
+	for j, idx := range validIdx {
+		items[idx].SetVector(embResult.Embeddings[j])
+		validItems[j] = items[idx]
+	}
+	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
+
+	// Фаза 3: single pipeline upsert.
+	// Атомарная семантика: при ошибке все элементы фейлятся. Часть может быть уже записана
+	// в БД (pipeline partial write) — клиент должен быть готов к идемпотентному retry.
+	if err := s.batchDocs.BatchUpsert(ctx, collectionName, validItems); err != nil {
+		for _, i := range validIdx {
+			results[i] = dombatch.NewError(items[i].ID(), fmt.Errorf("batch upsert: %w", err))
+		}
+		return results
+	}
+
+	for _, i := range validIdx {
+		results[i] = dombatch.NewOK(items[i].ID())
+	}
 	return results
 }
 
-// vectorizeText embeds document content via the embedding API.
-// Returns (cascade, error): cascade=true means quota/rate-limit error, skip remaining.
-func (s *Service) vectorizeText(
-	ctx context.Context, item *domdoc.Document,
-) (bool, error) {
-	embResult, err := s.embed.Embed(ctx, item.Content())
-	if err != nil {
-		cascade := errors.Is(err, domain.ErrEmbeddingQuotaExceeded) ||
-			errors.Is(err, domain.ErrRateLimited)
-		return cascade, fmt.Errorf("vectorize: %w", err)
+// doBatchEmbed использует BulkEmbedder если доступен, иначе fallback на поштучный Embed.
+func (s *Service) doBatchEmbed(ctx context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
+	if s.batchEmbed != nil {
+		res, err := s.batchEmbed.BatchEmbed(ctx, texts)
+		if err != nil {
+			return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed: %w", err)
+		}
+		return res, nil
 	}
-	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
-	item.SetVector(embResult.Embedding)
-	return false, nil
+	res, err := domain.BatchFallback(ctx, s.embed, texts)
+	if err != nil {
+		return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed fallback: %w", err)
+	}
+	return res, nil
 }
 
 // vectorizeGeo sets ECEF vector from latitude/longitude numerics.

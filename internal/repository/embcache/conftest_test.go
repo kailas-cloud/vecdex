@@ -10,12 +10,35 @@ import (
 )
 
 type mockEmbedder struct {
-	result domain.EmbeddingResult
-	err    error
+	result      domain.EmbeddingResult
+	err         error
+	batchResult domain.BatchEmbeddingResult
+	batchErr    error
+	batchCalls  int
 }
 
 func (m *mockEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResult, error) {
 	return m.result, m.err
+}
+
+func (m *mockEmbedder) BatchEmbed(_ context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
+	m.batchCalls++
+	if m.batchErr != nil {
+		return domain.BatchEmbeddingResult{}, m.batchErr
+	}
+	if m.batchResult.Embeddings != nil {
+		return m.batchResult, nil
+	}
+	// Авто-генерация
+	embeddings := make([][]float32, len(texts))
+	for i := range texts {
+		embeddings[i] = m.result.Embedding
+	}
+	return domain.BatchEmbeddingResult{
+		Embeddings:   embeddings,
+		PromptTokens: m.result.PromptTokens * len(texts),
+		TotalTokens:  m.result.TotalTokens * len(texts),
+	}, nil
 }
 
 // mockKVStore implements the consumer interface for tests.
