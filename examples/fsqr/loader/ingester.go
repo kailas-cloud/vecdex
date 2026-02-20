@@ -193,6 +193,13 @@ func (ing *ingester) processBatch(
 			ing.metrics.rowsFailed.WithLabelValues(
 				"venues", "item_error",
 			).Add(float64(resp.Failed))
+			// Логируем первую ошибку из batch для диагностики.
+			for _, r := range resp.Results {
+				if !r.OK {
+					log.Printf("worker %d: item %s failed: %v", id, r.ID, r.Err)
+					break
+				}
+			}
 		}
 	}
 
