@@ -277,6 +277,76 @@ func TestFromSearchResults_WithData(t *testing.T) {
 	}
 }
 
+func TestFromSearchResults_WithVector(t *testing.T) {
+	vec := []float32{0.1, 0.2, 0.3}
+	r := result.New("doc-1", 0.9, "hi", nil, nil, vec)
+	out := fromSearchResults([]result.Result{r})
+	if len(out) != 1 {
+		t.Fatalf("len = %d, want 1", len(out))
+	}
+	if len(out[0].Vector) != 3 {
+		t.Fatalf("Vector len = %d, want 3", len(out[0].Vector))
+	}
+	if out[0].Vector[0] != 0.1 {
+		t.Errorf("Vector[0] = %f, want 0.1", out[0].Vector[0])
+	}
+}
+
+func TestFromSearchResults_MapCloning(t *testing.T) {
+	tags := map[string]string{"k": "v"}
+	nums := map[string]float64{"n": 1.0}
+	r := result.New("doc-1", 0.9, "hi", tags, nums, nil)
+	out := fromSearchResults([]result.Result{r})
+
+	// Mutate returned maps — original should be unaffected.
+	out[0].Tags["k"] = "mutated"
+	out[0].Numerics["n"] = 999
+
+	if r.Tags()["k"] == "mutated" {
+		t.Error("mutating Tags on result affected domain object")
+	}
+	if r.Numerics()["n"] == 999 {
+		t.Error("mutating Numerics on result affected domain object")
+	}
+}
+
+func TestFromInternalDocument_MapCloning(t *testing.T) {
+	d, _ := toInternalDocument(Document{
+		ID: "x", Content: "hi",
+		Tags:     map[string]string{"k": "v"},
+		Numerics: map[string]float64{"n": 1.5},
+	})
+
+	out := fromInternalDocument(d)
+	out.Tags["k"] = "mutated"
+	out.Numerics["n"] = 999
+
+	if d.Tags()["k"] == "mutated" {
+		t.Error("mutating Tags affected domain document")
+	}
+	if d.Numerics()["n"] == 999 {
+		t.Error("mutating Numerics affected domain document")
+	}
+}
+
+func TestFromInternalCollection_Revision(t *testing.T) {
+	col := domcol.Reconstruct(
+		"test", domcol.TypeText, nil, 1024, 1000, 5,
+	)
+	info := fromInternalCollection(col)
+	if info.Revision != 5 {
+		t.Errorf("Revision = %d, want 5", info.Revision)
+	}
+}
+
+func TestFromInternalDocument_Revision(t *testing.T) {
+	d, _ := toInternalDocument(Document{ID: "doc-1", Content: "hi"})
+	out := fromInternalDocument(d)
+	if out.Revision != 1 {
+		t.Errorf("Revision = %d, want 1 (default from New)", out.Revision)
+	}
+}
+
 func TestToBatchResponse_WithData(t *testing.T) {
 	ok := dombatch.NewOK("doc-1")
 	fail := dombatch.NewError("doc-2", errors.New("conflict"))

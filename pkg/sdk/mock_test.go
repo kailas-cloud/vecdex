@@ -10,6 +10,8 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/request"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/result"
+	domusage "github.com/kailas-cloud/vecdex/internal/domain/usage"
+	healthuc "github.com/kailas-cloud/vecdex/internal/usecase/health"
 )
 
 // --- collectionUseCase mock ---
@@ -101,6 +103,28 @@ func (m *mockSearchUC) Search(
 	ctx context.Context, col string, req *request.Request,
 ) ([]result.Result, int, error) {
 	return m.searchFn(ctx, col, req)
+}
+
+// --- healthUseCase mock ---
+
+type mockHealthUC struct {
+	checkFn func(ctx context.Context) healthuc.Report
+}
+
+func (m *mockHealthUC) Check(ctx context.Context) healthuc.Report {
+	return m.checkFn(ctx)
+}
+
+// --- usageUseCase mock ---
+
+type mockUsageUC struct {
+	getReportFn func(ctx context.Context, period domusage.Period) domusage.Report
+}
+
+func (m *mockUsageUC) GetReport(
+	ctx context.Context, period domusage.Period,
+) domusage.Report {
+	return m.getReportFn(ctx, period)
 }
 
 // --- helpers ---
