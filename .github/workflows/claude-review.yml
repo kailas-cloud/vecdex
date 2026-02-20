@@ -16,6 +16,10 @@ jobs:
   claude-review:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
     steps:
       - name: Generate App Token
         id: app-token
@@ -38,7 +42,7 @@ jobs:
       - name: Get PR diff
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr.diff
+        run: gh pr diff "$PR_NUMBER" > /tmp/pr.diff
 
       - name: Resolve Claude auth
         id: claude-auth
@@ -58,11 +62,8 @@ jobs:
       - name: Build review prompt
         run: |
           {
-            cat "${{ github.workspace }}/.claude/review-rules.md"
-            printf '\nPR #%s: %s\nAuthor: %s\n\n' \
-              "${{ github.event.pull_request.number }}" \
-              "${{ github.event.pull_request.title }}" \
-              "${{ github.event.pull_request.user.login }}"
+            cat "$GITHUB_WORKSPACE/.claude/review-rules.md"
+            printf '\nPR #%s: %s\nAuthor: %s\n\n' "$PR_NUMBER" "$PR_TITLE" "$PR_AUTHOR"
             cat /tmp/pr.diff
           } > /tmp/prompt.txt
           echo "Prompt size: $(wc -c < /tmp/prompt.txt) bytes"
@@ -82,11 +83,11 @@ jobs:
 
           docker run --rm \
             $AUTH_ARGS \
-            -v "${{ github.workspace }}:/workspace:ro" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
             -v /tmp/prompt.txt:/tmp/prompt.txt:ro \
             -w /workspace \
             ghcr.io/kailas-cloud/claudocker:latest \
-            sh -c 'claude -p "$(cat /tmp/prompt.txt)" --output-format json --max-turns 3' \
+            sh -c 'cat /tmp/prompt.txt | claude -p - --output-format json --max-turns 3' \
             > /tmp/review.json
 
           echo "--- Review output ---"
@@ -96,49 +97,50 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # Claude --output-format json wraps result in {"type":"result","result":"..."}
-          # .result is a string containing our review JSON
+          # Claude --output-format json: {"type":"result","result":"<text>",...}
+          # .result contains Claude's text response (should be our review JSON)
           RESULT_RAW=$(jq -r '.result // empty' /tmp/review.json)
 
           if [ -z "$RESULT_RAW" ]; then
-            echo "::warning::Claude returned no result. Raw output:"
+            echo "::warning::Claude returned no result field. Full output:"
             cat /tmp/review.json
             VERDICT="approve"
-            SUMMARY="Review produced no output (possible max_turns or auth issue)"
-            INNER='{"verdict":"approve","summary":"Review produced no output","issues":[]}'
+            BODY="## Claude Code Review\n\nReview produced no structured output. Check workflow logs."
           else
-            # .result is a JSON string — parse it
-            INNER=$(echo "$RESULT_RAW" | jq -r '.' 2>/dev/null || echo "$RESULT_RAW")
-            VERDICT=$(echo "$INNER" | jq -r '.verdict // "approve"' 2>/dev/null || echo "approve")
-            SUMMARY=$(echo "$INNER" | jq -r '.summary // "No summary"' 2>/dev/null || echo "Could not parse summary")
+            # Claude may wrap JSON in markdown fences — strip them
+            CLEAN=$(echo "$RESULT_RAW" | sed '/^```/d')
+
+            # Try to parse as JSON
+            if echo "$CLEAN" | jq empty 2>/dev/null; then
+              VERDICT=$(echo "$CLEAN" | jq -r '.verdict // "approve"')
+              SUMMARY=$(echo "$CLEAN" | jq -r '.summary // "No summary"')
+              ISSUES=$(echo "$CLEAN" | jq -r '
+                if (.issues | length) > 0 then
+                  "### Issues (" + (.issues | length | tostring) + ")\n\n" +
+                  ([.issues[] |
+                    "- **[" + (.severity | ascii_upcase) + "]** `" + .file +
+                    (if .line then ":" + (.line | tostring) else "" end) +
+                    "` — " + .message +
+                    (if .suggestion then "\n  > " + .suggestion else "" end)
+                  ] | join("\n"))
+                else
+                  "No issues found."
+                end
+              ')
+              BODY=$(printf '## Claude Code Review\n\n%s\n\n%s' "$SUMMARY" "$ISSUES")
+            else
+              echo "::warning::Could not parse Claude output as JSON. Using raw text."
+              VERDICT="approve"
+              BODY=$(printf '## Claude Code Review\n\n%s' "$RESULT_RAW")
+            fi
           fi
 
           echo "Verdict: $VERDICT"
-          echo "Summary: $SUMMARY"
-
-          # Build review body
-          BODY=$(echo "$INNER" | jq -r '
-            "## Claude Code Review\n\n" +
-            (.summary // "No summary") + "\n\n" +
-            if (.issues | length) > 0 then
-              "### Issues (" + (.issues | length | tostring) + ")\n\n" +
-              ([.issues[] |
-                "- **[" + (.severity | ascii_upcase) + "]** `" + .file +
-                (if .line then ":" + (.line | tostring) else "" end) +
-                "` — " + .message +
-                (if .suggestion then "\n  > " + .suggestion else "" end)
-              ] | join("\n"))
-            else
-              "No issues found."
-            end
-          ')
 
           if [ "$VERDICT" = "request_changes" ]; then
-            gh pr review ${{ github.event.pull_request.number }} \
-              --request-changes --body "$BODY"
+            gh pr review "$PR_NUMBER" --request-changes --body "$BODY"
             echo "::error::Claude Review: changes requested"
             exit 1
           else
-            gh pr review ${{ github.event.pull_request.number }} \
-              --approve --body "$BODY"
+            gh pr review "$PR_NUMBER" --approve --body "$BODY"
           fi
