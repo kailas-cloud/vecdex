@@ -18,8 +18,6 @@ jobs:
     timeout-minutes: 15
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      PR_TITLE: ${{ github.event.pull_request.title }}
-      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
     steps:
       - name: Generate App Token
         id: app-token
@@ -63,7 +61,7 @@ jobs:
         run: |
           {
             cat "$GITHUB_WORKSPACE/.claude/review-rules.md"
-            printf '\nPR #%s: %s\nAuthor: %s\n\n' "$PR_NUMBER" "$PR_TITLE" "$PR_AUTHOR"
+            printf '\n---\nDiff for review:\n\n'
             cat /tmp/pr.diff
           } > /tmp/prompt.txt
           echo "Prompt size: $(wc -c < /tmp/prompt.txt) bytes"
@@ -86,7 +84,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace:ro" \
             -v /tmp/prompt.txt:/tmp/prompt.txt:ro \
             -w /workspace \
-            ghcr.io/kailas-cloud/claudocker:latest \
+            ghcr.io/kailas-cloud/claudocker@sha256:51ad30816d14f2f84029f8c69560a8b6557f3b0ad5db6393474225207c164c3f \
             sh -c 'cat /tmp/prompt.txt | claude -p - --output-format json --max-turns 3' \
             > /tmp/review.json
 
@@ -96,51 +94,89 @@ jobs:
       - name: Post review and set quality gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
         run: |
           # Claude --output-format json: {"type":"result","result":"<text>",...}
-          # .result contains Claude's text response (should be our review JSON)
           RESULT_RAW=$(jq -r '.result // empty' /tmp/review.json)
 
           if [ -z "$RESULT_RAW" ]; then
             echo "::warning::Claude returned no result field. Full output:"
             cat /tmp/review.json
-            VERDICT="approve"
-            BODY="## Claude Code Review\n\nReview produced no structured output. Check workflow logs."
-          else
-            # Claude may wrap JSON in markdown fences — strip them
-            CLEAN=$(echo "$RESULT_RAW" | sed '/^```/d')
+            # No result — skip review, don't auto-approve
+            echo "::error::Review produced no output. Check workflow logs."
+            exit 1
+          fi
 
-            # Try to parse as JSON
-            if echo "$CLEAN" | jq empty 2>/dev/null; then
-              VERDICT=$(echo "$CLEAN" | jq -r '.verdict // "approve"')
-              SUMMARY=$(echo "$CLEAN" | jq -r '.summary // "No summary"')
-              ISSUES=$(echo "$CLEAN" | jq -r '
-                if (.issues | length) > 0 then
-                  "### Issues (" + (.issues | length | tostring) + ")\n\n" +
-                  ([.issues[] |
-                    "- **[" + (.severity | ascii_upcase) + "]** `" + .file +
-                    (if .line then ":" + (.line | tostring) else "" end) +
-                    "` — " + .message +
-                    (if .suggestion then "\n  > " + .suggestion else "" end)
-                  ] | join("\n"))
-                else
-                  "No issues found."
-                end
-              ')
-              BODY=$(printf '## Claude Code Review\n\n%s\n\n%s' "$SUMMARY" "$ISSUES")
-            else
-              echo "::warning::Could not parse Claude output as JSON. Using raw text."
-              VERDICT="approve"
-              BODY=$(printf '## Claude Code Review\n\n%s' "$RESULT_RAW")
-            fi
+          # Claude may wrap JSON in markdown fences — strip them
+          CLEAN=$(echo "$RESULT_RAW" | sed '/^```[a-z]*/d')
+
+          if ! echo "$CLEAN" | jq empty 2>/dev/null; then
+            echo "::warning::Could not parse Claude output as JSON:"
+            echo "$RESULT_RAW"
+            echo "::error::Review output is not valid JSON. Check workflow logs."
+            exit 1
+          fi
+
+          # Save parsed review for API call
+          echo "$CLEAN" > /tmp/parsed-review.json
+
+          VERDICT=$(jq -r '.verdict' /tmp/parsed-review.json)
+          SUMMARY=$(jq -r '.summary // "No summary"' /tmp/parsed-review.json)
+
+          if [ -z "$VERDICT" ] || [ "$VERDICT" = "null" ]; then
+            echo "::error::Review JSON missing verdict field"
+            exit 1
           fi
 
           echo "Verdict: $VERDICT"
+          echo "Summary: $SUMMARY"
+
+          # Build review event
+          if [ "$VERDICT" = "request_changes" ]; then
+            EVENT="REQUEST_CHANGES"
+          else
+            EVENT="APPROVE"
+          fi
+
+          # Build inline comments from issues with file+line
+          # Issues without line go into the summary body
+          INLINE_COMMENTS=$(jq -c '[
+            .issues // [] | .[] | select(.file and .line) |
+            {
+              path: .file,
+              line: .line,
+              body: (
+                "**[" + (.severity | ascii_upcase) + "]** " + .message +
+                (if .suggestion then "\n\n> **Suggestion:** " + .suggestion else "" end)
+              )
+            }
+          ]' /tmp/parsed-review.json)
+
+          # Build summary body with file-only issues (no line)
+          BODY_ISSUES=$(jq -r '[
+            .issues // [] | .[] | select(.file and (.line | not)) |
+            "- **[" + (.severity | ascii_upcase) + "]** `" + .file + "` — " + .message +
+            (if .suggestion then "\n  > " + .suggestion else "" end)
+          ] | join("\n")' /tmp/parsed-review.json)
+
+          BODY="## Claude Code Review\n\n${SUMMARY}"
+          if [ -n "$BODY_ISSUES" ]; then
+            BODY="${BODY}\n\n### General Issues\n\n${BODY_ISSUES}"
+          fi
+
+          NUM_INLINE=$(echo "$INLINE_COMMENTS" | jq 'length')
+          echo "Inline comments: $NUM_INLINE"
+
+          # Post review with inline comments via API
+          jq -n \
+            --arg body "$BODY" \
+            --arg event "$EVENT" \
+            --arg commit "${{ github.event.pull_request.head.sha }}" \
+            --argjson comments "$INLINE_COMMENTS" \
+            '{body: $body, event: $event, commit_id: $commit, comments: $comments}' \
+          | gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --input -
 
           if [ "$VERDICT" = "request_changes" ]; then
-            gh pr review "$PR_NUMBER" --request-changes --body "$BODY"
             echo "::error::Claude Review: changes requested"
             exit 1
-          else
-            gh pr review "$PR_NUMBER" --approve --body "$BODY"
           fi
