@@ -71,23 +71,24 @@ func (r *parquetReader) ReadPlaces(fileIndex, rowOffset, maxRows int, cb readPla
 func (r *parquetReader) readFile(
 	path string, skipRows, maxRows, startSeq int, cb readPlacesCallback,
 ) (int, error) {
-	pf, err := openParquet(path)
+	h, err := openParquet(path)
 	if err != nil {
 		return 0, err
 	}
+	defer h.Close()
 
 	read := 0
 	skipped := 0
 	seq := startSeq
 
-	for _, rg := range pf.RowGroups() {
+	for _, rg := range h.pf.RowGroups() {
 		rgRows := int(rg.NumRows())
 		if skipped+rgRows <= skipRows {
 			skipped += rgRows
 			continue
 		}
 
-		n, done, err := r.readRowGroup(pf, rg, skipRows, maxRows, &skipped, &read, &seq, cb)
+		n, done, err := r.readRowGroup(h.pf, rg, skipRows, maxRows, &skipped, &read, &seq, cb)
 		if err != nil {
 			return read, err
 		}
@@ -147,7 +148,17 @@ func (r *parquetReader) readRowGroup(
 	return n, false, nil
 }
 
-func openParquet(path string) (*parquet.File, error) {
+// parquetHandle wraps parquet.File + underlying os.File for proper cleanup.
+type parquetHandle struct {
+	pf   *parquet.File
+	file *os.File
+}
+
+func (h *parquetHandle) Close() {
+	_ = h.file.Close()
+}
+
+func openParquet(path string) (*parquetHandle, error) {
 	cleanPath := filepath.Clean(path)
 	f, err := os.Open(cleanPath)
 	if err != nil {
@@ -165,17 +176,18 @@ func openParquet(path string) (*parquet.File, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("open parquet: %w", err)
 	}
-	return pf, nil
+	return &parquetHandle{pf: pf, file: f}, nil
 }
 
 // ReadCategories читает categories parquet и заполняет categoryMap.
 func (r *parquetReader) ReadCategories(catFile string, cats *categoryMap) error {
-	pf, err := openParquet(catFile)
+	h, err := openParquet(catFile)
 	if err != nil {
 		return fmt.Errorf("open categories: %w", err)
 	}
+	defer h.Close()
 
-	for _, rg := range pf.RowGroups() {
+	for _, rg := range h.pf.RowGroups() {
 		rows := parquet.NewRowGroupReader(rg)
 		buf := make([]parquet.Row, 1000)
 
@@ -183,7 +195,7 @@ func (r *parquetReader) ReadCategories(catFile string, cats *categoryMap) error 
 			n, readErr := rows.ReadRows(buf)
 			for i := 0; i < n; i++ {
 				var cat fsqCategoryRow
-				if err := pf.Schema().Reconstruct(&cat, buf[i]); err != nil {
+				if err := h.pf.Schema().Reconstruct(&cat, buf[i]); err != nil {
 					log.Printf("skip category row: %v", err)
 					continue
 				}

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -253,6 +254,9 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	}
 
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return n, io.EOF
+		}
 		return n, fmt.Errorf("read: %w", err)
 	}
 	return n, nil

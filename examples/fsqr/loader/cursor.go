@@ -125,6 +125,9 @@ func (ct *cursorTracker) forceSave() {
 	}
 	if err := os.Rename(tmp, ct.path); err != nil {
 		log.Printf("cursor rename error: %v", err)
+		ct.mu.Lock()
+		ct.dirty = true
+		ct.mu.Unlock()
 	}
 }
 

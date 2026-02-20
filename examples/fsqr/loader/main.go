@@ -101,19 +101,20 @@ func run(ctx context.Context, cfg config) error {
 	}
 	defer client.Close()
 
-	startValkeyPoller(ctx, metrics)
+	closePoller := startValkeyPoller(ctx, metrics)
+	defer closePoller()
 
 	cats, err := stageCategories(ctx, client, cfg, cursor, metrics)
 	if err != nil {
 		return err
 	}
 
-	result, err := stageVenues(ctx, client, cfg, cursor, cats, metrics)
+	venueIdx, result, err := stageVenues(ctx, client, cfg, cursor, cats, metrics)
 	if err != nil {
 		return err
 	}
 
-	stageReport(ctx, client, cats, result, start)
+	stageReport(ctx, venueIdx, cats, result, start)
 	cursor.Done()
 
 	return nil
@@ -152,7 +153,8 @@ func connectVecdex(ctx context.Context) (*vecdex.Client, error) {
 	return client, nil
 }
 
-func startValkeyPoller(ctx context.Context, metrics *loaderMetrics) {
+// startValkeyPoller возвращает функцию cleanup для закрытия клиента.
+func startValkeyPoller(ctx context.Context, metrics *loaderMetrics) func() {
 	addr := env("VALKEY_ADDR", "localhost:6379")
 	password := env("VALKEY_PASSWORD", "")
 
@@ -162,7 +164,7 @@ func startValkeyPoller(ctx context.Context, metrics *loaderMetrics) {
 	})
 	if err != nil {
 		log.Printf("warning: cannot connect rueidis for metrics: %v", err)
-		return
+		return func() {}
 	}
 
 	poller := &valkeyPoller{
@@ -173,6 +175,7 @@ func startValkeyPoller(ctx context.Context, metrics *loaderMetrics) {
 		prefix:      "vecdex:",
 	}
 	poller.Start(ctx)
+	return valkeyClient.Close
 }
 
 func stageCategories(
@@ -225,21 +228,21 @@ func stageVenues(
 	cursor *cursorTracker,
 	cats *categoryMap,
 	metrics *loaderMetrics,
-) (ingestResult, error) {
+) (*vecdex.TypedIndex[Venue], ingestResult, error) {
 	log.Println("=== Stage 3: Venues ===")
 	cursor.SetStage("venues")
 
 	venueIdx, err := vecdex.NewIndex[Venue](client, "fsqr-venues")
 	if err != nil {
-		return ingestResult{}, fmt.Errorf("init venues index: %w", err)
+		return nil, ingestResult{}, fmt.Errorf("init venues index: %w", err)
 	}
 	if err := venueIdx.Ensure(ctx); err != nil {
-		return ingestResult{}, fmt.Errorf("ensure venues: %w", err)
+		return nil, ingestResult{}, fmt.Errorf("ensure venues: %w", err)
 	}
 
 	reader, err := newParquetReader(filepath.Join(cfg.dataDir, "places"))
 	if err != nil {
-		return ingestResult{}, fmt.Errorf("init parquet reader: %w", err)
+		return nil, ingestResult{}, fmt.Errorf("init parquet reader: %w", err)
 	}
 
 	ing := &ingester{
@@ -252,21 +255,20 @@ func stageVenues(
 
 	result, err := ing.Run(ctx, reader, cats, cfg.maxRows)
 	if err != nil {
-		return result, fmt.Errorf("ingest venues: %w", err)
+		return venueIdx, result, fmt.Errorf("ingest venues: %w", err)
 	}
-	return result, nil
+	return venueIdx, result, nil
 }
 
 func stageReport(
 	ctx context.Context,
-	client *vecdex.Client,
+	venueIdx *vecdex.TypedIndex[Venue],
 	cats *categoryMap,
 	result ingestResult,
 	start time.Time,
 ) {
 	log.Println("=== Stage 4: Report ===")
 
-	venueIdx, _ := vecdex.NewIndex[Venue](client, "fsqr-venues")
 	venueCount, _ := venueIdx.Count(ctx)
 	elapsed := time.Since(start)
 	rate := float64(result.Processed) / elapsed.Seconds()
