@@ -84,7 +84,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace:ro" \
             -v /tmp/prompt.txt:/tmp/prompt.txt:ro \
             -w /workspace \
-            ghcr.io/kailas-cloud/claudocker@sha256:51ad30816d14f2f84029f8c69560a8b6557f3b0ad5db6393474225207c164c3f \
+            ghcr.io/kailas-cloud/claudocker@sha256:b897f9eab35b85d0c4f19cfee14bb8dcfbef5fa8e9d1aa8a15da4c02922a9942 \
             sh -c 'cat /tmp/prompt.txt | claude -p - --output-format json --max-turns 3' \
             > /tmp/review.json
 
