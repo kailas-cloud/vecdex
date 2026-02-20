@@ -131,8 +131,20 @@ jobs:
             exit 1
           fi
 
-          # Claude may wrap JSON in markdown fences — strip them
-          CLEAN=$(echo "$RESULT_RAW" | sed '/^```[a-z]*/d')
+          # Extract JSON from Claude's response (may have surrounding text or fences)
+          # Try raw first, then strip fences, then extract { ... } block
+          CLEAN="$RESULT_RAW"
+          if ! echo "$CLEAN" | jq empty 2>/dev/null; then
+            CLEAN=$(echo "$RESULT_RAW" | sed '/^```[a-z]*/d')
+          fi
+          if ! echo "$CLEAN" | jq empty 2>/dev/null; then
+            # Extract first JSON object from text
+            CLEAN=$(echo "$RESULT_RAW" | sed -n '/^{/,/^}/p')
+          fi
+          if ! echo "$CLEAN" | jq empty 2>/dev/null; then
+            # Last resort: extract between fences
+            CLEAN=$(echo "$RESULT_RAW" | sed -n '/^```/,/^```/{/^```/d;p}')
+          fi
 
           if ! echo "$CLEAN" | jq empty 2>/dev/null; then
             echo "::warning::Could not parse Claude output as JSON:"
