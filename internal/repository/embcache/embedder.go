@@ -81,40 +81,17 @@ func (c *CachedEmbedder) BatchEmbed(ctx context.Context, texts []string) (domain
 		keys[i] = c.cacheKey(t)
 	}
 
-	// Разделяем на hits и misses
-	embeddings := make([][]float32, len(texts))
-	var missTexts []string
-	var missIdx []int
+	embeddings, missTexts, missIdx := c.partitionByCache(ctx, texts, keys)
 
-	for i, key := range keys {
-		if vec, ok := c.getFromCache(ctx, key); ok {
-			c.incCache("hit")
-			embeddings[i] = vec
-		} else {
-			c.incCache("miss")
-			missTexts = append(missTexts, texts[i])
-			missIdx = append(missIdx, i)
-		}
-	}
-
-	// Всё из кеша — возвращаем без обращения к API
 	if len(missTexts) == 0 {
 		return domain.BatchEmbeddingResult{Embeddings: embeddings}, nil
 	}
 
-	// Batch embed только промахов
-	var missResult domain.BatchEmbeddingResult
-	var err error
-	if be, ok := c.inner.(domain.BatchEmbedder); ok {
-		missResult, err = be.BatchEmbed(ctx, missTexts)
-	} else {
-		missResult, err = domain.BatchFallback(ctx, c.inner, missTexts)
-	}
+	missResult, err := c.embedMisses(ctx, missTexts)
 	if err != nil {
-		return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed misses: %w", err)
+		return domain.BatchEmbeddingResult{}, err
 	}
 
-	// Мержим результаты и записываем в кеш
 	for j, idx := range missIdx {
 		embeddings[idx] = missResult.Embeddings[j]
 		c.putToCache(ctx, keys[idx], missResult.Embeddings[j])
@@ -125,6 +102,42 @@ func (c *CachedEmbedder) BatchEmbed(ctx context.Context, texts []string) (domain
 		PromptTokens: missResult.PromptTokens,
 		TotalTokens:  missResult.TotalTokens,
 	}, nil
+}
+
+// partitionByCache разделяет тексты на cache hits и misses.
+func (c *CachedEmbedder) partitionByCache(
+	ctx context.Context, texts, keys []string,
+) (embeddings [][]float32, missTexts []string, missIdx []int) {
+	embeddings = make([][]float32, len(texts))
+	for i, key := range keys {
+		if vec, ok := c.getFromCache(ctx, key); ok {
+			c.incCache("hit")
+			embeddings[i] = vec
+		} else {
+			c.incCache("miss")
+			missTexts = append(missTexts, texts[i])
+			missIdx = append(missIdx, i)
+		}
+	}
+	return embeddings, missTexts, missIdx
+}
+
+// embedMisses batch-эмбедит промахи через inner (или fallback на поштучный Embed).
+func (c *CachedEmbedder) embedMisses(
+	ctx context.Context, texts []string,
+) (domain.BatchEmbeddingResult, error) {
+	if be, ok := c.inner.(domain.BatchEmbedder); ok {
+		res, err := be.BatchEmbed(ctx, texts)
+		if err != nil {
+			return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed misses: %w", err)
+		}
+		return res, nil
+	}
+	res, err := domain.BatchFallback(ctx, c.inner, texts)
+	if err != nil {
+		return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed misses fallback: %w", err)
+	}
+	return res, nil
 }
 
 func (c *CachedEmbedder) incCache(result string) {
