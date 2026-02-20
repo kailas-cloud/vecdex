@@ -142,10 +142,10 @@ func TestToInternalPatch_Empty(t *testing.T) {
 	}
 }
 
-func TestFromBatchResults(t *testing.T) {
-	results := fromBatchResults(nil)
-	if len(results) != 0 {
-		t.Errorf("len = %d, want 0", len(results))
+func TestToBatchResponse_Nil(t *testing.T) {
+	resp := toBatchResponse(nil)
+	if len(resp.Results) != 0 {
+		t.Errorf("len = %d, want 0", len(resp.Results))
 	}
 }
 
@@ -277,22 +277,25 @@ func TestFromSearchResults_WithData(t *testing.T) {
 	}
 }
 
-func TestFromBatchResults_WithData(t *testing.T) {
+func TestToBatchResponse_WithData(t *testing.T) {
 	ok := dombatch.NewOK("doc-1")
 	fail := dombatch.NewError("doc-2", errors.New("conflict"))
 
-	out := fromBatchResults([]dombatch.Result{ok, fail})
-	if len(out) != 2 {
-		t.Fatalf("len = %d, want 2", len(out))
+	resp := toBatchResponse([]dombatch.Result{ok, fail})
+	if len(resp.Results) != 2 {
+		t.Fatalf("len = %d, want 2", len(resp.Results))
 	}
-	if out[0].ID != "doc-1" || !out[0].OK {
-		t.Errorf("result[0] = %+v, want doc-1/OK", out[0])
+	if resp.Results[0].ID != "doc-1" || !resp.Results[0].OK {
+		t.Errorf("result[0] = %+v, want doc-1/OK", resp.Results[0])
 	}
-	if out[1].ID != "doc-2" || out[1].OK {
-		t.Errorf("result[1] = %+v, want doc-2/error", out[1])
+	if resp.Results[1].ID != "doc-2" || resp.Results[1].OK {
+		t.Errorf("result[1] = %+v, want doc-2/error", resp.Results[1])
 	}
-	if out[1].Err == nil {
+	if resp.Results[1].Err == nil {
 		t.Error("expected non-nil error for failed result")
+	}
+	if resp.Succeeded != 1 || resp.Failed != 1 {
+		t.Errorf("succeeded=%d failed=%d, want 1/1", resp.Succeeded, resp.Failed)
 	}
 }
 

@@ -86,6 +86,13 @@ type BatchResult struct {
 	Err error
 }
 
+// BatchResponse wraps batch results with summary counts.
+type BatchResponse struct {
+	Results   []BatchResult
+	Succeeded int
+	Failed    int
+}
+
 // ListResult is a paginated list of documents.
 type ListResult struct {
 	Documents  []Document

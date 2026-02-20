@@ -384,12 +384,15 @@ func TestDocumentService_BatchUpsert(t *testing.T) {
 	}
 
 	svc := newDocSvc(nil, batch)
-	results, err := svc.BatchUpsert(context.Background(), []Document{{ID: "doc-1"}})
+	resp, err := svc.BatchUpsert(context.Background(), []Document{{ID: "doc-1"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 1 || !results[0].OK {
-		t.Errorf("results = %+v", results)
+	if len(resp.Results) != 1 || !resp.Results[0].OK {
+		t.Errorf("results = %+v", resp.Results)
+	}
+	if resp.Succeeded != 1 || resp.Failed != 0 {
+		t.Errorf("succeeded=%d failed=%d, want 1/0", resp.Succeeded, resp.Failed)
 	}
 }
 
@@ -401,9 +404,12 @@ func TestDocumentService_BatchDelete(t *testing.T) {
 	}
 
 	svc := newDocSvc(nil, batch)
-	results := svc.BatchDelete(context.Background(), []string{"doc-1"})
-	if len(results) != 1 || !results[0].OK {
-		t.Errorf("results = %+v", results)
+	resp := svc.BatchDelete(context.Background(), []string{"doc-1"})
+	if len(resp.Results) != 1 || !resp.Results[0].OK {
+		t.Errorf("results = %+v", resp.Results)
+	}
+	if resp.Succeeded != 1 || resp.Failed != 0 {
+		t.Errorf("succeeded=%d failed=%d, want 1/0", resp.Succeeded, resp.Failed)
 	}
 }
 

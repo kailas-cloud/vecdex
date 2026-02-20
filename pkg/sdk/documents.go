@@ -88,25 +88,25 @@ func (s *DocumentService) Count(ctx context.Context) (int, error) {
 // BatchUpsert creates or updates documents in batch.
 func (s *DocumentService) BatchUpsert(
 	ctx context.Context, docs []Document,
-) ([]BatchResult, error) {
+) (BatchResponse, error) {
 	items := make([]domdoc.Document, len(docs))
 	for i, d := range docs {
 		var err error
 		items[i], err = toInternalDocument(d)
 		if err != nil {
-			return nil, fmt.Errorf("document %d: %w", i, err)
+			return BatchResponse{}, fmt.Errorf("document %d: %w", i, err)
 		}
 	}
 	results := s.batchSvc.Upsert(ctx, s.collection, items)
-	return fromBatchResults(results), nil
+	return toBatchResponse(results), nil
 }
 
 // BatchDelete removes documents by IDs.
 func (s *DocumentService) BatchDelete(
 	ctx context.Context, ids []string,
-) []BatchResult {
+) BatchResponse {
 	results := s.batchSvc.Delete(ctx, s.collection, ids)
-	return fromBatchResults(results)
+	return toBatchResponse(results)
 }
 
 func toInternalDocument(d Document) (domdoc.Document, error) {
@@ -135,14 +135,21 @@ func toInternalPatch(p DocumentPatch) (patch.Patch, error) {
 	return pp, nil
 }
 
-func fromBatchResults(results []dombatch.Result) []BatchResult {
+func toBatchResponse(results []dombatch.Result) BatchResponse {
 	out := make([]BatchResult, len(results))
+	succeeded, failed := 0, 0
 	for i, r := range results {
+		ok := r.Status() == dombatch.StatusOK
 		out[i] = BatchResult{
 			ID:  r.ID(),
-			OK:  r.Status() == dombatch.StatusOK,
+			OK:  ok,
 			Err: r.Err(),
 		}
+		if ok {
+			succeeded++
+		} else {
+			failed++
+		}
 	}
-	return out
+	return BatchResponse{Results: out, Succeeded: succeeded, Failed: failed}
 }
