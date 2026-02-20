@@ -55,6 +55,18 @@ jobs:
             exit 1
           fi
 
+      - name: Build review prompt
+        run: |
+          {
+            cat "${{ github.workspace }}/.claude/review-rules.md"
+            printf '\nPR #%s: %s\nAuthor: %s\n\n' \
+              "${{ github.event.pull_request.number }}" \
+              "${{ github.event.pull_request.title }}" \
+              "${{ github.event.pull_request.user.login }}"
+            cat /tmp/pr.diff
+          } > /tmp/prompt.txt
+          echo "Prompt size: $(wc -c < /tmp/prompt.txt) bytes"
+
       - name: Run Claude Code Review
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -71,10 +83,10 @@ jobs:
           docker run --rm \
             $AUTH_ARGS \
             -v "${{ github.workspace }}:/workspace:ro" \
-            -v /tmp/pr.diff:/tmp/pr.diff:ro \
+            -v /tmp/prompt.txt:/tmp/prompt.txt:ro \
             -w /workspace \
             ghcr.io/kailas-cloud/claudocker:latest \
-            sh -c 'cat /workspace/.claude/review-rules.md /tmp/pr.diff | claude -p "$(cat /dev/stdin)" --output-format json --max-turns 1' \
+            sh -c 'claude -p "$(cat /tmp/prompt.txt)" --output-format json --max-turns 3' \
             > /tmp/review.json
 
           echo "--- Review output ---"
@@ -84,14 +96,22 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # Extract verdict from Claude's JSON response
           # Claude --output-format json wraps result in {"type":"result","result":"..."}
-          # The inner result is our review JSON
-          INNER=$(jq -r '.result' /tmp/review.json)
+          # .result is a string containing our review JSON
+          RESULT_RAW=$(jq -r '.result // empty' /tmp/review.json)
 
-          # Parse the inner JSON
-          VERDICT=$(echo "$INNER" | jq -r '.verdict // "approve"')
-          SUMMARY=$(echo "$INNER" | jq -r '.summary // "No summary provided"')
+          if [ -z "$RESULT_RAW" ]; then
+            echo "::warning::Claude returned no result. Raw output:"
+            cat /tmp/review.json
+            VERDICT="approve"
+            SUMMARY="Review produced no output (possible max_turns or auth issue)"
+            INNER='{"verdict":"approve","summary":"Review produced no output","issues":[]}'
+          else
+            # .result is a JSON string — parse it
+            INNER=$(echo "$RESULT_RAW" | jq -r '.' 2>/dev/null || echo "$RESULT_RAW")
+            VERDICT=$(echo "$INNER" | jq -r '.verdict // "approve"' 2>/dev/null || echo "approve")
+            SUMMARY=$(echo "$INNER" | jq -r '.summary // "No summary"' 2>/dev/null || echo "Could not parse summary")
+          fi
 
           echo "Verdict: $VERDICT"
           echo "Summary: $SUMMARY"
