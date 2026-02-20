@@ -213,35 +213,19 @@ func rowToPlace(row parquet.Row, cols placeColumns) fsqPlaceRow {
 		case cols.name:
 			p.Name = v.String()
 		case cols.latitude:
-			if !v.IsNull() {
-				f := v.Double()
-				p.Latitude = &f
-			}
+			p.Latitude = optionalDouble(v)
 		case cols.longitude:
-			if !v.IsNull() {
-				f := v.Double()
-				p.Longitude = &f
-			}
+			p.Longitude = optionalDouble(v)
 		case cols.address:
-			if !v.IsNull() {
-				s := v.String()
-				p.Address = &s
-			}
+			p.Address = optionalString(v)
 		case cols.locality:
-			if !v.IsNull() {
-				s := v.String()
-				p.Locality = &s
-			}
+			p.Locality = optionalString(v)
 		case cols.region:
-			if !v.IsNull() {
-				s := v.String()
-				p.Region = &s
-			}
+			p.Region = optionalString(v)
 		case cols.country:
-			if !v.IsNull() {
-				s := v.String()
-				p.Country = &s
-			}
+			p.Country = optionalString(v)
+		case cols.dateClosed:
+			p.DateClosed = optionalString(v)
 		case cols.fsqCategoryIDs:
 			if !v.IsNull() {
 				catIDs = append(catIDs, v.String())
@@ -250,17 +234,28 @@ func rowToPlace(row parquet.Row, cols placeColumns) fsqPlaceRow {
 			if !v.IsNull() {
 				catLabels = append(catLabels, v.String())
 			}
-		case cols.dateClosed:
-			if !v.IsNull() {
-				s := v.String()
-				p.DateClosed = &s
-			}
 		}
 	}
 
 	p.FSQCategoryIDs = catIDs
 	p.FSQCategoryLabel = catLabels
 	return p
+}
+
+func optionalString(v parquet.Value) *string {
+	if v.IsNull() {
+		return nil
+	}
+	s := v.String()
+	return &s
+}
+
+func optionalDouble(v parquet.Value) *float64 {
+	if v.IsNull() {
+		return nil
+	}
+	f := v.Double()
+	return &f
 }
 
 // parquetHandle wraps parquet.File + underlying os.File for proper cleanup.
@@ -321,37 +316,44 @@ func (r *parquetReader) ReadCategories(catFile string, cats *categoryMap) error 
 	}
 
 	for _, rg := range h.pf.RowGroups() {
-		rows := parquet.NewRowGroupReader(rg)
-		buf := make([]parquet.Row, 1000)
-
-		for {
-			n, readErr := rows.ReadRows(buf)
-			for i := 0; i < n; i++ {
-				row := buf[i]
-				id := ""
-				label := ""
-				for _, v := range row {
-					if v.Column() == idIdx {
-						id = v.String()
-					}
-					if v.Column() == labelIdx && !v.IsNull() {
-						label = v.String()
-					}
-				}
-				if id != "" {
-					cats.Add(id, label)
-				}
-			}
-
-			if readErr != nil {
-				if errors.Is(readErr, io.EOF) {
-					break
-				}
-				return fmt.Errorf("read category rows: %w", readErr)
-			}
+		if err := readCategoryRowGroup(rg, idIdx, labelIdx, cats); err != nil {
+			return err
 		}
 	}
 
 	log.Printf("loaded %d categories from %s", cats.Len(), filepath.Base(catFile))
 	return nil
+}
+
+func readCategoryRowGroup(rg parquet.RowGroup, idIdx, labelIdx int, cats *categoryMap) error {
+	rows := parquet.NewRowGroupReader(rg)
+	buf := make([]parquet.Row, 1000)
+
+	for {
+		n, readErr := rows.ReadRows(buf)
+		for i := 0; i < n; i++ {
+			id, label := extractCategory(buf[i], idIdx, labelIdx)
+			if id != "" {
+				cats.Add(id, label)
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("read category rows: %w", readErr)
+		}
+	}
+}
+
+func extractCategory(row parquet.Row, idIdx, labelIdx int) (id, label string) {
+	for _, v := range row {
+		if v.Column() == idIdx {
+			id = v.String()
+		}
+		if v.Column() == labelIdx && !v.IsNull() {
+			label = v.String()
+		}
+	}
+	return id, label
 }

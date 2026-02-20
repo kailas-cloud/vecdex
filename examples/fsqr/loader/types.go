@@ -40,14 +40,6 @@ type fsqPlaceRow struct {
 	DateClosed       *string  `parquet:"date_closed"`
 }
 
-// fsqCategoryRow — row из categories parquet.
-type fsqCategoryRow struct {
-	ID    string  `parquet:"category_id"`
-	Level int32   `parquet:"category_level"`
-	Name  string  `parquet:"category_name"`
-	Label *string `parquet:"category_label"`
-}
-
 // categoryMap строит и хранит маппинг FSQ UUID → sequential int.
 type categoryMap struct {
 	byFSQ  map[string]int
