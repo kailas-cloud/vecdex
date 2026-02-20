@@ -264,7 +264,7 @@ func TestCollectionOptions_Geo(t *testing.T) {
 	// Apply options to verify they work.
 	cfg := &collectionConfig{}
 	for _, o := range opts {
-		o(cfg)
+		o.applyCollection(cfg)
 	}
 	if cfg.colType != CollectionTypeGeo {
 		t.Errorf("colType = %q, want %q", cfg.colType, CollectionTypeGeo)
@@ -282,7 +282,7 @@ func TestCollectionOptions_Text(t *testing.T) {
 
 	cfg := &collectionConfig{}
 	for _, o := range meta.collectionOptions() {
-		o(cfg)
+		o.applyCollection(cfg)
 	}
 	if cfg.colType != CollectionTypeText {
 		t.Errorf("colType = %q, want %q", cfg.colType, CollectionTypeText)

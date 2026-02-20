@@ -34,7 +34,7 @@ func main() {
 func run() error {
 	ctx := context.Background()
 
-	client, err := vecdex.New(vecdex.WithValkey("localhost:6379", ""))
+	client, err := vecdex.New(ctx, vecdex.WithValkey("localhost:6379", ""))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}

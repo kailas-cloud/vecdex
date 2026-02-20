@@ -7,7 +7,7 @@ import (
 )
 
 func TestNew_NoAddress(t *testing.T) {
-	_, err := New()
+	_, err := New(context.Background())
 	if err == nil {
 		t.Fatal("expected error when no address provided")
 	}
@@ -75,7 +75,7 @@ func TestEmbedderAdapter_Error(t *testing.T) {
 func TestClientOptions(t *testing.T) {
 	cfg := &clientConfig{}
 
-	WithValkey("localhost:6379", "secret")(cfg)
+	WithValkey("localhost:6379", "secret").apply(cfg)
 	if cfg.driver != "valkey" {
 		t.Errorf("driver = %q, want valkey", cfg.driver)
 	}
@@ -87,23 +87,23 @@ func TestClientOptions(t *testing.T) {
 	}
 
 	cfg2 := &clientConfig{}
-	WithRedis("localhost:6380", "pass")(cfg2)
+	WithRedis("localhost:6380", "pass").apply(cfg2)
 	if cfg2.driver != "redis" {
 		t.Errorf("driver = %q, want redis", cfg2.driver)
 	}
 
 	cfg3 := &clientConfig{}
-	WithVectorDimensions(768)(cfg3)
+	WithVectorDimensions(768).apply(cfg3)
 	if cfg3.vectorDimensions != 768 {
 		t.Errorf("vectorDimensions = %d, want 768", cfg3.vectorDimensions)
 	}
 
-	WithHNSW(16, 200)(cfg3)
+	WithHNSW(16, 200).apply(cfg3)
 	if cfg3.hnswM != 16 || cfg3.hnswEFConstruct != 200 {
 		t.Errorf("hnsw = (%d, %d), want (16, 200)", cfg3.hnswM, cfg3.hnswEFConstruct)
 	}
 
-	WithMaxBatchSize(5000)(cfg3)
+	WithMaxBatchSize(5000).apply(cfg3)
 	if cfg3.maxBatchSize != 5000 {
 		t.Errorf("maxBatchSize = %d, want 5000", cfg3.maxBatchSize)
 	}
@@ -122,7 +122,7 @@ func TestWithEmbedder(t *testing.T) {
 		},
 	}
 	cfg := &clientConfig{}
-	WithEmbedder(mock)(cfg)
+	WithEmbedder(mock).apply(cfg)
 	if cfg.embedder == nil {
 		t.Error("expected non-nil embedder")
 	}

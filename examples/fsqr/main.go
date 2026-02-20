@@ -85,7 +85,9 @@ func run() error {
 
 	embedder := NewNebiusEmbedder(apiKey)
 
+	ctx := context.Background()
 	client, err := vecdex.New(
+		ctx,
 		vecdex.WithRedis(addr, password),
 		vecdex.WithEmbedder(embedder),
 		vecdex.WithVectorDimensions(4096),

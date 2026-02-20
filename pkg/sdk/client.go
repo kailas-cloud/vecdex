@@ -64,12 +64,13 @@ type Client struct {
 }
 
 // New creates a vecdex Client and connects to the database.
-func New(opts ...Option) (*Client, error) {
+// The provided context is used for the initial readiness check.
+func New(ctx context.Context, opts ...Option) (*Client, error) {
 	cfg := &clientConfig{
 		vectorDimensions: domain.DefaultVectorConfig().Dimensions,
 	}
 	for _, o := range opts {
-		o(cfg)
+		o.apply(cfg)
 	}
 
 	if len(cfg.addrs) == 0 {
@@ -81,7 +82,6 @@ func New(opts ...Option) (*Client, error) {
 		return nil, err
 	}
 
-	ctx := context.Background()
 	if err := store.WaitForReady(ctx, defaultReadinessTimeout); err != nil {
 		store.Close()
 		return nil, fmt.Errorf("vecdex: database not ready: %w", err)

@@ -151,20 +151,20 @@ func TestFromBatchResults(t *testing.T) {
 
 func TestCollectionOptionFunctions(t *testing.T) {
 	cfg := &collectionConfig{}
-	Geo()(cfg)
+	Geo().applyCollection(cfg)
 	if cfg.colType != CollectionTypeGeo {
 		t.Errorf("Geo() → colType = %q, want geo", cfg.colType)
 	}
 
 	cfg2 := &collectionConfig{}
-	Text()(cfg2)
+	Text().applyCollection(cfg2)
 	if cfg2.colType != CollectionTypeText {
 		t.Errorf("Text() → colType = %q, want text", cfg2.colType)
 	}
 
 	cfg3 := &collectionConfig{}
-	WithField("country", FieldTag)(cfg3)
-	WithField("pop", FieldNumeric)(cfg3)
+	WithField("country", FieldTag).applyCollection(cfg3)
+	WithField("pop", FieldNumeric).applyCollection(cfg3)
 	if len(cfg3.fields) != 2 {
 		t.Fatalf("len(fields) = %d, want 2", len(cfg3.fields))
 	}

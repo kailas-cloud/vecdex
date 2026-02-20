@@ -22,7 +22,7 @@ func (s *CollectionService) Create(
 ) (CollectionInfo, error) {
 	cfg := &collectionConfig{colType: CollectionTypeText}
 	for _, o := range opts {
-		o(cfg)
+		o.applyCollection(cfg)
 	}
 
 	fields, err := toInternalFields(cfg.fields)
