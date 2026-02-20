@@ -103,7 +103,7 @@ func TestSearch_Semantic(t *testing.T) {
 	svc := New(repo, defaultMockColls(), embed)
 
 	req := makeSearchRequest(t, mode.Semantic)
-	results, err := svc.Search(context.Background(), "test-col", req)
+	results, _, err := svc.Search(context.Background(), "test-col", req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestSearch_Keyword(t *testing.T) {
 	svc := New(repo, defaultMockColls(), embed)
 
 	req := makeSearchRequest(t, mode.Keyword)
-	results, err := svc.Search(context.Background(), "test-col", req)
+	results, _, err := svc.Search(context.Background(), "test-col", req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestSearch_Hybrid(t *testing.T) {
 	svc := New(repo, defaultMockColls(), embed)
 
 	req := makeSearchRequest(t, mode.Hybrid)
-	results, err := svc.Search(context.Background(), "test-col", req)
+	results, _, err := svc.Search(context.Background(), "test-col", req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestSearch_KeywordOnValkey_ReturnsError(t *testing.T) {
 	svc := New(repo, defaultMockColls(), embed)
 
 	req := makeSearchRequest(t, mode.Keyword)
-	_, err := svc.Search(context.Background(), "test-col", req)
+	_, _, err := svc.Search(context.Background(), "test-col", req)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -197,7 +197,7 @@ func TestSearch_HybridOnValkey_ReturnsError(t *testing.T) {
 	svc := New(repo, defaultMockColls(), embed)
 
 	req := makeSearchRequest(t, mode.Hybrid)
-	_, err := svc.Search(context.Background(), "test-col", req)
+	_, _, err := svc.Search(context.Background(), "test-col", req)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -215,7 +215,7 @@ func TestSearch_SemanticOnValkey_Works(t *testing.T) {
 	svc := New(repo, defaultMockColls(), embed)
 
 	req := makeSearchRequest(t, mode.Semantic)
-	results, err := svc.Search(context.Background(), "test-col", req)
+	results, _, err := svc.Search(context.Background(), "test-col", req)
 	if err != nil {
 		t.Fatalf("semantic should work on Valkey, got error: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestSearch_MinScoreFilter(t *testing.T) {
 	svc := New(repo, defaultMockColls(), embed)
 
 	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0.5, false, nil)
-	results, err := svc.Search(context.Background(), "test-col", &r)
+	results, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestSearch_FilterValidation_UnknownField(t *testing.T) {
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
 	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
-	_, err := svc.Search(context.Background(), "test-col", &r)
+	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
 		t.Fatal("expected error for unknown field")
 	}
@@ -277,7 +277,7 @@ func TestSearch_FilterValidation_MatchOnNumeric(t *testing.T) {
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
 	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
-	_, err := svc.Search(context.Background(), "test-col", &r)
+	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
 		t.Fatal("expected error for match on numeric field")
 	}
@@ -297,7 +297,7 @@ func TestSearch_FilterValidation_RangeOnTag(t *testing.T) {
 	expr, _ := filter.NewExpression([]filter.Condition{rangeCond}, nil, nil)
 	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
-	_, err := svc.Search(context.Background(), "test-col", &r)
+	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
 		t.Fatal("expected error for range on tag field")
 	}
@@ -318,7 +318,7 @@ func TestSearch_FilterValidation_ValidMatch(t *testing.T) {
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
 	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
-	results, err := svc.Search(context.Background(), "test-col", &r)
+	results, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestSearch_FilterValidation_ValidRange(t *testing.T) {
 	expr, _ := filter.NewExpression([]filter.Condition{rangeCond}, nil, nil)
 	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false, nil)
 
-	results, err := svc.Search(context.Background(), "test-col", &r)
+	results, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestSearch_CollectionNotFound(t *testing.T) {
 	svc := New(repo, colls, embed)
 
 	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, false, nil)
-	_, err := svc.Search(context.Background(), "missing", &r)
+	_, _, err := svc.Search(context.Background(), "missing", &r)
 	if err == nil {
 		t.Fatal("expected error for missing collection")
 	}
@@ -372,7 +372,7 @@ func TestSearch_EmbedError(t *testing.T) {
 	svc := New(repo, defaultMockColls(), embed)
 
 	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, false, nil)
-	_, err := svc.Search(context.Background(), "test-col", &r)
+	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
 		t.Fatal("expected error from embedding failure")
 	}
@@ -387,7 +387,7 @@ func TestSearch_IncludeVectors(t *testing.T) {
 	svc := New(repo, defaultMockColls(), embed)
 
 	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, true, nil)
-	_, err := svc.Search(context.Background(), "test-col", &r)
+	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

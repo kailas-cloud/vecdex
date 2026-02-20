@@ -81,7 +81,7 @@ func (b *SearchBuilder[T]) doGeo(ctx context.Context) ([]Hit[T], error) {
 		topK = 10
 	}
 
-	var opts SearchOptions
+	opts := &SearchOptions{}
 	if len(b.filters) > 0 {
 		opts.Filters = FilterExpression{Must: b.filters}
 	}
@@ -90,13 +90,13 @@ func (b *SearchBuilder[T]) doGeo(ctx context.Context) ([]Hit[T], error) {
 	}
 	opts.Limit = b.limit
 
-	results, err := b.idx.client.Search(b.idx.name).Geo(
+	resp, err := b.idx.client.Search(b.idx.name).Geo(
 		ctx, b.lat, b.lon, topK, opts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("geo search: %w", err)
 	}
-	return b.toHits(results, true), nil
+	return b.toHits(resp.Results, true), nil
 }
 
 func (b *SearchBuilder[T]) doText(ctx context.Context) ([]Hit[T], error) {
@@ -108,11 +108,11 @@ func (b *SearchBuilder[T]) doText(ctx context.Context) ([]Hit[T], error) {
 		opts.Filters = FilterExpression{Must: b.filters}
 	}
 
-	results, err := b.idx.client.Search(b.idx.name).Query(ctx, b.query, opts)
+	resp, err := b.idx.client.Search(b.idx.name).Query(ctx, b.query, opts)
 	if err != nil {
 		return nil, fmt.Errorf("text search: %w", err)
 	}
-	return b.toHits(results, false), nil
+	return b.toHits(resp.Results, false), nil
 }
 
 func (b *SearchBuilder[T]) toHits(results []SearchResult, isGeo bool) []Hit[T] {

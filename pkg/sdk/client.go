@@ -51,7 +51,7 @@ type batchUseCase interface {
 }
 
 type searchUseCase interface {
-	Search(ctx context.Context, col string, req *request.Request) ([]result.Result, error)
+	Search(ctx context.Context, col string, req *request.Request) ([]result.Result, int, error)
 }
 
 // Client is the vecdex SDK entry point.

@@ -94,12 +94,12 @@ func (m *mockBatchUC) Delete(ctx context.Context, col string, ids []string) []do
 // --- searchUseCase mock ---
 
 type mockSearchUC struct {
-	searchFn func(ctx context.Context, col string, req *request.Request) ([]result.Result, error)
+	searchFn func(ctx context.Context, col string, req *request.Request) ([]result.Result, int, error)
 }
 
 func (m *mockSearchUC) Search(
 	ctx context.Context, col string, req *request.Request,
-) ([]result.Result, error) {
+) ([]result.Result, int, error) {
 	return m.searchFn(ctx, col, req)
 }
 

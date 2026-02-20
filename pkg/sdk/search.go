@@ -29,7 +29,7 @@ type SearchOptions struct {
 // Query executes a text search (semantic, keyword, or hybrid).
 func (s *SearchService) Query(
 	ctx context.Context, query string, opts *SearchOptions,
-) ([]SearchResult, error) {
+) (SearchResponse, error) {
 	if opts == nil {
 		opts = &SearchOptions{}
 	}
@@ -40,7 +40,7 @@ func (s *SearchService) Query(
 
 	filters, err := toInternalFilters(opts.Filters)
 	if err != nil {
-		return nil, fmt.Errorf("query: %w", err)
+		return SearchResponse{}, fmt.Errorf("query: %w", err)
 	}
 
 	req, err := request.New(
@@ -48,46 +48,53 @@ func (s *SearchService) Query(
 		opts.TopK, opts.Limit, opts.MinScore, opts.IncludeVectors, nil,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("query: %w", err)
+		return SearchResponse{}, fmt.Errorf("query: %w", err)
 	}
 
-	results, err := s.svc.Search(ctx, s.collection, &req)
+	results, total, err := s.svc.Search(ctx, s.collection, &req)
 	if err != nil {
-		return nil, fmt.Errorf("query: %w", err)
+		return SearchResponse{}, fmt.Errorf("query: %w", err)
 	}
-	return fromSearchResults(results), nil
+	return SearchResponse{
+		Results: fromSearchResults(results),
+		Total:   total,
+		Limit:   opts.Limit,
+	}, nil
 }
 
 // Geo executes a geographic proximity search.
 // Returns results sorted by distance (meters, ascending).
 func (s *SearchService) Geo(
 	ctx context.Context, lat, lon float64, topK int,
-	opts ...SearchOptions,
-) ([]SearchResult, error) {
-	var so SearchOptions
-	if len(opts) > 0 {
-		so = opts[0]
+	opts *SearchOptions,
+) (SearchResponse, error) {
+	if opts == nil {
+		opts = &SearchOptions{}
 	}
 
-	filters, err := toInternalFilters(so.Filters)
+	filters, err := toInternalFilters(opts.Filters)
 	if err != nil {
-		return nil, fmt.Errorf("geo search: %w", err)
+		return SearchResponse{}, fmt.Errorf("geo search: %w", err)
 	}
 
 	geoQuery := &request.GeoQuery{Latitude: lat, Longitude: lon}
 	req, err := request.New(
 		"geo", mode.Geo, filters,
-		topK, so.Limit, so.MinScore, so.IncludeVectors, geoQuery,
+		topK, opts.Limit, opts.MinScore, opts.IncludeVectors, geoQuery,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("geo search: %w", err)
+		return SearchResponse{}, fmt.Errorf("geo search: %w", err)
 	}
 
-	results, err := s.svc.Search(ctx, s.collection, &req)
+	results, total, err := s.svc.Search(ctx, s.collection, &req)
 	if err != nil {
-		return nil, fmt.Errorf("geo search: %w", err)
+		return SearchResponse{}, fmt.Errorf("geo search: %w", err)
 	}
-	return fromSearchResults(results), nil
+	return SearchResponse{
+		Results: fromSearchResults(results),
+		Total:   total,
+		Limit:   opts.Limit,
+	}, nil
 }
 
 func toInternalFilters(fe FilterExpression) (filter.Expression, error) {
@@ -145,6 +152,7 @@ func fromSearchResults(results []result.Result) []SearchResult {
 			Content:  r.Content(),
 			Tags:     r.Tags(),
 			Numerics: r.Numerics(),
+			Vector:   r.Vector(),
 		}
 	}
 	return out

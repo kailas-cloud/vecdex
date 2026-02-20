@@ -411,28 +411,31 @@ func TestDocumentService_BatchDelete(t *testing.T) {
 
 func TestSearchService_Query(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return []result.Result{result.New("doc-1", 0.9, "hi", nil, nil, nil)}, nil
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return []result.Result{result.New("doc-1", 0.9, "hi", nil, nil, nil)}, 1, nil
 		},
 	}
 
 	svc := &SearchService{collection: "test", svc: mock}
-	results, err := svc.Query(context.Background(), "hello", nil)
+	resp, err := svc.Query(context.Background(), "hello", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("len = %d, want 1", len(results))
+	if len(resp.Results) != 1 {
+		t.Fatalf("len = %d, want 1", len(resp.Results))
 	}
-	if results[0].ID != "doc-1" {
-		t.Errorf("ID = %q, want doc-1", results[0].ID)
+	if resp.Results[0].ID != "doc-1" {
+		t.Errorf("ID = %q, want doc-1", resp.Results[0].ID)
+	}
+	if resp.Total != 1 {
+		t.Errorf("Total = %d, want 1", resp.Total)
 	}
 }
 
 func TestSearchService_Query_WithOpts(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return nil, nil
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return nil, 0, nil
 		},
 	}
 
@@ -446,8 +449,8 @@ func TestSearchService_Query_WithOpts(t *testing.T) {
 
 func TestSearchService_Query_Error(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return nil, errors.New("fail")
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return nil, 0, errors.New("fail")
 		},
 	}
 
@@ -460,30 +463,30 @@ func TestSearchService_Query_Error(t *testing.T) {
 
 func TestSearchService_Geo(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return []result.Result{result.New("place-1", 500, "", nil, nil, nil)}, nil
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return []result.Result{result.New("place-1", 500, "", nil, nil, nil)}, 1, nil
 		},
 	}
 
 	svc := &SearchService{collection: "test", svc: mock}
-	results, err := svc.Geo(context.Background(), 34.77, 32.42, 10)
+	resp, err := svc.Geo(context.Background(), 34.77, 32.42, 10, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("len = %d, want 1", len(results))
+	if len(resp.Results) != 1 {
+		t.Fatalf("len = %d, want 1", len(resp.Results))
 	}
 }
 
 func TestSearchService_Geo_WithOpts(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return nil, nil
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return nil, 0, nil
 		},
 	}
 
 	svc := &SearchService{collection: "test", svc: mock}
-	opts := SearchOptions{
+	opts := &SearchOptions{
 		Filters: FilterExpression{Must: []FilterCondition{{Key: "country", Match: "CY"}}},
 	}
 	_, err := svc.Geo(context.Background(), 34.77, 32.42, 10, opts)
@@ -494,13 +497,13 @@ func TestSearchService_Geo_WithOpts(t *testing.T) {
 
 func TestSearchService_Geo_Error(t *testing.T) {
 	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, error) {
-			return nil, errors.New("fail")
+		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
+			return nil, 0, errors.New("fail")
 		},
 	}
 
 	svc := &SearchService{collection: "test", svc: mock}
-	_, err := svc.Geo(context.Background(), 34.77, 32.42, 10)
+	_, err := svc.Geo(context.Background(), 34.77, 32.42, 10, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}

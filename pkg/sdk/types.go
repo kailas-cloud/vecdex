@@ -69,6 +69,14 @@ type SearchResult struct {
 	Content  string
 	Tags     map[string]string
 	Numerics map[string]float64
+	Vector   []float32 // nil when not requested (IncludeVectors=false)
+}
+
+// SearchResponse wraps search results with metadata.
+type SearchResponse struct {
+	Results []SearchResult
+	Total   int // candidates passing min_score in top_k window (before limit)
+	Limit   int
 }
 
 // BatchResult is the outcome of one item in a batch operation.

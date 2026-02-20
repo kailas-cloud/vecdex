@@ -205,11 +205,11 @@ func (s *server) searchVenues(
 		Filters: vecdex.FilterExpression{Should: filters},
 	}
 
-	results, err := s.client.Search("venues").Geo(ctx, req.Lat, req.Lon, req.K, opts)
+	resp, err := s.client.Search("venues").Geo(ctx, req.Lat, req.Lon, req.K, &opts)
 	if err != nil {
 		return nil, fmt.Errorf("geo search: %w", err)
 	}
-	return results, nil
+	return resp.Results, nil
 }
 
 func buildResponse(
