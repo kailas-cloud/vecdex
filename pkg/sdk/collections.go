@@ -1,10 +1,10 @@
 package vecdex
 
 import (
+	"context"
 	"errors"
 	"fmt"
-
-	"context"
+	"time"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
@@ -14,12 +14,16 @@ import (
 // CollectionService manages collections.
 type CollectionService struct {
 	svc collectionUseCase
+	obs *observer
 }
 
 // Create creates a new collection.
 func (s *CollectionService) Create(
 	ctx context.Context, name string, opts ...CollectionOption,
-) (CollectionInfo, error) {
+) (_ CollectionInfo, err error) {
+	start := time.Now()
+	defer func() { s.obs.observe("collection.create", start, err) }()
+
 	cfg := &collectionConfig{colType: CollectionTypeText}
 	for _, o := range opts {
 		o.applyCollection(cfg)
@@ -41,7 +45,10 @@ func (s *CollectionService) Create(
 // If it already exists, returns its info.
 func (s *CollectionService) Ensure(
 	ctx context.Context, name string, opts ...CollectionOption,
-) (CollectionInfo, error) {
+) (_ CollectionInfo, err error) {
+	start := time.Now()
+	defer func() { s.obs.observe("collection.ensure", start, err) }()
+
 	info, err := s.Create(ctx, name, opts...)
 	if err == nil {
 		return info, nil
@@ -53,7 +60,12 @@ func (s *CollectionService) Ensure(
 }
 
 // Get retrieves collection metadata by name.
-func (s *CollectionService) Get(ctx context.Context, name string) (CollectionInfo, error) {
+func (s *CollectionService) Get(
+	ctx context.Context, name string,
+) (_ CollectionInfo, err error) {
+	start := time.Now()
+	defer func() { s.obs.observe("collection.get", start, err) }()
+
 	col, err := s.svc.Get(ctx, name)
 	if err != nil {
 		return CollectionInfo{}, fmt.Errorf("get collection: %w", err)
@@ -66,7 +78,10 @@ func (s *CollectionService) Get(ctx context.Context, name string) (CollectionInf
 // Limit controls page size (0 = return all).
 func (s *CollectionService) List(
 	ctx context.Context, cursor string, limit int,
-) (CollectionListResult, error) {
+) (_ CollectionListResult, err error) {
+	start := time.Now()
+	defer func() { s.obs.observe("collection.list", start, err) }()
+
 	cols, err := s.svc.List(ctx)
 	if err != nil {
 		return CollectionListResult{}, fmt.Errorf("list collections: %w", err)
@@ -106,8 +121,13 @@ func (s *CollectionService) List(
 }
 
 // Delete removes a collection.
-func (s *CollectionService) Delete(ctx context.Context, name string) error {
-	if err := s.svc.Delete(ctx, name); err != nil {
+func (s *CollectionService) Delete(
+	ctx context.Context, name string,
+) (err error) {
+	start := time.Now()
+	defer func() { s.obs.observe("collection.delete", start, err) }()
+
+	if err = s.svc.Delete(ctx, name); err != nil {
 		return fmt.Errorf("delete collection: %w", err)
 	}
 	return nil

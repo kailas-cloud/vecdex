@@ -2,6 +2,7 @@ package vecdex
 
 import (
 	"context"
+	"time"
 
 	healthuc "github.com/kailas-cloud/vecdex/internal/usecase/health"
 )
@@ -14,6 +15,9 @@ type HealthStatus struct {
 
 // Health checks the health of all system components.
 func (c *Client) Health(ctx context.Context) HealthStatus {
+	start := time.Now()
+	defer func() { c.obs.observe("health", start, nil) }()
+
 	report := c.healthSvc.Check(ctx)
 	checks := make(map[string]string, len(report.Checks))
 	for k, v := range report.Checks {

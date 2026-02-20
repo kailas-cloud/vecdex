@@ -65,6 +65,7 @@ type Client struct {
 	batchSvc  batchUseCase
 	healthSvc healthUseCase
 	usageSvc  usageUseCase
+	obs       *observer
 }
 
 // New creates a vecdex Client and connects to the database.
@@ -91,7 +92,8 @@ func New(ctx context.Context, opts ...Option) (*Client, error) {
 		return nil, fmt.Errorf("vecdex: database not ready: %w", err)
 	}
 
-	return wireClient(store, cfg)
+	obs := newObserver(cfg.logger, cfg.metricsReg)
+	return wireClient(store, cfg, obs)
 }
 
 func createStore(cfg *clientConfig) (db.Store, error) {
@@ -119,7 +121,7 @@ func createStore(cfg *clientConfig) (db.Store, error) {
 	}
 }
 
-func wireClient(store db.Store, cfg *clientConfig) (*Client, error) {
+func wireClient(store db.Store, cfg *clientConfig, obs *observer) (*Client, error) {
 	vectorDim := cfg.vectorDimensions
 
 	collRepo := collectionrepo.New(store, vectorDim)
@@ -157,6 +159,7 @@ func wireClient(store db.Store, cfg *clientConfig) (*Client, error) {
 		batchSvc:  batchSvc,
 		healthSvc: healthSvc,
 		usageSvc:  usageSvc,
+		obs:       obs,
 	}, nil
 }
 
@@ -168,8 +171,11 @@ func (c *Client) Close() {
 }
 
 // Ping checks database connectivity.
-func (c *Client) Ping(ctx context.Context) error {
-	if err := c.store.Ping(ctx); err != nil {
+func (c *Client) Ping(ctx context.Context) (err error) {
+	start := time.Now()
+	defer func() { c.obs.observe("ping", start, err) }()
+
+	if err = c.store.Ping(ctx); err != nil {
 		return fmt.Errorf("ping: %w", err)
 	}
 	return nil
@@ -177,7 +183,7 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Collections returns the collection management service.
 func (c *Client) Collections() *CollectionService {
-	return &CollectionService{svc: c.collSvc}
+	return &CollectionService{svc: c.collSvc, obs: c.obs}
 }
 
 // Documents returns the document service for a given collection.
@@ -186,12 +192,17 @@ func (c *Client) Documents(collection string) *DocumentService {
 		collection: collection,
 		docSvc:     c.docSvc,
 		batchSvc:   c.batchSvc,
+		obs:        c.obs,
 	}
 }
 
 // Search returns the search service for a given collection.
 func (c *Client) Search(collection string) *SearchService {
-	return &SearchService{collection: collection, svc: c.searchSvc}
+	return &SearchService{
+		collection: collection,
+		svc:        c.searchSvc,
+		obs:        c.obs,
+	}
 }
 
 // embedderAdapter wraps public Embedder to satisfy internal domain.Embedder.

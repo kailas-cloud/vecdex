@@ -1,5 +1,11 @@
 package vecdex
 
+import (
+	"log/slog"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
 // Option configures the Client.
 type Option interface {
 	apply(*clientConfig)
@@ -21,6 +27,9 @@ type clientConfig struct {
 	hnswM            int
 	hnswEFConstruct  int
 	maxBatchSize     int
+
+	logger     *slog.Logger
+	metricsReg prometheus.Registerer
 }
 
 // WithValkey configures the client to connect to a Valkey instance.
@@ -71,5 +80,21 @@ func WithHNSW(m, efConstruct int) Option {
 func WithMaxBatchSize(size int) Option {
 	return optionFunc(func(c *clientConfig) {
 		c.maxBatchSize = size
+	})
+}
+
+// WithLogger enables structured logging for SDK operations.
+// Pass nil to disable (default). Uses standard library slog.
+func WithLogger(l *slog.Logger) Option {
+	return optionFunc(func(c *clientConfig) {
+		c.logger = l
+	})
+}
+
+// WithPrometheus registers SDK metrics (operation counts and durations)
+// on the given registerer. Pass nil to disable (default).
+func WithPrometheus(reg prometheus.Registerer) Option {
+	return optionFunc(func(c *clientConfig) {
+		c.metricsReg = reg
 	})
 }

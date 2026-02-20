@@ -3,6 +3,7 @@ package vecdex
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/mode"
@@ -14,6 +15,7 @@ import (
 type SearchService struct {
 	collection string
 	svc        searchUseCase
+	obs        *observer
 }
 
 // SearchOptions configures a search query.
@@ -29,7 +31,10 @@ type SearchOptions struct {
 // Query executes a text search (semantic, keyword, or hybrid).
 func (s *SearchService) Query(
 	ctx context.Context, query string, opts *SearchOptions,
-) (SearchResponse, error) {
+) (_ SearchResponse, err error) {
+	start := time.Now()
+	defer func() { s.obs.observe("search.query", start, err) }()
+
 	if opts == nil {
 		opts = &SearchOptions{}
 	}
@@ -67,7 +72,10 @@ func (s *SearchService) Query(
 func (s *SearchService) Geo(
 	ctx context.Context, lat, lon float64, topK int,
 	opts *SearchOptions,
-) (SearchResponse, error) {
+) (_ SearchResponse, err error) {
+	start := time.Now()
+	defer func() { s.obs.observe("search.geo", start, err) }()
+
 	if opts == nil {
 		opts = &SearchOptions{}
 	}

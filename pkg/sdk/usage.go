@@ -43,6 +43,9 @@ type BudgetStatus struct {
 
 // Usage returns an embedding usage report for the given period.
 func (c *Client) Usage(ctx context.Context, period UsagePeriod) UsageReport {
+	start := time.Now()
+	defer func() { c.obs.observe("usage", start, nil) }()
+
 	report := c.usageSvc.GetReport(ctx, domusage.Period(period))
 	m := report.Metrics()
 	b := report.Budget()

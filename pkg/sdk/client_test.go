@@ -3,7 +3,11 @@ package vecdex
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestNew_NoAddress(t *testing.T) {
@@ -107,6 +111,20 @@ func TestClientOptions(t *testing.T) {
 	if cfg3.maxBatchSize != 5000 {
 		t.Errorf("maxBatchSize = %d, want 5000", cfg3.maxBatchSize)
 	}
+
+	cfg4 := &clientConfig{}
+	logger := slog.Default()
+	WithLogger(logger).apply(cfg4)
+	if cfg4.logger != logger {
+		t.Error("expected logger to be set")
+	}
+
+	cfg5 := &clientConfig{}
+	reg := prometheus.NewRegistry()
+	WithPrometheus(reg).apply(cfg5)
+	if cfg5.metricsReg != reg {
+		t.Error("expected metricsReg to be set")
+	}
 }
 
 func TestClient_Close_NilStore(t *testing.T) {
@@ -126,6 +144,58 @@ func TestWithEmbedder(t *testing.T) {
 	if cfg.embedder == nil {
 		t.Error("expected non-nil embedder")
 	}
+}
+
+func TestObserver_NilSafe(t *testing.T) {
+	// nil observer should not panic.
+	var obs *observer
+	obs.observe("test", time.Now(), nil)
+	obs.observe("test", time.Now(), errors.New("err"))
+}
+
+func TestObserver_WithPrometheus(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	obs := newObserver(nil, reg)
+
+	obs.observe("document.get", time.Now().Add(-10*time.Millisecond), nil)
+	obs.observe("document.get", time.Now(), errors.New("fail"))
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	if len(families) == 0 {
+		t.Fatal("expected metrics to be registered")
+	}
+
+	// Verify operations counter has both ok and error.
+	found := false
+	for _, f := range families {
+		if f.GetName() == "vecdex_sdk_operations_total" {
+			found = true
+			if len(f.GetMetric()) != 2 {
+				t.Errorf("expected 2 metric samples, got %d",
+					len(f.GetMetric()))
+			}
+		}
+	}
+	if !found {
+		t.Error("vecdex_sdk_operations_total not found")
+	}
+}
+
+func TestObserver_WithLogger(t *testing.T) {
+	// Проверяем что логгер не паникует при вызове.
+	logger := slog.Default()
+	obs := newObserver(logger, nil)
+	obs.observe("test.op", time.Now(), nil)
+	obs.observe("test.op", time.Now(), errors.New("test error"))
+}
+
+func TestObserver_NoMetricsNoLogger(t *testing.T) {
+	obs := newObserver(nil, nil)
+	// Не должно паниковать.
+	obs.observe("noop", time.Now(), nil)
 }
 
 type mockEmbedder struct {
