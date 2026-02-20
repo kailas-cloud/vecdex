@@ -102,7 +102,7 @@ jobs:
             -F pr="$PR_NUMBER" \
             --jq '.data.repository.pullRequest.reviewThreads.nodes[] |
               select(.isResolved == false) |
-              select(.comments.nodes[0].author.login == "maomao-agent[bot]") |
+              select(.comments.nodes[0].author.login | startswith("maomao-agent")) |
               .id' 2>/dev/null || true)
 
           for THREAD_ID in $THREADS; do
