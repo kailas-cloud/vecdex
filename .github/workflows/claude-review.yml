@@ -10,7 +10,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
   claude-review:
@@ -30,17 +29,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Login to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Get PR diff
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: gh pr diff "$PR_NUMBER" > /tmp/pr.diff
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
 
       - name: Resolve Claude auth
         id: claude-auth
@@ -61,8 +56,9 @@ jobs:
         run: |
           {
             cat "$GITHUB_WORKSPACE/.claude/review-rules.md"
-            printf '\n---\nDiff for review:\n\n'
+            printf '\n<diff>\n'
             cat /tmp/pr.diff
+            printf '\n</diff>\n'
           } > /tmp/prompt.txt
           echo "Prompt size: $(wc -c < /tmp/prompt.txt) bytes"
 
@@ -72,20 +68,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           AUTH_METHOD: ${{ steps.claude-auth.outputs.method }}
         run: |
-          AUTH_ARGS=""
-          if [ "$AUTH_METHOD" = "oauth" ]; then
-            AUTH_ARGS="-e CLAUDE_CODE_OAUTH_TOKEN"
-          else
-            AUTH_ARGS="-e ANTHROPIC_API_KEY"
-          fi
-
-          docker run --rm \
-            $AUTH_ARGS \
-            -v "$GITHUB_WORKSPACE:/workspace:ro" \
-            -v /tmp/prompt.txt:/tmp/prompt.txt:ro \
-            -w /workspace \
-            ghcr.io/kailas-cloud/claudocker@sha256:b897f9eab35b85d0c4f19cfee14bb8dcfbef5fa8e9d1aa8a15da4c02922a9942 \
-            sh -c 'cat /tmp/prompt.txt | claude -p - --output-format json --max-turns 3' \
+          cat /tmp/prompt.txt | claude -p - --output-format json --max-turns 3 \
             > /tmp/review.json
 
           echo "--- Review output ---"
@@ -102,7 +85,6 @@ jobs:
           if [ -z "$RESULT_RAW" ]; then
             echo "::warning::Claude returned no result field. Full output:"
             cat /tmp/review.json
-            # No result — skip review, don't auto-approve
             echo "::error::Review produced no output. Check workflow logs."
             exit 1
           fi
@@ -117,7 +99,6 @@ jobs:
             exit 1
           fi
 
-          # Save parsed review for API call
           echo "$CLEAN" > /tmp/parsed-review.json
 
           VERDICT=$(jq -r '.verdict' /tmp/parsed-review.json)
@@ -131,15 +112,13 @@ jobs:
           echo "Verdict: $VERDICT"
           echo "Summary: $SUMMARY"
 
-          # Build review event
           if [ "$VERDICT" = "request_changes" ]; then
             EVENT="REQUEST_CHANGES"
           else
             EVENT="APPROVE"
           fi
 
-          # Build inline comments from issues with file+line
-          # Issues without line go into the summary body
+          # Inline comments from issues with file+line
           INLINE_COMMENTS=$(jq -c '[
             .issues // [] | .[] | select(.file and .line) |
             {
@@ -152,22 +131,22 @@ jobs:
             }
           ]' /tmp/parsed-review.json)
 
-          # Build summary body with file-only issues (no line)
+          # File-level issues (no line) go into summary body
           BODY_ISSUES=$(jq -r '[
             .issues // [] | .[] | select(.file and (.line | not)) |
             "- **[" + (.severity | ascii_upcase) + "]** `" + .file + "` — " + .message +
             (if .suggestion then "\n  > " + .suggestion else "" end)
           ] | join("\n")' /tmp/parsed-review.json)
 
-          BODY="## Claude Code Review\n\n${SUMMARY}"
+          BODY=$(printf '## Claude Code Review\n\n%s' "$SUMMARY")
           if [ -n "$BODY_ISSUES" ]; then
-            BODY="${BODY}\n\n### General Issues\n\n${BODY_ISSUES}"
+            BODY=$(printf '%s\n\n### General Issues\n\n%s' "$BODY" "$BODY_ISSUES")
           fi
 
           NUM_INLINE=$(echo "$INLINE_COMMENTS" | jq 'length')
           echo "Inline comments: $NUM_INLINE"
 
-          # Post review with inline comments via API
+          # Post review with inline comments via GitHub API
           jq -n \
             --arg body "$BODY" \
             --arg event "$EVENT" \
