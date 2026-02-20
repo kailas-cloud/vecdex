@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,15 +47,16 @@ type hfParquetInfo struct {
 }
 
 // DownloadPlaces скачивает parquet файлы places в dataDir/places/.
-// maxFiles=0 — скачать все. Пропускает уже скачанные файлы.
-func (d *downloader) DownloadPlaces(maxFiles int) error {
-	return d.download("places", "train", maxFiles, filepath.Join(d.dataDir, "places"))
+func (d *downloader) DownloadPlaces(ctx context.Context, maxFiles int) error {
+	outDir := filepath.Join(d.dataDir, "places")
+	_, err := d.downloadFiles(ctx, "places", "train", maxFiles, outDir)
+	return err
 }
 
 // DownloadCategories скачивает parquet файл categories.
-func (d *downloader) DownloadCategories() (string, error) {
+func (d *downloader) DownloadCategories(ctx context.Context) (string, error) {
 	outDir := filepath.Join(d.dataDir, "categories")
-	files, err := d.downloadFiles("categories", "train", 1, outDir)
+	files, err := d.downloadFiles(ctx, "categories", "train", 1, outDir)
 	if err != nil {
 		return "", err
 	}
@@ -64,19 +66,15 @@ func (d *downloader) DownloadCategories() (string, error) {
 	return files[0], nil
 }
 
-func (d *downloader) download(config, split string, maxFiles int, outDir string) error {
-	_, err := d.downloadFiles(config, split, maxFiles, outDir)
-	return err
-}
-
 func (d *downloader) downloadFiles(
+	ctx context.Context,
 	config, split string, maxFiles int, outDir string,
 ) ([]string, error) {
 	if err := os.MkdirAll(outDir, 0o750); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", outDir, err)
 	}
 
-	urls, err := d.listParquetFiles(config, split)
+	urls, err := d.listParquetFiles(ctx, config, split)
 	if err != nil {
 		return nil, fmt.Errorf("list parquet files: %w", err)
 	}
@@ -85,7 +83,8 @@ func (d *downloader) downloadFiles(
 		urls = urls[:maxFiles]
 	}
 
-	log.Printf("downloading %d %s parquet files to %s", len(urls), config, outDir)
+	log.Printf("downloading %d %s parquet files to %s",
+		len(urls), config, outDir)
 
 	var paths []string
 	for i, info := range urls {
@@ -93,13 +92,13 @@ func (d *downloader) downloadFiles(
 		outPath := filepath.Join(outDir, name)
 		paths = append(paths, outPath)
 
-		if st, err := os.Stat(outPath); err == nil && st.Size() == info.Size {
+		if st, serr := os.Stat(outPath); serr == nil && st.Size() == info.Size {
 			log.Printf("[%d/%d] %s: already downloaded (%d bytes)",
 				i+1, len(urls), name, st.Size())
 			continue
 		}
 
-		if err := d.downloadFile(info.URL, outPath, i+1, len(urls)); err != nil {
+		if err := d.downloadFile(ctx, info.URL, outPath, i+1, len(urls)); err != nil {
 			return nil, fmt.Errorf("download %s: %w", name, err)
 		}
 	}
@@ -108,10 +107,13 @@ func (d *downloader) downloadFiles(
 }
 
 // listParquetFiles получает URL'ы parquet файлов из HF API.
-func (d *downloader) listParquetFiles(config, split string) ([]hfParquetInfo, error) {
-	url := fmt.Sprintf("%s/%s/parquet/%s/%s", hfAPIBase, hfDataset, config, split)
+func (d *downloader) listParquetFiles(
+	ctx context.Context, config, split string,
+) ([]hfParquetInfo, error) {
+	url := fmt.Sprintf("%s/%s/parquet/%s/%s",
+		hfAPIBase, hfDataset, config, split)
 
-	req, err := http.NewRequest(http.MethodGet, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
@@ -127,7 +129,8 @@ func (d *downloader) listParquetFiles(config, split string) ([]hfParquetInfo, er
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("HF API: status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("HF API: status %d: %s",
+			resp.StatusCode, string(body))
 	}
 
 	var files []hfParquetInfo
@@ -147,7 +150,9 @@ func (d *downloader) listParquetFiles(config, split string) ([]hfParquetInfo, er
 }
 
 // downloadFile скачивает один файл с поддержкой resume (HTTP Range).
-func (d *downloader) downloadFile(url, outPath string, num, total int) error {
+func (d *downloader) downloadFile(
+	ctx context.Context, url, outPath string, num, total int,
+) error {
 	cleanPath := filepath.Clean(outPath)
 	tmpPath := cleanPath + ".tmp"
 
@@ -156,7 +161,7 @@ func (d *downloader) downloadFile(url, outPath string, num, total int) error {
 		offset = st.Size()
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
@@ -187,7 +192,7 @@ func (d *downloader) downloadFile(url, outPath string, num, total int) error {
 		offset = 0
 	}
 
-	f, err := os.OpenFile(tmpPath, flags, 0o600)
+	f, err := os.OpenFile(tmpPath, flags, 0o600) //nolint:gosec // tmpPath is derived from cleanPath
 	if err != nil {
 		return fmt.Errorf("open tmp: %w", err)
 	}

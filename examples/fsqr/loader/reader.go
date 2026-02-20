@@ -106,7 +106,7 @@ func (r *parquetReader) readRowGroup(
 	skipRows, maxRows int,
 	skipped, read, seq *int,
 	cb readPlacesCallback,
-) (int, bool, error) {
+) (processed int, done bool, err error) {
 	rows := parquet.NewRowGroupReader(rg)
 	buf := make([]parquet.Row, 1000)
 	n := 0

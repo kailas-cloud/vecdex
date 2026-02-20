@@ -37,10 +37,10 @@ func main() {
 	ctx, cancel := signal.NotifyContext(
 		context.Background(), syscall.SIGTERM, syscall.SIGINT,
 	)
-	defer cancel()
 
-	if err := run(ctx, cfg); err != nil {
-		cancel()
+	err := run(ctx, cfg)
+	cancel()
+	if err != nil {
 		log.Fatal(err)
 	}
 }
@@ -91,7 +91,7 @@ func run(ctx context.Context, cfg config) error {
 		log.Println("cursor reset, starting from scratch")
 	}
 
-	if err := stageDownload(cfg); err != nil {
+	if err := stageDownload(ctx, cfg); err != nil {
 		return err
 	}
 
@@ -119,14 +119,14 @@ func run(ctx context.Context, cfg config) error {
 	return nil
 }
 
-func stageDownload(cfg config) error {
+func stageDownload(ctx context.Context, cfg config) error {
 	log.Println("=== Stage 1: Download ===")
 	dl := newDownloader(os.Getenv("HF_TOKEN"), cfg.dataDir, nil)
 
-	if err := dl.DownloadPlaces(cfg.maxFiles); err != nil {
+	if err := dl.DownloadPlaces(ctx, cfg.maxFiles); err != nil {
 		return fmt.Errorf("download places: %w", err)
 	}
-	if _, err := dl.DownloadCategories(); err != nil {
+	if _, err := dl.DownloadCategories(ctx); err != nil {
 		return fmt.Errorf("download categories: %w", err)
 	}
 	return nil
