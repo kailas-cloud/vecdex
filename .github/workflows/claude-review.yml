@@ -1,0 +1,203 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.REVIEW_APP_ID }}
+          private-key: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh pr diff "$PR_NUMBER" > /tmp/pr.diff
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.49
+
+      - name: Resolve Claude auth
+        id: claude-auth
+        env:
+          HAS_OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_APIKEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          if [ "$HAS_OAUTH" = "true" ]; then
+            echo "method=oauth" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_APIKEY" = "true" ]; then
+            echo "method=apikey" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No Claude auth configured. Set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY secret"
+            exit 1
+          fi
+
+      - name: Build review prompt
+        run: |
+          {
+            cat "$GITHUB_WORKSPACE/.claude/review-rules.md"
+            printf '\n<diff>\n'
+            cat /tmp/pr.diff
+            printf '\n</diff>\n'
+          } > /tmp/prompt.txt
+          echo "Prompt size: $(wc -c < /tmp/prompt.txt) bytes"
+
+      - name: Run Claude Code Review
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUTH_METHOD: ${{ steps.claude-auth.outputs.method }}
+        run: |
+          cat /tmp/prompt.txt | claude -p - --output-format json --max-turns 3 \
+            > /tmp/review.json
+
+          echo "--- Review output ---"
+          cat /tmp/review.json
+
+      - name: Resolve outdated review threads
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Find unresolved review threads from our bot and resolve them
+          QUERY='query($owner:String!,$repo:String!,$pr:Int!) {
+            repository(owner:$owner,name:$repo) {
+              pullRequest(number:$pr) {
+                reviewThreads(first:100) {
+                  nodes {
+                    id
+                    isResolved
+                    comments(first:1) {
+                      nodes { author { login } }
+                    }
+                  }
+                }
+              }
+            }
+          }'
+
+          THREADS=$(gh api graphql \
+            -f query="$QUERY" \
+            -f owner="${GITHUB_REPOSITORY_OWNER}" \
+            -f repo="${GITHUB_REPOSITORY#*/}" \
+            -F pr="$PR_NUMBER" \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[] |
+              select(.isResolved == false) |
+              select(.comments.nodes[0].author.login | startswith("maomao-agent")) |
+              .id' 2>/dev/null || true)
+
+          for THREAD_ID in $THREADS; do
+            echo "Resolving thread: $THREAD_ID"
+            gh api graphql \
+              -f query='mutation($id:ID!) { resolveReviewThread(input:{threadId:$id}) { thread { id } } }' \
+              -f id="$THREAD_ID" > /dev/null 2>&1 || true
+          done
+
+          RESOLVED=$(echo "$THREADS" | grep -c . || echo 0)
+          echo "Resolved $RESOLVED outdated thread(s)"
+
+      - name: Post review and set quality gate
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Claude --output-format json: {"type":"result","result":"<text>",...}
+          RESULT_RAW=$(jq -r '.result // empty' /tmp/review.json)
+
+          if [ -z "$RESULT_RAW" ]; then
+            echo "::warning::Claude returned no result field. Full output:"
+            cat /tmp/review.json
+            echo "::error::Review produced no output. Check workflow logs."
+            exit 1
+          fi
+
+          # Claude may wrap JSON in markdown fences — strip them
+          CLEAN=$(echo "$RESULT_RAW" | sed '/^```[a-z]*/d')
+
+          if ! echo "$CLEAN" | jq empty 2>/dev/null; then
+            echo "::warning::Could not parse Claude output as JSON:"
+            echo "$RESULT_RAW"
+            echo "::error::Review output is not valid JSON. Check workflow logs."
+            exit 1
+          fi
+
+          echo "$CLEAN" > /tmp/parsed-review.json
+
+          VERDICT=$(jq -r '.verdict' /tmp/parsed-review.json)
+          SUMMARY=$(jq -r '.summary // "No summary"' /tmp/parsed-review.json)
+
+          if [ -z "$VERDICT" ] || [ "$VERDICT" = "null" ]; then
+            echo "::error::Review JSON missing verdict field"
+            exit 1
+          fi
+
+          echo "Verdict: $VERDICT"
+          echo "Summary: $SUMMARY"
+
+          if [ "$VERDICT" = "request_changes" ]; then
+            EVENT="REQUEST_CHANGES"
+          else
+            EVENT="APPROVE"
+          fi
+
+          # Inline comments from issues with file+line
+          INLINE_COMMENTS=$(jq -c '[
+            .issues // [] | .[] | select(.file and .line) |
+            {
+              path: .file,
+              line: .line,
+              body: (
+                "**[" + (.severity | ascii_upcase) + "]** " + .message +
+                (if .suggestion then "\n\n> **Suggestion:** " + .suggestion else "" end)
+              )
+            }
+          ]' /tmp/parsed-review.json)
+
+          # File-level issues (no line) go into summary body
+          BODY_ISSUES=$(jq -r '[
+            .issues // [] | .[] | select(.file and (.line | not)) |
+            "- **[" + (.severity | ascii_upcase) + "]** `" + .file + "` — " + .message +
+            (if .suggestion then "\n  > " + .suggestion else "" end)
+          ] | join("\n")' /tmp/parsed-review.json)
+
+          BODY=$(printf '## Code Review\n\n%s' "$SUMMARY")
+          if [ -n "$BODY_ISSUES" ]; then
+            BODY=$(printf '%s\n\n### General Issues\n\n%s' "$BODY" "$BODY_ISSUES")
+          fi
+
+          NUM_INLINE=$(echo "$INLINE_COMMENTS" | jq 'length')
+          echo "Inline comments: $NUM_INLINE"
+
+          # Post review with inline comments via GitHub API
+          jq -n \
+            --arg body "$BODY" \
+            --arg event "$EVENT" \
+            --arg commit "$COMMIT_SHA" \
+            --argjson comments "$INLINE_COMMENTS" \
+            '{body: $body, event: $event, commit_id: $commit, comments: $comments}' \
+          | gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --input -
+
+          if [ "$VERDICT" = "request_changes" ]; then
+            echo "::error::Claude Review: changes requested"
+            exit 1
+          fi
