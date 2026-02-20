@@ -172,7 +172,9 @@ func (s *Service) upsertTextBatch(
 	}
 	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
 
-	// Фаза 3: single pipeline upsert
+	// Фаза 3: single pipeline upsert.
+	// Атомарная семантика: при ошибке все элементы фейлятся. Часть может быть уже записана
+	// в БД (pipeline partial write) — клиент должен быть готов к идемпотентному retry.
 	if err := s.batchDocs.BatchUpsert(ctx, collectionName, validItems); err != nil {
 		for _, i := range validIdx {
 			results[i] = dombatch.NewError(items[i].ID(), fmt.Errorf("batch upsert: %w", err))

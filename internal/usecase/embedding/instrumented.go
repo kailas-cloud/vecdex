@@ -107,7 +107,6 @@ func (p *InstrumentedEmbedder) BatchEmbed(
 		return domain.BatchEmbeddingResult{}, nil
 	}
 
-	// Проверяем бюджет один раз перед всем батчем
 	if p.budget != nil {
 		if err := p.budget.Check(ctx); err != nil {
 			p.logger.Error("Budget exceeded (batch)",
@@ -122,24 +121,47 @@ func (p *InstrumentedEmbedder) BatchEmbed(
 
 	start := time.Now()
 
-	// Sub-batching: разбиваем на чанки по DefaultMaxAPIBatchSize
+	result, err := p.embedChunked(ctx, texts)
+	if err != nil {
+		return domain.BatchEmbeddingResult{}, err
+	}
+
+	duration := time.Since(start)
+	p.recordBatchBudget(result.TotalTokens)
+
+	p.logger.Debug("Batch embedding completed",
+		zap.String("provider", p.provider),
+		zap.String("model", p.model),
+		zap.Duration("duration", duration),
+		zap.Int("batch_size", len(texts)),
+		zap.Int("prompt_tokens", result.PromptTokens),
+		zap.Int("total_tokens", result.TotalTokens),
+	)
+
+	return result, nil
+}
+
+// embedChunked разбивает тексты на чанки по DefaultMaxAPIBatchSize с re-check бюджета.
+func (p *InstrumentedEmbedder) embedChunked(
+	ctx context.Context, texts []string,
+) (domain.BatchEmbeddingResult, error) {
 	var allEmbeddings [][]float32
 	var totalPrompt, totalTokens int
 
 	for offset := 0; offset < len(texts); offset += DefaultMaxAPIBatchSize {
+		if p.budget != nil && offset > 0 {
+			if err := p.budget.Check(ctx); err != nil {
+				return domain.BatchEmbeddingResult{}, fmt.Errorf("budget check (chunk %d): %w", offset, err)
+			}
+		}
+
 		end := offset + DefaultMaxAPIBatchSize
 		if end > len(texts) {
 			end = len(texts)
 		}
 		chunk := texts[offset:end]
 
-		var chunkResult domain.BatchEmbeddingResult
-		var err error
-		if be, ok := p.inner.(domain.BatchEmbedder); ok {
-			chunkResult, err = be.BatchEmbed(ctx, chunk)
-		} else {
-			chunkResult, err = domain.BatchFallback(ctx, p.inner, chunk)
-		}
+		chunkResult, err := p.embedInner(ctx, chunk)
 		if err != nil {
 			p.logger.Error("Batch embedding request failed",
 				zap.String("provider", p.provider),
@@ -156,28 +178,35 @@ func (p *InstrumentedEmbedder) BatchEmbed(
 		totalTokens += chunkResult.TotalTokens
 	}
 
-	duration := time.Since(start)
+	return domain.BatchEmbeddingResult{
+		Embeddings:   allEmbeddings,
+		PromptTokens: totalPrompt,
+		TotalTokens:  totalTokens,
+	}, nil
+}
 
-	// Записываем агрегированные токены в бюджет
+func (p *InstrumentedEmbedder) embedInner(
+	ctx context.Context, texts []string,
+) (domain.BatchEmbeddingResult, error) {
+	if be, ok := p.inner.(domain.BatchEmbedder); ok {
+		res, err := be.BatchEmbed(ctx, texts)
+		if err != nil {
+			return domain.BatchEmbeddingResult{}, fmt.Errorf("inner batch embed: %w", err)
+		}
+		return res, nil
+	}
+	res, err := domain.BatchFallback(ctx, p.inner, texts)
+	if err != nil {
+		return domain.BatchEmbeddingResult{}, fmt.Errorf("inner batch fallback: %w", err)
+	}
+	return res, nil
+}
+
+func (p *InstrumentedEmbedder) recordBatchBudget(totalTokens int) {
 	if p.budget != nil && totalTokens > 0 {
 		p.budget.Record(int64(totalTokens))
 		remaining := metrics.EmbeddingBudgetTokensRemaining
 		remaining.WithLabelValues(p.provider, "daily").Set(float64(p.budget.RemainingDaily()))
 		remaining.WithLabelValues(p.provider, "monthly").Set(float64(p.budget.RemainingMonthly()))
 	}
-
-	p.logger.Debug("Batch embedding completed",
-		zap.String("provider", p.provider),
-		zap.String("model", p.model),
-		zap.Duration("duration", duration),
-		zap.Int("batch_size", len(texts)),
-		zap.Int("prompt_tokens", totalPrompt),
-		zap.Int("total_tokens", totalTokens),
-	)
-
-	return domain.BatchEmbeddingResult{
-		Embeddings:   allEmbeddings,
-		PromptTokens: totalPrompt,
-		TotalTokens:  totalTokens,
-	}, nil
 }

@@ -147,12 +147,10 @@ func wireClient(store db.Store, cfg *clientConfig, obs *observer) (*Client, erro
 	collSvc := collectionuc.New(collRepo, vectorDim)
 	docSvc := documentuc.New(docRepo, collRepo, domEmb, domEmb)
 	searchSvc := searchuc.New(searchRepo, collRepo, domEmb)
-	// Если embedder поддерживает batch — пробрасываем в batch service
+	// Batch embedder берём из domEmb — чтобы batch шёл через ту же цепочку адаптеров
 	var batchEmb batchuc.BulkEmbedder
-	if cfg.embedder != nil {
-		if be, ok := cfg.embedder.(BatchEmbedder); ok {
-			batchEmb = &batchEmbedderAdapter{inner: be}
-		}
+	if be, ok := domEmb.(domain.BatchEmbedder); ok {
+		batchEmb = be
 	}
 	batchSvc := batchuc.New(docRepo, docRepo, docRepo, collRepo, domEmb, batchEmb)
 	if cfg.maxBatchSize > 0 {
@@ -233,21 +231,24 @@ func (a *embedderAdapter) Embed(ctx context.Context, text string) (domain.Embedd
 	}, nil
 }
 
-// batchEmbedderAdapter wraps public BatchEmbedder to satisfy internal domain.BatchEmbedder.
-type batchEmbedderAdapter struct {
-	inner BatchEmbedder
-}
-
-func (a *batchEmbedderAdapter) BatchEmbed(ctx context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
-	r, err := a.inner.BatchEmbed(ctx, texts)
-	if err != nil {
-		return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed: %w", err)
+// BatchEmbed делегирует inner если тот поддерживает BatchEmbedder, иначе fallback.
+func (a *embedderAdapter) BatchEmbed(ctx context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
+	if be, ok := a.inner.(BatchEmbedder); ok {
+		r, err := be.BatchEmbed(ctx, texts)
+		if err != nil {
+			return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed: %w", err)
+		}
+		return domain.BatchEmbeddingResult{
+			Embeddings:   r.Embeddings,
+			PromptTokens: r.PromptTokens,
+			TotalTokens:  r.TotalTokens,
+		}, nil
 	}
-	return domain.BatchEmbeddingResult{
-		Embeddings:   r.Embeddings,
-		PromptTokens: r.PromptTokens,
-		TotalTokens:  r.TotalTokens,
-	}, nil
+	res, err := domain.BatchFallback(ctx, a, texts)
+	if err != nil {
+		return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed fallback: %w", err)
+	}
+	return res, nil
 }
 
 // noopEmbedder returns an error on Embed call (used when no embedder configured).
