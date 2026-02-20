@@ -45,7 +45,11 @@ func registerOrReuse[T prometheus.Collector](reg prometheus.Registerer, c *T) er
 	if err := reg.Register(*c); err != nil {
 		var are prometheus.AlreadyRegisteredError
 		if errors.As(err, &are) {
-			*c = are.ExistingCollector.(T)
+			existing, ok := are.ExistingCollector.(T)
+			if !ok {
+				return fmt.Errorf("vecdex: metric already registered with incompatible type: %T", are.ExistingCollector)
+			}
+			*c = existing
 			return nil
 		}
 		return fmt.Errorf("vecdex: register metric: %w", err)

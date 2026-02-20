@@ -42,6 +42,8 @@ type BudgetStatus struct {
 }
 
 // Usage returns an embedding usage report for the given period.
+// Observer always records success — the underlying use-case is in-memory
+// and does not produce errors.
 func (c *Client) Usage(ctx context.Context, period UsagePeriod) UsageReport {
 	start := time.Now()
 	defer func() { c.obs.observe("usage", start, nil) }()

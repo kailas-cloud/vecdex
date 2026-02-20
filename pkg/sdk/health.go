@@ -2,6 +2,7 @@ package vecdex
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	healthuc "github.com/kailas-cloud/vecdex/internal/usecase/health"
@@ -14,11 +15,16 @@ type HealthStatus struct {
 }
 
 // Health checks the health of all system components.
+// Observer records status "error" when any component is not healthy.
 func (c *Client) Health(ctx context.Context) HealthStatus {
 	start := time.Now()
-	defer func() { c.obs.observe("health", start, nil) }()
+	var obsErr error
+	defer func() { c.obs.observe("health", start, obsErr) }()
 
 	report := c.healthSvc.Check(ctx)
+	if report.Status != healthuc.Healthy {
+		obsErr = fmt.Errorf("health: %s", report.Status)
+	}
 	checks := make(map[string]string, len(report.Checks))
 	for k, v := range report.Checks {
 		checks[k] = string(v)
