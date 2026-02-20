@@ -23,7 +23,9 @@ import (
 	batchuc "github.com/kailas-cloud/vecdex/internal/usecase/batch"
 	collectionuc "github.com/kailas-cloud/vecdex/internal/usecase/collection"
 	documentuc "github.com/kailas-cloud/vecdex/internal/usecase/document"
+	healthuc "github.com/kailas-cloud/vecdex/internal/usecase/health"
 	searchuc "github.com/kailas-cloud/vecdex/internal/usecase/search"
+	usageuc "github.com/kailas-cloud/vecdex/internal/usecase/usage"
 )
 
 const defaultReadinessTimeout = 10 * time.Second
@@ -61,6 +63,8 @@ type Client struct {
 	docSvc    documentUseCase
 	searchSvc searchUseCase
 	batchSvc  batchUseCase
+	healthSvc healthUseCase
+	usageSvc  usageUseCase
 }
 
 // New creates a vecdex Client and connects to the database.
@@ -142,12 +146,17 @@ func wireClient(store db.Store, cfg *clientConfig) (*Client, error) {
 		batchSvc = batchSvc.WithMaxBatchSize(cfg.maxBatchSize)
 	}
 
+	healthSvc := healthuc.New(store, nil)
+	usageSvc := usageuc.New(nil) // nil = unlimited mode (no budget tracking in SDK)
+
 	return &Client{
 		store:     store,
 		collSvc:   collSvc,
 		docSvc:    docSvc,
 		searchSvc: searchSvc,
 		batchSvc:  batchSvc,
+		healthSvc: healthSvc,
+		usageSvc:  usageSvc,
 	}, nil
 }
 
