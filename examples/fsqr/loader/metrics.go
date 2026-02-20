@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -98,9 +99,9 @@ func newLoaderMetrics(reg prometheus.Registerer) *loaderMetrics {
 }
 
 // serveMetrics запускает HTTP сервер для Prometheus scrape.
-func serveMetrics(port string) *http.Server {
+func serveMetrics(port string, gatherer prometheus.Gatherer) *http.Server {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}))
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -110,7 +111,7 @@ func serveMetrics(port string) *http.Server {
 
 	go func() {
 		log.Printf("metrics server on :%s/metrics", port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("metrics server error: %v", err)
 		}
 	}()

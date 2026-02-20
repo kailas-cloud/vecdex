@@ -25,7 +25,7 @@ type ingester struct {
 type batchItem struct {
 	venues    []Venue
 	fileIndex int
-	rowOffset int // offset последней строки в батче
+	rowOffset int
 }
 
 // ingestResult — итоги загрузки.
@@ -36,8 +36,12 @@ type ingestResult struct {
 }
 
 // Run запускает pipeline: reader → workers → Valkey.
-// Читает parquet начиная с cursor position.
-func (ing *ingester) Run(ctx context.Context, reader *parquetReader, cats *categoryMap, maxRows int) (ingestResult, error) {
+func (ing *ingester) Run(
+	ctx context.Context,
+	reader *parquetReader,
+	cats *categoryMap,
+	maxRows int,
+) (ingestResult, error) {
 	cur := ing.cursor.Get()
 
 	batches := make(chan batchItem, ing.workers*2)
@@ -46,7 +50,6 @@ func (ing *ingester) Run(ctx context.Context, reader *parquetReader, cats *categ
 
 	start := time.Now()
 
-	// Запускаем workers.
 	for i := 0; i < ing.workers; i++ {
 		wg.Add(1)
 		go func(workerID int) {
@@ -55,11 +58,13 @@ func (ing *ingester) Run(ctx context.Context, reader *parquetReader, cats *categ
 		}(i)
 	}
 
-	// Reader goroutine — формирует батчи и отправляет в channel.
 	var readerErr error
 	go func() {
 		defer close(batches)
-		readerErr = ing.produce(ctx, reader, cats, cur.FileIndex, cur.RowOffset, maxRows, batches)
+		readerErr = ing.produce(
+			ctx, reader, cats,
+			cur.FileIndex, cur.RowOffset, maxRows, batches,
+		)
 	}()
 
 	wg.Wait()
@@ -87,45 +92,46 @@ func (ing *ingester) produce(
 	currentFile := fileIndex
 	currentRow := rowOffset
 
-	err := reader.ReadPlaces(fileIndex, rowOffset, maxRows, func(row fsqPlaceRow, seq int) bool {
-		select {
-		case <-ctx.Done():
-			return false
-		default:
-		}
-
-		// Попутно собираем категории из данных если не загружали отдельно.
-		for i, catID := range row.FSQCategoryIDs {
-			label := ""
-			if i < len(row.FSQCategoryLabel) {
-				label = row.FSQCategoryLabel[i]
+	err := reader.ReadPlaces(fileIndex, rowOffset, maxRows,
+		func(row *fsqPlaceRow, seq int) bool {
+			select {
+			case <-ctx.Done():
+				return false
+			default:
 			}
-			cats.Add(catID, label)
-		}
 
-		venue, ok := toVenue(row, seq, cats)
-		if !ok {
-			if ing.metrics != nil {
-				ing.metrics.rowsFailed.WithLabelValues("venues", "no_coords").Inc()
+			for i, catID := range row.FSQCategoryIDs {
+				label := ""
+				if i < len(row.FSQCategoryLabel) {
+					label = row.FSQCategoryLabel[i]
+				}
+				cats.Add(catID, label)
 			}
-			return true // skip, continue
-		}
 
-		batch = append(batch, venue)
-		currentRow = seq + 1
-
-		if len(batch) >= ing.batchSize {
-			out <- batchItem{
-				venues:    batch,
-				fileIndex: currentFile,
-				rowOffset: currentRow,
+			venue, ok := toVenue(row, seq, cats)
+			if !ok {
+				if ing.metrics != nil {
+					ing.metrics.rowsFailed.WithLabelValues(
+						"venues", "no_coords",
+					).Inc()
+				}
+				return true
 			}
-			batch = make([]Venue, 0, ing.batchSize)
-		}
-		return true
-	})
 
-	// Отправляем остаток.
+			batch = append(batch, venue)
+			currentRow = seq + 1
+
+			if len(batch) >= ing.batchSize {
+				out <- batchItem{
+					venues:    batch,
+					fileIndex: currentFile,
+					rowOffset: currentRow,
+				}
+				batch = make([]Venue, 0, ing.batchSize)
+			}
+			return true
+		})
+
 	if len(batch) > 0 {
 		out <- batchItem{
 			venues:    batch,
@@ -145,47 +151,69 @@ func (ing *ingester) worker(
 	processed, failed *atomic.Int64,
 ) {
 	for batch := range batches {
-		start := time.Now()
+		ing.processBatch(ctx, id, batch, processed, failed)
+	}
+}
 
-		resp, err := ing.idx.UpsertBatch(ctx, batch.venues)
+func (ing *ingester) processBatch(
+	ctx context.Context,
+	id int,
+	batch batchItem,
+	processed, failed *atomic.Int64,
+) {
+	start := time.Now()
 
-		dur := time.Since(start).Seconds()
+	resp, err := ing.idx.UpsertBatch(ctx, batch.venues)
+
+	dur := time.Since(start).Seconds()
+	if ing.metrics != nil {
+		ing.metrics.batchDuration.WithLabelValues("venues").Observe(dur)
+		ing.metrics.batchesTotal.WithLabelValues("venues").Inc()
+	}
+
+	if err != nil {
+		log.Printf("worker %d: batch upsert error: %v", id, err)
+		failed.Add(int64(len(batch.venues)))
 		if ing.metrics != nil {
-			ing.metrics.batchDuration.WithLabelValues("venues").Observe(dur)
-			ing.metrics.batchesTotal.WithLabelValues("venues").Inc()
+			ing.metrics.rowsFailed.WithLabelValues(
+				"venues", "batch_error",
+			).Add(float64(len(batch.venues)))
 		}
+		return
+	}
 
-		if err != nil {
-			log.Printf("worker %d: batch upsert error: %v", id, err)
-			failed.Add(int64(len(batch.venues)))
-			if ing.metrics != nil {
-				ing.metrics.rowsFailed.WithLabelValues("venues", "batch_error").Add(float64(len(batch.venues)))
-			}
-			continue
+	processed.Add(int64(resp.Succeeded))
+	failed.Add(int64(resp.Failed))
+
+	if ing.metrics != nil {
+		ing.metrics.rowsProcessed.WithLabelValues("venues").Add(
+			float64(resp.Succeeded),
+		)
+		if resp.Failed > 0 {
+			ing.metrics.rowsFailed.WithLabelValues(
+				"venues", "item_error",
+			).Add(float64(resp.Failed))
 		}
+	}
 
-		processed.Add(int64(resp.Succeeded))
-		failed.Add(int64(resp.Failed))
+	ing.cursor.Advance(
+		batch.fileIndex, batch.rowOffset,
+		resp.Succeeded, resp.Failed,
+	)
 
-		if ing.metrics != nil {
-			ing.metrics.rowsProcessed.WithLabelValues("venues").Add(float64(resp.Succeeded))
-			if resp.Failed > 0 {
-				ing.metrics.rowsFailed.WithLabelValues("venues", "item_error").Add(float64(resp.Failed))
-			}
-		}
-
-		// Обновляем cursor.
-		ing.cursor.Advance(batch.fileIndex, batch.rowOffset, resp.Succeeded, resp.Failed)
-
-		total := processed.Load()
-		if total%10000 < int64(ing.batchSize) {
-			log.Printf("venues: %d processed, %d failed", total, failed.Load())
-		}
+	total := processed.Load()
+	if total%10000 < int64(ing.batchSize) {
+		log.Printf("venues: %d processed, %d failed", total, failed.Load())
 	}
 }
 
 // loadCategories загружает категории в vecdex с embeddings.
-func loadCategories(ctx context.Context, idx *vecdex.TypedIndex[Category], cats *categoryMap, m *loaderMetrics) error {
+func loadCategories(
+	ctx context.Context,
+	idx *vecdex.TypedIndex[Category],
+	cats *categoryMap,
+	m *loaderMetrics,
+) {
 	all := cats.Categories()
 	log.Printf("loading %d categories into vecdex...", len(all))
 
@@ -193,7 +221,9 @@ func loadCategories(ctx context.Context, idx *vecdex.TypedIndex[Category], cats 
 		if _, err := idx.Upsert(ctx, cat); err != nil {
 			log.Printf("category upsert failed: %s: %v", cat.ID, err)
 			if m != nil {
-				m.rowsFailed.WithLabelValues("categories", "upsert_error").Inc()
+				m.rowsFailed.WithLabelValues(
+					"categories", "upsert_error",
+				).Inc()
 			}
 			continue
 		}
@@ -206,5 +236,4 @@ func loadCategories(ctx context.Context, idx *vecdex.TypedIndex[Category], cats 
 	}
 
 	log.Printf("categories: %d/%d done", len(all), len(all))
-	return nil
 }

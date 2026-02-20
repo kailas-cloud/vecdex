@@ -47,13 +47,14 @@ type hfParquetInfo struct {
 
 // DownloadPlaces скачивает parquet файлы places в dataDir/places/.
 // maxFiles=0 — скачать все. Пропускает уже скачанные файлы.
-func (d *downloader) DownloadPlaces(maxFiles int) ([]string, error) {
+func (d *downloader) DownloadPlaces(maxFiles int) error {
 	return d.download("places", "train", maxFiles, filepath.Join(d.dataDir, "places"))
 }
 
 // DownloadCategories скачивает parquet файл categories.
 func (d *downloader) DownloadCategories() (string, error) {
-	files, err := d.download("categories", "train", 1, filepath.Join(d.dataDir, "categories"))
+	outDir := filepath.Join(d.dataDir, "categories")
+	files, err := d.downloadFiles("categories", "train", 1, outDir)
 	if err != nil {
 		return "", err
 	}
@@ -63,12 +64,18 @@ func (d *downloader) DownloadCategories() (string, error) {
 	return files[0], nil
 }
 
-func (d *downloader) download(config, split string, maxFiles int, outDir string) ([]string, error) {
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+func (d *downloader) download(config, split string, maxFiles int, outDir string) error {
+	_, err := d.downloadFiles(config, split, maxFiles, outDir)
+	return err
+}
+
+func (d *downloader) downloadFiles(
+	config, split string, maxFiles int, outDir string,
+) ([]string, error) {
+	if err := os.MkdirAll(outDir, 0o750); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", outDir, err)
 	}
 
-	// Получаем список parquet файлов через HF API.
 	urls, err := d.listParquetFiles(config, split)
 	if err != nil {
 		return nil, fmt.Errorf("list parquet files: %w", err)
@@ -86,9 +93,9 @@ func (d *downloader) download(config, split string, maxFiles int, outDir string)
 		outPath := filepath.Join(outDir, name)
 		paths = append(paths, outPath)
 
-		// Проверяем уже скачанный файл.
 		if st, err := os.Stat(outPath); err == nil && st.Size() == info.Size {
-			log.Printf("[%d/%d] %s: already downloaded (%d bytes)", i+1, len(urls), name, st.Size())
+			log.Printf("[%d/%d] %s: already downloaded (%d bytes)",
+				i+1, len(urls), name, st.Size())
 			continue
 		}
 
@@ -104,9 +111,9 @@ func (d *downloader) download(config, split string, maxFiles int, outDir string)
 func (d *downloader) listParquetFiles(config, split string) ([]hfParquetInfo, error) {
 	url := fmt.Sprintf("%s/%s/parquet/%s/%s", hfAPIBase, hfDataset, config, split)
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, http.NoBody)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("new request: %w", err)
 	}
 	if d.token != "" {
 		req.Header.Set("Authorization", "Bearer "+d.token)
@@ -123,16 +130,15 @@ func (d *downloader) listParquetFiles(config, split string) ([]hfParquetInfo, er
 		return nil, fmt.Errorf("HF API: status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// HF API возвращает массив объектов с url, filename, size.
 	var files []hfParquetInfo
 	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
 		return nil, fmt.Errorf("parse HF response: %w", err)
 	}
 
-	// Фильтруем только .parquet файлы.
 	var parquets []hfParquetInfo
 	for _, f := range files {
-		if strings.HasSuffix(f.Filename, ".parquet") || strings.HasSuffix(f.URL, ".parquet") {
+		if strings.HasSuffix(f.Filename, ".parquet") ||
+			strings.HasSuffix(f.URL, ".parquet") {
 			parquets = append(parquets, f)
 		}
 	}
@@ -145,15 +151,14 @@ func (d *downloader) downloadFile(url, outPath string, num, total int) error {
 	cleanPath := filepath.Clean(outPath)
 	tmpPath := cleanPath + ".tmp"
 
-	// Проверяем partial download для resume.
 	var offset int64
 	if st, err := os.Stat(tmpPath); err == nil {
 		offset = st.Size()
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, http.NoBody)
 	if err != nil {
-		return err
+		return fmt.Errorf("new request: %w", err)
 	}
 	if d.token != "" {
 		req.Header.Set("Authorization", "Bearer "+d.token)
@@ -169,11 +174,11 @@ func (d *downloader) downloadFile(url, outPath string, num, total int) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+	if resp.StatusCode != http.StatusOK &&
+		resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("download: HTTP %d", resp.StatusCode)
 	}
 
-	// Если сервер не поддерживает Range — начинаем с нуля.
 	flags := os.O_WRONLY | os.O_CREATE
 	if resp.StatusCode == http.StatusPartialContent {
 		flags |= os.O_APPEND
@@ -182,7 +187,7 @@ func (d *downloader) downloadFile(url, outPath string, num, total int) error {
 		offset = 0
 	}
 
-	f, err := os.OpenFile(tmpPath, flags, 0o644)
+	f, err := os.OpenFile(tmpPath, flags, 0o600)
 	if err != nil {
 		return fmt.Errorf("open tmp: %w", err)
 	}
@@ -203,9 +208,13 @@ func (d *downloader) downloadFile(url, outPath string, num, total int) error {
 		return fmt.Errorf("write: %w", err)
 	}
 
-	log.Printf("[%d/%d] %s: downloaded %d bytes", num, total, filepath.Base(outPath), offset+written)
+	log.Printf("[%d/%d] %s: downloaded %d bytes",
+		num, total, filepath.Base(outPath), offset+written)
 
-	return os.Rename(tmpPath, cleanPath)
+	if err := os.Rename(tmpPath, cleanPath); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
 }
 
 // progressReader логирует прогресс скачивания и обновляет метрики.
@@ -238,5 +247,8 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 		}
 	}
 
-	return n, err
+	if err != nil {
+		return n, fmt.Errorf("read: %w", err)
+	}
+	return n, nil
 }

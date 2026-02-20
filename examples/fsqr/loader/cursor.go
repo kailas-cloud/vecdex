@@ -14,22 +14,22 @@ import (
 
 // Cursor хранит позицию в потоке загрузки.
 type Cursor struct {
-	Stage          string    `json:"stage"`           // "categories", "venues", "done"
-	FileIndex      int       `json:"file_index"`      // Индекс текущего parquet файла
-	RowOffset      int       `json:"row_offset"`      // Offset внутри файла (после skip)
-	TotalProcessed int       `json:"total_processed"` // Всего обработано строк
-	TotalFailed    int       `json:"total_failed"`    // Всего пропущено/failed
-	CategoriesDone bool      `json:"categories_done"` // Этап категорий завершён
+	Stage          string    `json:"stage"`
+	FileIndex      int       `json:"file_index"`
+	RowOffset      int       `json:"row_offset"`
+	TotalProcessed int       `json:"total_processed"`
+	TotalFailed    int       `json:"total_failed"`
+	CategoriesDone bool      `json:"categories_done"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // cursorTracker — потокобезопасный трекер прогресса с периодическим сохранением.
 type cursorTracker struct {
-	mu       sync.Mutex
-	cursor   Cursor
-	path     string
-	saveEvery int // Сохранять каждые N строк
-	dirty    bool
+	mu        sync.Mutex
+	cursor    Cursor
+	path      string
+	saveEvery int
+	dirty     bool
 }
 
 // newCursorTracker создаёт трекер. Если файл существует — загружает предыдущее состояние.
@@ -107,18 +107,20 @@ func (ct *cursorTracker) forceSave() {
 		return
 	}
 	data, err := json.MarshalIndent(ct.cursor, "", "  ")
-	ct.dirty = false
-	ct.mu.Unlock()
-
 	if err != nil {
+		ct.mu.Unlock()
 		log.Printf("cursor marshal error: %v", err)
 		return
 	}
+	ct.dirty = false
+	ct.mu.Unlock()
 
-	// Atomic write: tmp файл + rename.
 	tmp := ct.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		log.Printf("cursor write error: %v", err)
+		ct.mu.Lock()
+		ct.dirty = true
+		ct.mu.Unlock()
 		return
 	}
 	if err := os.Rename(tmp, ct.path); err != nil {

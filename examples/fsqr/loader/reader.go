@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,7 +17,7 @@ import (
 // parquetReader читает places parquet файлы с поддержкой skip.
 type parquetReader struct {
 	dataDir string
-	files   []string // отсортированные пути к parquet файлам
+	files   []string
 }
 
 // newParquetReader создаёт reader, сканирует dataDir на parquet файлы.
@@ -34,20 +35,14 @@ func newParquetReader(dataDir string) (*parquetReader, error) {
 	return &parquetReader{dataDir: dataDir, files: files}, nil
 }
 
-// FileCount возвращает количество parquet файлов.
-func (r *parquetReader) FileCount() int {
-	return len(r.files)
-}
-
-// readPlacesCallback — callback для каждого row.
-// seq — глобальный sequential номер строки (для ID).
-// Возвращает false чтобы остановить чтение.
-type readPlacesCallback func(row fsqPlaceRow, seq int) bool
+// readPlacesCallback вызывается для каждого row.
+// seq — глобальный sequential номер строки. Возвращает false для остановки.
+type readPlacesCallback func(row *fsqPlaceRow, seq int) bool
 
 // ReadPlaces читает venues начиная с fileIndex/rowOffset.
 // maxRows=0 — без лимита. Вызывает callback для каждой строки.
-func (r *parquetReader) ReadPlaces(fileIndex, rowOffset int, maxRows int, cb readPlacesCallback) error {
-	seq := rowOffset // sequential counter начинается с offset (для resume)
+func (r *parquetReader) ReadPlaces(fileIndex, rowOffset, maxRows int, cb readPlacesCallback) error {
+	seq := rowOffset
 	remaining := maxRows
 
 	for fi := fileIndex; fi < len(r.files); fi++ {
@@ -73,22 +68,12 @@ func (r *parquetReader) ReadPlaces(fileIndex, rowOffset int, maxRows int, cb rea
 }
 
 // readFile читает один parquet файл с пропуском первых skipRows строк.
-func (r *parquetReader) readFile(path string, skipRows, maxRows, startSeq int, cb readPlacesCallback) (int, error) {
-	cleanPath := filepath.Clean(path)
-	f, err := os.Open(cleanPath)
+func (r *parquetReader) readFile(
+	path string, skipRows, maxRows, startSeq int, cb readPlacesCallback,
+) (int, error) {
+	pf, err := openParquet(path)
 	if err != nil {
-		return 0, fmt.Errorf("open: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	stat, err := f.Stat()
-	if err != nil {
-		return 0, fmt.Errorf("stat: %w", err)
-	}
-
-	pf, err := parquet.OpenFile(f, stat.Size())
-	if err != nil {
-		return 0, fmt.Errorf("open parquet: %w", err)
+		return 0, err
 	}
 
 	read := 0
@@ -97,70 +82,97 @@ func (r *parquetReader) readFile(path string, skipRows, maxRows, startSeq int, c
 
 	for _, rg := range pf.RowGroups() {
 		rgRows := int(rg.NumRows())
-
-		// Skip целые row groups если ещё не дошли до offset.
 		if skipped+rgRows <= skipRows {
 			skipped += rgRows
 			continue
 		}
 
-		rows := parquet.NewRowGroupReader(rg)
-		buf := make([]parquet.Row, 1000)
-
-		for {
-			n, readErr := rows.ReadRows(buf)
-			for i := 0; i < n; i++ {
-				if skipped < skipRows {
-					skipped++
-					continue
-				}
-
-				var place fsqPlaceRow
-				if err := pf.Schema().Reconstruct(&place, buf[i]); err != nil {
-					log.Printf("skip row: reconstruct error: %v", err)
-					continue
-				}
-
-				if !cb(place, seq) {
-					return read, nil
-				}
-				seq++
-				read++
-
-				if maxRows > 0 && read >= maxRows {
-					return read, nil
-				}
-			}
-
-			if readErr != nil {
-				if readErr == io.EOF {
-					break
-				}
-				return read, fmt.Errorf("read rows: %w", readErr)
-			}
+		n, done, err := r.readRowGroup(pf, rg, skipRows, maxRows, &skipped, &read, &seq, cb)
+		if err != nil {
+			return read, err
+		}
+		read += n
+		if done {
+			break
 		}
 	}
 
 	return read, nil
 }
 
-// ReadCategories читает categories parquet и заполняет categoryMap.
-func (r *parquetReader) ReadCategories(catFile string, cats *categoryMap) error {
-	cleanPath := filepath.Clean(catFile)
+func (r *parquetReader) readRowGroup(
+	pf *parquet.File,
+	rg parquet.RowGroup,
+	skipRows, maxRows int,
+	skipped, read, seq *int,
+	cb readPlacesCallback,
+) (int, bool, error) {
+	rows := parquet.NewRowGroupReader(rg)
+	buf := make([]parquet.Row, 1000)
+	n := 0
+
+	for {
+		cnt, readErr := rows.ReadRows(buf)
+		for i := 0; i < cnt; i++ {
+			if *skipped < skipRows {
+				*skipped++
+				continue
+			}
+
+			var place fsqPlaceRow
+			if err := pf.Schema().Reconstruct(&place, buf[i]); err != nil {
+				log.Printf("skip row: reconstruct error: %v", err)
+				continue
+			}
+
+			if !cb(&place, *seq) {
+				return n, true, nil
+			}
+			*seq++
+			n++
+
+			if maxRows > 0 && *read+n >= maxRows {
+				return n, true, nil
+			}
+		}
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return n, false, fmt.Errorf("read rows: %w", readErr)
+		}
+	}
+
+	return n, false, nil
+}
+
+func openParquet(path string) (*parquet.File, error) {
+	cleanPath := filepath.Clean(path)
 	f, err := os.Open(cleanPath)
 	if err != nil {
-		return fmt.Errorf("open categories: %w", err)
+		return nil, fmt.Errorf("open: %w", err)
 	}
-	defer func() { _ = f.Close() }()
 
 	stat, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("stat categories: %w", err)
+		_ = f.Close()
+		return nil, fmt.Errorf("stat: %w", err)
 	}
 
 	pf, err := parquet.OpenFile(f, stat.Size())
 	if err != nil {
-		return fmt.Errorf("open parquet: %w", err)
+		_ = f.Close()
+		return nil, fmt.Errorf("open parquet: %w", err)
+	}
+	return pf, nil
+}
+
+// ReadCategories читает categories parquet и заполняет categoryMap.
+func (r *parquetReader) ReadCategories(catFile string, cats *categoryMap) error {
+	pf, err := openParquet(catFile)
+	if err != nil {
+		return fmt.Errorf("open categories: %w", err)
 	}
 
 	for _, rg := range pf.RowGroups() {
@@ -183,7 +195,7 @@ func (r *parquetReader) ReadCategories(catFile string, cats *categoryMap) error 
 			}
 
 			if readErr != nil {
-				if readErr == io.EOF {
+				if errors.Is(readErr, io.EOF) {
 					break
 				}
 				return fmt.Errorf("read category rows: %w", readErr)
