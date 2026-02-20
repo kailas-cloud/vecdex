@@ -32,3 +32,8 @@ type CollectionReader interface {
 type Embedder interface {
 	Embed(ctx context.Context, text string) (domain.EmbeddingResult, error)
 }
+
+// BulkEmbedder vectorizes multiple texts in a single call.
+type BulkEmbedder interface {
+	BatchEmbed(ctx context.Context, texts []string) (domain.BatchEmbeddingResult, error)
+}

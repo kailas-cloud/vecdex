@@ -11,6 +11,9 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/metrics"
 )
 
+// DefaultMaxAPIBatchSize — максимальный размер батча для одного API-запроса.
+const DefaultMaxAPIBatchSize = 256
+
 // BudgetChecker is the local interface for budget enforcement.
 type BudgetChecker interface {
 	Check(ctx context.Context) error
@@ -94,4 +97,87 @@ func (p *InstrumentedEmbedder) Embed(
 	)
 
 	return result, nil
+}
+
+// BatchEmbed проверяет бюджет, разбивает на sub-batches, делегирует inner.
+func (p *InstrumentedEmbedder) BatchEmbed(
+	ctx context.Context, texts []string,
+) (domain.BatchEmbeddingResult, error) {
+	if len(texts) == 0 {
+		return domain.BatchEmbeddingResult{}, nil
+	}
+
+	// Проверяем бюджет один раз перед всем батчем
+	if p.budget != nil {
+		if err := p.budget.Check(ctx); err != nil {
+			p.logger.Error("Budget exceeded (batch)",
+				zap.String("provider", p.provider),
+				zap.String("model", p.model),
+				zap.Int("batch_size", len(texts)),
+				zap.Error(err),
+			)
+			return domain.BatchEmbeddingResult{}, fmt.Errorf("budget check: %w", err)
+		}
+	}
+
+	start := time.Now()
+
+	// Sub-batching: разбиваем на чанки по DefaultMaxAPIBatchSize
+	var allEmbeddings [][]float32
+	var totalPrompt, totalTokens int
+
+	for offset := 0; offset < len(texts); offset += DefaultMaxAPIBatchSize {
+		end := offset + DefaultMaxAPIBatchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		chunk := texts[offset:end]
+
+		var chunkResult domain.BatchEmbeddingResult
+		var err error
+		if be, ok := p.inner.(domain.BatchEmbedder); ok {
+			chunkResult, err = be.BatchEmbed(ctx, chunk)
+		} else {
+			chunkResult, err = domain.BatchFallback(ctx, p.inner, chunk)
+		}
+		if err != nil {
+			p.logger.Error("Batch embedding request failed",
+				zap.String("provider", p.provider),
+				zap.String("model", p.model),
+				zap.Int("chunk_offset", offset),
+				zap.Int("chunk_size", len(chunk)),
+				zap.Error(err),
+			)
+			return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed: %w", err)
+		}
+
+		allEmbeddings = append(allEmbeddings, chunkResult.Embeddings...)
+		totalPrompt += chunkResult.PromptTokens
+		totalTokens += chunkResult.TotalTokens
+	}
+
+	duration := time.Since(start)
+
+	// Записываем агрегированные токены в бюджет
+	if p.budget != nil && totalTokens > 0 {
+		p.budget.Record(int64(totalTokens))
+		remaining := metrics.EmbeddingBudgetTokensRemaining
+		remaining.WithLabelValues(p.provider, "daily").Set(float64(p.budget.RemainingDaily()))
+		remaining.WithLabelValues(p.provider, "monthly").Set(float64(p.budget.RemainingMonthly()))
+	}
+
+	p.logger.Debug("Batch embedding completed",
+		zap.String("provider", p.provider),
+		zap.String("model", p.model),
+		zap.Duration("duration", duration),
+		zap.Int("batch_size", len(texts)),
+		zap.Int("prompt_tokens", totalPrompt),
+		zap.Int("total_tokens", totalTokens),
+	)
+
+	return domain.BatchEmbeddingResult{
+		Embeddings:   allEmbeddings,
+		PromptTokens: totalPrompt,
+		TotalTokens:  totalTokens,
+	}, nil
 }

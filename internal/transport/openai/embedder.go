@@ -98,6 +98,66 @@ func (e *Embedder) Embed(ctx context.Context, text string) (domain.EmbeddingResu
 	}, nil
 }
 
+// BatchEmbed implements domain.BatchEmbedder. Один вызов CreateEmbeddings с []string.
+func (e *Embedder) BatchEmbed(ctx context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
+	if len(texts) == 0 {
+		return domain.BatchEmbeddingResult{}, nil
+	}
+
+	req := openai.EmbeddingRequest{
+		Input:          texts,
+		Model:          e.model,
+		EncodingFormat: openai.EmbeddingEncodingFormatFloat,
+		User:           e.user,
+	}
+	if e.dimensions > 0 {
+		req.Dimensions = e.dimensions
+	}
+
+	start := time.Now()
+
+	resp, err := e.client.CreateEmbeddings(ctx, req)
+
+	duration := time.Since(start)
+
+	if err != nil {
+		metrics.EmbeddingRequestsTotal.WithLabelValues(e.provider, string(e.model), "error").Inc()
+		metrics.EmbeddingErrorsTotal.WithLabelValues(e.provider, string(e.model), "api_error").Inc()
+		return domain.BatchEmbeddingResult{}, parseAPIError(err)
+	}
+
+	if len(resp.Data) != len(texts) {
+		metrics.EmbeddingRequestsTotal.WithLabelValues(e.provider, string(e.model), "error").Inc()
+		metrics.EmbeddingErrorsTotal.WithLabelValues(e.provider, string(e.model), "count_mismatch").Inc()
+		return domain.BatchEmbeddingResult{}, fmt.Errorf(
+			"embedding count mismatch: got %d, expected %d: %w",
+			len(resp.Data), len(texts), domain.ErrEmbeddingProviderError,
+		)
+	}
+
+	metrics.EmbeddingRequestsTotal.WithLabelValues(e.provider, string(e.model), "success").Inc()
+	metrics.EmbeddingRequestDuration.WithLabelValues(e.provider, string(e.model)).Observe(duration.Seconds())
+
+	totalTokens := resp.Usage.TotalTokens
+	promptTokens := resp.Usage.PromptTokens
+	if totalTokens > 0 {
+		metrics.EmbeddingTokensTotal.WithLabelValues(e.provider, string(e.model), "prompt").Add(float64(promptTokens))
+		metrics.EmbeddingTokensTotal.WithLabelValues(e.provider, string(e.model), "total").Add(float64(totalTokens))
+	}
+
+	// API не гарантирует порядок — выравниваем по resp.Data[i].Index
+	embeddings := make([][]float32, len(texts))
+	for _, d := range resp.Data {
+		embeddings[d.Index] = d.Embedding
+	}
+
+	return domain.BatchEmbeddingResult{
+		Embeddings:   embeddings,
+		PromptTokens: promptTokens,
+		TotalTokens:  totalTokens,
+	}, nil
+}
+
 // HealthCheck verifies API availability via ListModels (free endpoint).
 func (e *Embedder) HealthCheck(ctx context.Context) error {
 	if _, err := e.client.ListModels(ctx); err != nil {

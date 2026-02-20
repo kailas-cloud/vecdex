@@ -66,6 +66,11 @@ type mockEmbedder struct {
 	err       error
 	callCount int
 	failAfter int // fail after N successful calls; 0=always succeed (unless err set)
+
+	// Batch support
+	batchResult domain.BatchEmbeddingResult
+	batchErr    error
+	batchCalls  int
 }
 
 func (m *mockEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResult, error) {
@@ -77,6 +82,26 @@ func (m *mockEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResul
 		return domain.EmbeddingResult{}, m.err
 	}
 	return m.result, nil
+}
+
+func (m *mockEmbedder) BatchEmbed(_ context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
+	m.batchCalls++
+	if m.batchErr != nil {
+		return domain.BatchEmbeddingResult{}, m.batchErr
+	}
+	if m.batchResult.Embeddings != nil {
+		return m.batchResult, nil
+	}
+	// Авто-генерация: вернуть по вектору из result.Embedding на каждый текст
+	embeddings := make([][]float32, len(texts))
+	for i := range texts {
+		embeddings[i] = m.result.Embedding
+	}
+	return domain.BatchEmbeddingResult{
+		Embeddings:   embeddings,
+		PromptTokens: m.result.PromptTokens * len(texts),
+		TotalTokens:  m.result.TotalTokens * len(texts),
+	}, nil
 }
 
 func makeField(t *testing.T, name string, ft field.Type) field.Field {
@@ -124,7 +149,7 @@ func TestUpsert_Success(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b"), makeDoc(t, "c")}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
@@ -145,7 +170,7 @@ func TestUpsert_PartialFailure(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{
 		makeDoc(t, "a"), // ok — no fields
 		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // fail — unknown field
@@ -171,7 +196,7 @@ func TestUpsert_ExceedsMax(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1}}}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := make([]domdoc.Document, MaxBatchSize+1)
 	for i := range items {
 		items[i] = makeDoc(t, fmt.Sprintf("doc-%d", i))
@@ -191,7 +216,7 @@ func TestUpsert_CollectionNotFound(t *testing.T) {
 	colls := &mockCollReader{err: domain.ErrNotFound}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1}}}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a")}
 	results := svc.Upsert(context.Background(), "nonexistent", items)
 
@@ -209,25 +234,21 @@ func TestUpsert_QuotaCascade(t *testing.T) {
 	del := &mockDocDeleter{}
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{
-		result:    domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}},
-		err:       domain.ErrEmbeddingQuotaExceeded,
-		failAfter: 1, // first succeeds, rest fail
+		result:   domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}},
+		batchErr: domain.ErrEmbeddingQuotaExceeded,
 	}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b"), makeDoc(t, "c")}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
-	if results[0].Status() != dombatch.StatusOK {
-		t.Errorf("result[0] expected ok, got %v", results[0].Err())
-	}
-	// b and c should both fail with quota
-	for _, i := range []int{1, 2} {
-		if results[i].Status() != dombatch.StatusError {
+	// Batch embed fails atomically — all items get the error
+	for i, r := range results {
+		if r.Status() != dombatch.StatusError {
 			t.Errorf("result[%d] expected error", i)
 		}
-		if !errors.Is(results[i].Err(), domain.ErrEmbeddingQuotaExceeded) {
-			t.Errorf("result[%d] expected ErrEmbeddingQuotaExceeded, got %v", i, results[i].Err())
+		if !errors.Is(r.Err(), domain.ErrEmbeddingQuotaExceeded) {
+			t.Errorf("result[%d] expected ErrEmbeddingQuotaExceeded, got %v", i, r.Err())
 		}
 	}
 }
@@ -238,16 +259,15 @@ func TestUpsert_RateLimitCascade(t *testing.T) {
 	del := &mockDocDeleter{}
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{
-		result:    domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}},
-		err:       domain.ErrRateLimited,
-		failAfter: 0, // all fail immediately
+		result:   domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}},
+		batchErr: domain.ErrRateLimited,
 	}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
-	// First hits rate limit → cascade stops all
+	// Batch embed fails atomically — all items get rate limit error
 	for i, r := range results {
 		if r.Status() != dombatch.StatusError {
 			t.Errorf("result[%d] expected error", i)
@@ -258,33 +278,26 @@ func TestUpsert_RateLimitCascade(t *testing.T) {
 	}
 }
 
-func TestUpsert_IndividualEmbedError(t *testing.T) {
+func TestUpsert_BatchEmbedError(t *testing.T) {
 	col := makeCollection(t, nil)
 	docs := &mockDocUpserter{}
 	del := &mockDocDeleter{}
 	colls := &mockCollReader{col: col}
 	providerErr := errors.New("model unavailable")
 	embed := &mockEmbedder{
-		result:    domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}},
-		err:       providerErr,
-		failAfter: 1, // first ok, second fails
+		result:   domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}},
+		batchErr: providerErr,
 	}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b"), makeDoc(t, "c")}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
-	if results[0].Status() != dombatch.StatusOK {
-		t.Errorf("result[0] expected ok")
-	}
-	if results[1].Status() != dombatch.StatusError {
-		t.Errorf("result[1] expected error")
-	}
-	// Non-cascading error → third item should still be attempted
-	if results[2].Status() != dombatch.StatusError {
-		// Individual provider errors don't cascade, but third will also fail
-		// since mock always fails after failAfter
-		t.Logf("result[2] status=%s (expected error since mock continues failing)", results[2].Status())
+	// Batch embed fails — all items get the error
+	for i, r := range results {
+		if r.Status() != dombatch.StatusError {
+			t.Errorf("result[%d] expected error, got ok", i)
+		}
 	}
 }
 
@@ -295,7 +308,7 @@ func TestUpsert_InvalidFields(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{
 		makeDocWithTags(t, "a", map[string]string{"lang": "go"}),     // ok
 		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // fail
@@ -319,7 +332,7 @@ func TestDelete_Success(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	results := svc.Delete(context.Background(), "test-col", []string{"a", "b"})
 
 	if len(results) != 2 {
@@ -339,7 +352,7 @@ func TestDelete_PartialFailure(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	results := svc.Delete(context.Background(), "test-col", []string{"a", "b", "c"})
 
 	if results[0].Status() != dombatch.StatusOK {
@@ -360,7 +373,7 @@ func TestDelete_ExceedsMax(t *testing.T) {
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	ids := make([]string, MaxBatchSize+1)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("doc-%d", i)
@@ -380,7 +393,7 @@ func TestDelete_CollectionNotFound(t *testing.T) {
 	colls := &mockCollReader{err: domain.ErrNotFound}
 	embed := &mockEmbedder{}
 
-	svc := New(docs, &mockBatchUpserter{}, del, colls, embed)
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	results := svc.Delete(context.Background(), "nonexistent", []string{"a"})
 
 	if results[0].Status() != dombatch.StatusError {
@@ -388,5 +401,85 @@ func TestDelete_CollectionNotFound(t *testing.T) {
 	}
 	if !errors.Is(results[0].Err(), domain.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", results[0].Err())
+	}
+}
+
+// --- Batch embedding specific tests ---
+
+func TestUpsert_BatchEmbedUsed(t *testing.T) {
+	col := makeCollection(t, nil)
+	docs := &mockDocUpserter{}
+	del := &mockDocDeleter{}
+	colls := &mockCollReader{col: col}
+	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
+
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
+	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")}
+	results := svc.Upsert(context.Background(), "test-col", items)
+
+	for i, r := range results {
+		if r.Status() != dombatch.StatusOK {
+			t.Errorf("result[%d] expected ok, got %v", i, r.Err())
+		}
+	}
+	// BatchEmbed должен быть вызван один раз, а не Embed поштучно
+	if embed.batchCalls != 1 {
+		t.Errorf("expected 1 batch call, got %d", embed.batchCalls)
+	}
+	if embed.callCount != 0 {
+		t.Errorf("expected 0 single Embed calls, got %d", embed.callCount)
+	}
+}
+
+func TestUpsert_NilBatchEmbedFallback(t *testing.T) {
+	col := makeCollection(t, nil)
+	docs := &mockDocUpserter{}
+	del := &mockDocDeleter{}
+	colls := &mockCollReader{col: col}
+	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
+
+	// batchEmbed = nil → fallback на поштучный Embed через BatchFallback
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, nil)
+	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")}
+	results := svc.Upsert(context.Background(), "test-col", items)
+
+	for i, r := range results {
+		if r.Status() != dombatch.StatusOK {
+			t.Errorf("result[%d] expected ok, got %v", i, r.Err())
+		}
+	}
+	// Fallback должен вызвать Embed по одному на каждый текст
+	if embed.callCount != 2 {
+		t.Errorf("expected 2 single Embed calls (fallback), got %d", embed.callCount)
+	}
+}
+
+func TestUpsert_PartialValidation_OnlyValidEmbedded(t *testing.T) {
+	col := makeCollection(t, []field.Field{makeField(t, "lang", field.Tag)})
+	docs := &mockDocUpserter{}
+	del := &mockDocDeleter{}
+	colls := &mockCollReader{col: col}
+	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
+
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
+	items := []domdoc.Document{
+		makeDocWithTags(t, "a", map[string]string{"lang": "go"}),     // valid
+		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // invalid
+		makeDoc(t, "c"), // valid
+	}
+	results := svc.Upsert(context.Background(), "test-col", items)
+
+	if results[0].Status() != dombatch.StatusOK {
+		t.Errorf("result[0] expected ok, got %v", results[0].Err())
+	}
+	if results[1].Status() != dombatch.StatusError {
+		t.Error("result[1] expected validation error")
+	}
+	if results[2].Status() != dombatch.StatusOK {
+		t.Errorf("result[2] expected ok, got %v", results[2].Err())
+	}
+	// BatchEmbed вызван с 2 текстами (только валидные), не 3
+	if embed.batchCalls != 1 {
+		t.Errorf("expected 1 batch call, got %d", embed.batchCalls)
 	}
 }
