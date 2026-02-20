@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Vecdex is a vector index management HTTP service (Go 1.25, Chi) on top of Valkey/Redis with valkey-search and Redis Search modules. REST API for creating collections, storing documents with automatic embedding (Nebius API), and multi-mode search (hybrid/semantic/keyword).
+Vecdex is a vector index management HTTP service (Go 1.25, Chi) on top of Valkey/Redis with valkey-search and Redis Search modules. REST API for creating collections, storing documents with automatic embedding (Nebius API), and multi-mode search (hybrid/semantic/keyword). Also ships a Go client SDK (`pkg/sdk/`) for direct DB access without the HTTP layer.
+
+Module: `github.com/kailas-cloud/vecdex`
 
 ## Common Commands
 
@@ -100,6 +102,8 @@ GET    /metrics                                  → Prometheus metrics
 
 ### Key Packages
 
+- **`pkg/sdk/`** — Public Go client SDK (see [SDK](#sdk) section below). Two API levels: low-level services and high-level generic `TypedIndex[T]`.
+
 - **`internal/db/`** — DB facade: `Store` interface with sub-interfaces (`HashStore`, `JSONStore`, `KVStore`, `IndexManager`, `Searcher`). Two implementations: `internal/db/redis/` and `internal/db/valkey/`, both via rueidis.
 
 - **`internal/domain/`** — Rich domain model with sub-packages: `collection/` (+ `field/`), `document/` (+ `patch/`), `search/` (`filter/`, `mode/`, `request/`, `result/`), `batch/`, `usage/`. Sentinel errors in `internal/domain/errors.go`.
@@ -127,11 +131,55 @@ YAML files in `config/` selected by `ENV` variable (default: `local`). Supports 
 - `docker.yaml` — Docker Compose test config
 - `prod.yaml.example` — template for production deployment
 
+### SDK
+
+`pkg/sdk/` is the public Go client library (`import "github.com/kailas-cloud/vecdex/pkg/sdk"`). It connects directly to Valkey/Redis — no HTTP server required. Two API levels:
+
+**Low-level** — explicit service access via `Client`:
+
+```go
+client, _ := vecdex.New(ctx, vecdex.WithValkey("localhost:6379", ""))
+defer client.Close()
+
+client.Collections().Create(ctx, "notes", vecdex.WithField("topic", vecdex.FieldTag))
+client.Documents("notes").Upsert(ctx, doc)
+resp, _ := client.Search("notes").Query(ctx, "how to deploy", nil)
+```
+
+Services: `Collections()` → `CollectionService`, `Documents(name)` → `DocumentService`, `Search(name)` → `SearchService`. Plus `Health(ctx)` and `Usage(ctx, period)`.
+
+**High-level** — schema-first with generics via `TypedIndex[T]`:
+
+```go
+type Place struct {
+    ID      string  `vecdex:"id"`
+    Name    string  `vecdex:"name,content"`
+    Country string  `vecdex:"country,tag"`
+    Lat     float64 `vecdex:"lat,geo_lat"`
+    Lon     float64 `vecdex:"lon,geo_lon"`
+}
+
+idx, _ := vecdex.NewIndex[Place](client, "places")
+_ = idx.Ensure(ctx)
+hits, _ := idx.Search().Near(55.75, 37.62).Km(10).Limit(50).Do(ctx)
+```
+
+Struct tags: `vecdex:"name,modifier"` where modifier is one of `id`, `content`, `tag`, `numeric`, `geo_lat`, `geo_lon`. Schema is inferred at `NewIndex` time.
+
+**Client options:** `WithValkey`/`WithRedis` (required), `WithEmbedder` (required for text collections), `WithVectorDimensions` (default 1024), `WithHNSW(m, ef)`, `WithMaxBatchSize`, `WithLogger(*slog.Logger)`, `WithPrometheus(prometheus.Registerer)`.
+
+**SDK errors** are sentinel values — use `errors.Is()`: `ErrNotFound`, `ErrAlreadyExists`, `ErrDocumentNotFound`, `ErrVectorDimMismatch`, `ErrRevisionConflict`, `ErrRateLimited`, `ErrEmbeddingQuotaExceeded`, etc.
+
+**SDK observability:** Optional Prometheus metrics (namespace `vecdex_sdk`: `operations_total`, `operation_duration_seconds`) and structured slog logging via `WithLogger`/`WithPrometheus` options.
+
+**SDK tests:** `go test ./pkg/sdk/... -short -v`. Tests use in-package mocks (no real DB).
+
 ## Testing
 
 - **Unit tests** use `-short` flag to skip anything requiring Valkey
 - **Pytest E2E** in `tests/` — 14 test modules (300+ tests) using httpx + tenacity, run via Docker Compose with a mock embedding server (no API keys needed). Tests are numbered for execution order and use `p0`/`p1`/`p2` priority markers. Supports both Valkey and Redis backends via Docker Compose profiles.
 - **CI** (`.github/workflows/tests.yml`): lint → unit-tests (with Codacy coverage upload) → e2e-pytest (matrix: valkey + redis)
+- **Release** (`.github/workflows/release.yml`): On `v*` tags — unit tests → GoReleaser (multi-platform Docker to `ghcr.io/kailas-cloud/vecdex`) → Trivy vulnerability scan
 - Custom Valkey image: `valkey/valkey-bundle:9` (includes valkey-json + valkey-search)
 
 ## Conventions
