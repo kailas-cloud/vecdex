@@ -109,24 +109,17 @@ func (s *CollectionService) List(
 		all[i] = fromInternalCollection(c)
 	}
 
-	// Client-side cursor pagination (collections are small, tens at most).
+	return paginateCollections(all, cursor, limit), nil
+}
+
+// paginateCollections applies cursor-based pagination to a slice of collections.
+func paginateCollections(all []CollectionInfo, cursor string, limit int) CollectionListResult {
 	if cursor != "" {
-		startIdx := -1
-		for i, c := range all {
-			if c.Name == cursor {
-				startIdx = i
-				break
-			}
-		}
-		if startIdx >= 0 && startIdx+1 < len(all) {
-			all = all[startIdx+1:]
-		} else {
-			all = nil
-		}
+		all = applyCursor(all, cursor)
 	}
 
 	if limit <= 0 || limit >= len(all) {
-		return CollectionListResult{Collections: all}, nil
+		return CollectionListResult{Collections: all}
 	}
 
 	page := all[:limit]
@@ -134,7 +127,21 @@ func (s *CollectionService) List(
 		Collections: page,
 		NextCursor:  page[len(page)-1].Name,
 		HasMore:     true,
-	}, nil
+	}
+}
+
+// applyCursor returns elements after the cursor position.
+// If cursor is not found, returns nil (empty page).
+func applyCursor(items []CollectionInfo, cursor string) []CollectionInfo {
+	for i, c := range items {
+		if c.Name == cursor {
+			if i+1 < len(items) {
+				return items[i+1:]
+			}
+			return nil
+		}
+	}
+	return nil
 }
 
 // Delete removes a collection.
