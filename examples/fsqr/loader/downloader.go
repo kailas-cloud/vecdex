@@ -134,12 +134,33 @@ func (d *downloader) listParquetFiles(
 			resp.StatusCode, string(body))
 	}
 
-	var files []hfParquetInfo
-	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
-		return nil, fmt.Errorf("parse HF response: %w", err)
+	// HF API возвращает либо []string (просто URL'ы), либо []hfParquetInfo.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read HF response: %w", err)
 	}
 
 	var parquets []hfParquetInfo
+
+	// Пробуем как массив строк (текущий формат HF API).
+	var urls []string
+	if err := json.Unmarshal(body, &urls); err == nil {
+		for _, u := range urls {
+			if strings.HasSuffix(u, ".parquet") {
+				parquets = append(parquets, hfParquetInfo{
+					URL:      u,
+					Filename: filepath.Base(u),
+				})
+			}
+		}
+		return parquets, nil
+	}
+
+	// Fallback: массив объектов (старый формат).
+	var files []hfParquetInfo
+	if err := json.Unmarshal(body, &files); err != nil {
+		return nil, fmt.Errorf("parse HF response: %w", err)
+	}
 	for _, f := range files {
 		if strings.HasSuffix(f.Filename, ".parquet") ||
 			strings.HasSuffix(f.URL, ".parquet") {

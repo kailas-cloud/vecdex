@@ -6,6 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /fsqr-loader ./examples/fsqr/loader
 
 FROM alpine:3.21
+LABEL org.opencontainers.image.source=https://github.com/kailas-cloud/vecdex
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=build /fsqr-loader /app/fsqr-loader
