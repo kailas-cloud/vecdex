@@ -1,70 +1,70 @@
 package document
 
 import (
-	"encoding/json"
-	"fmt"
+	"encoding/binary"
+	"math"
+	"strconv"
 
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 )
 
-// buildJSONDoc builds a map for JSON.SET.
-// Tags and Numerics are stored at the top level for FT.INDEX; __content and __vector are reserved.
-func buildJSONDoc(doc *domdoc.Document) map[string]any {
-	m := make(map[string]any)
+// buildHashFields converts a domain Document into a flat map[string]string for HSET.
+func buildHashFields(doc *domdoc.Document) map[string]string {
+	m := make(map[string]string, 2+len(doc.Tags())+len(doc.Numerics()))
+	m["__content"] = doc.Content()
+	m["__vector"] = vectorToBytes(doc.Vector())
 	for k, v := range doc.Tags() {
 		m[k] = v
 	}
 	for k, v := range doc.Numerics() {
-		m[k] = v
+		m[k] = strconv.FormatFloat(v, 'f', -1, 64)
 	}
-	m["__content"] = doc.Content()
-	m["__vector"] = doc.Vector()
 	return m
 }
 
-// parseJSONGetResult parses a JSON.GET result (array [{ ... }]).
-func parseJSONGetResult(id, raw string) (domdoc.Document, error) {
-	var docs []map[string]any
-	if err := json.Unmarshal([]byte(raw), &docs); err != nil {
-		return domdoc.Document{}, fmt.Errorf("unmarshal JSON.GET result: %w", err)
-	}
-	if len(docs) == 0 {
-		return domdoc.Document{}, fmt.Errorf("empty JSON.GET result")
-	}
-	return parseDocMap(id, docs[0]), nil
-}
-
-// parseDocMap converts a raw map into a domain Document.
-func parseDocMap(id string, m map[string]any) domdoc.Document {
+// parseHashFields converts a flat hash map back into a domain Document.
+func parseHashFields(id string, m map[string]string) domdoc.Document {
 	var content string
+	var vector []float32
 	tags := make(map[string]string)
 	numerics := make(map[string]float64)
-	var vector []float32
 
 	for k, v := range m {
 		switch k {
 		case "__content":
-			if s, ok := v.(string); ok {
-				content = s
-			}
+			content = v
 		case "__vector":
-			if arr, ok := v.([]any); ok {
-				vector = make([]float32, len(arr))
-				for i, el := range arr {
-					if f, ok := el.(float64); ok {
-						vector[i] = float32(f)
-					}
-				}
-			}
+			vector = bytesToVector(v)
 		default:
-			switch val := v.(type) {
-			case string:
-				tags[k] = val
-			case float64:
-				numerics[k] = val
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				numerics[k] = f
+			} else {
+				tags[k] = v
 			}
 		}
 	}
 
 	return domdoc.Reconstruct(id, content, tags, numerics, vector, 0)
+}
+
+// vectorToBytes serializes []float32 to a binary string (4 bytes per float, little-endian).
+func vectorToBytes(v []float32) string {
+	buf := make([]byte, len(v)*4)
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
+	}
+	return string(buf)
+}
+
+// bytesToVector deserializes a binary string back to []float32.
+func bytesToVector(s string) []float32 {
+	b := []byte(s)
+	if len(b)%4 != 0 {
+		return nil
+	}
+	v := make([]float32, len(b)/4)
+	for i := range v {
+		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
+	}
+	return v
 }

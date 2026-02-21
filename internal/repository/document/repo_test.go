@@ -2,13 +2,12 @@ package document
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
 )
 
@@ -25,12 +24,15 @@ func TestUpsert_Create(t *testing.T) {
 		}
 		return false, nil
 	}
-	ms.jsonSetFn = func(_ context.Context, key, path string, _ []byte) error {
+	ms.hsetFn = func(_ context.Context, key string, fields map[string]string) error {
 		if key != "vecdex:notes:doc-1" {
 			t.Errorf("unexpected key: %s", key)
 		}
-		if path != "$" {
-			t.Errorf("unexpected path: %s", path)
+		if fields["__content"] != "hello world" {
+			t.Errorf("unexpected content: %s", fields["__content"])
+		}
+		if fields["language"] != "go" {
+			t.Errorf("unexpected language: %s", fields["language"])
 		}
 		return nil
 	}
@@ -50,7 +52,7 @@ func TestUpsert_Update(t *testing.T) {
 	doc := testDocument(t)
 
 	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
-	ms.jsonSetFn = func(_ context.Context, _ string, _ string, _ []byte) error { return nil }
+	ms.hsetFn = func(_ context.Context, _ string, _ map[string]string) error { return nil }
 
 	created, err := repo.Upsert(ctx, "notes", &doc)
 	if err != nil {
@@ -61,19 +63,19 @@ func TestUpsert_Update(t *testing.T) {
 	}
 }
 
-func TestUpsert_JSONSetError(t *testing.T) {
+func TestUpsert_HSetError(t *testing.T) {
 	repo, ms := newTestRepo(t)
 	ctx := context.Background()
 	doc := testDocument(t)
 
 	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
-	ms.jsonSetFn = func(_ context.Context, _ string, _ string, _ []byte) error {
+	ms.hsetFn = func(_ context.Context, _ string, _ map[string]string) error {
 		return errors.New("OOM")
 	}
 
 	_, err := repo.Upsert(ctx, "notes", &doc)
 	if err == nil {
-		t.Fatal("expected error on JSON.SET failure")
+		t.Fatal("expected error on HSET failure")
 	}
 }
 
@@ -83,12 +85,16 @@ func TestGet_HappyPath(t *testing.T) {
 	repo, ms := newTestRepo(t)
 	ctx := context.Background()
 
-	jsonResult := `[{"__content":"hello world","__vector":[0.1,0.2],"language":"go","priority":1.5}]`
-	ms.jsonGetFn = func(_ context.Context, key string, _ ...string) ([]byte, error) {
+	ms.hgetAllFn = func(_ context.Context, key string) (map[string]string, error) {
 		if key != "vecdex:notes:doc-1" {
 			t.Errorf("unexpected key: %s", key)
 		}
-		return []byte(jsonResult), nil
+		return map[string]string{
+			"__content": "hello world",
+			"__vector":  vectorToBytes([]float32{0.1, 0.2}),
+			"language":  "go",
+			"priority":  "1.5",
+		}, nil
 	}
 
 	doc, err := repo.Get(ctx, "notes", "doc-1")
@@ -113,8 +119,8 @@ func TestGet_NotFound(t *testing.T) {
 	repo, ms := newTestRepo(t)
 	ctx := context.Background()
 
-	ms.jsonGetFn = func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-		return nil, db.ErrKeyNotFound
+	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
+		return nil, nil // empty map = not found
 	}
 
 	_, err := repo.Get(ctx, "notes", "nonexistent")
@@ -162,9 +168,9 @@ func TestList_HappyPath(t *testing.T) {
 		return &db.SearchResult{
 			Total: 10,
 			Entries: []db.SearchEntry{
-				{Key: "vecdex:notes:doc-1", Fields: map[string]string{"$": `{"__content":"hello","language":"go"}`}},
-				{Key: "vecdex:notes:doc-2", Fields: map[string]string{"$": `{"__content":"world","language":"py"}`}},
-				{Key: "vecdex:notes:doc-3", Fields: map[string]string{"$": `{"__content":"extra"}`}},
+				{Key: "vecdex:notes:doc-1", Fields: map[string]string{"__content": "hello", "language": "go"}},
+				{Key: "vecdex:notes:doc-2", Fields: map[string]string{"__content": "world", "language": "py"}},
+				{Key: "vecdex:notes:doc-3", Fields: map[string]string{"__content": "extra"}},
 			},
 		}, nil
 	}
@@ -220,7 +226,7 @@ func TestList_WithCursor(t *testing.T) {
 		return &db.SearchResult{
 			Total: 3,
 			Entries: []db.SearchEntry{
-				{Key: "vecdex:notes:doc-3", Fields: map[string]string{"$": `{"__content":"last"}`}},
+				{Key: "vecdex:notes:doc-3", Fields: map[string]string{"__content": "last"}},
 			},
 		}, nil
 	}
@@ -249,16 +255,15 @@ func TestPatch_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected error creating patch: %v", err)
 	}
 
-	ms.jsonGetFn = func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-		return []byte(`[{"__content":"old content","language":"go"}]`), nil
+	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
+		return map[string]string{
+			"__content": "old content",
+			"language":  "go",
+		}, nil
 	}
-	ms.jsonSetFn = func(_ context.Context, _ string, _ string, data []byte) error {
-		var m map[string]any
-		if err := json.Unmarshal(data, &m); err != nil {
-			t.Fatalf("invalid JSON: %v", err)
-		}
-		if m["__content"] != "updated content" {
-			t.Errorf("expected updated content, got %v", m["__content"])
+	ms.hsetFn = func(_ context.Context, _ string, fields map[string]string) error {
+		if fields["__content"] != "updated content" {
+			t.Errorf("expected updated content, got %v", fields["__content"])
 		}
 		return nil
 	}
@@ -276,8 +281,8 @@ func TestPatch_NotFound(t *testing.T) {
 	newContent := "updated"
 	p, _ := patch.New(&newContent, nil, nil)
 
-	ms.jsonGetFn = func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-		return nil, db.ErrKeyNotFound
+	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
+		return nil, nil // empty = not found
 	}
 
 	err := repo.Patch(ctx, "notes", "doc-1", p, nil)
@@ -292,11 +297,15 @@ func TestPatch_DeleteTag(t *testing.T) {
 
 	p, _ := patch.New(nil, map[string]*string{"language": nil}, nil)
 
-	ms.jsonGetFn = func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-		return []byte(`[{"__content":"text","language":"go","priority":1.5}]`), nil
+	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
+		return map[string]string{
+			"__content": "text",
+			"language":  "go",
+			"priority":  "1.5",
+		}, nil
 	}
-	ms.jsonSetFn = func(_ context.Context, _ string, _ string, data []byte) error {
-		if strings.Contains(string(data), `"language"`) {
+	ms.hsetFn = func(_ context.Context, _ string, fields map[string]string) error {
+		if _, ok := fields["language"]; ok {
 			t.Error("language field should have been deleted")
 		}
 		return nil
@@ -307,3 +316,53 @@ func TestPatch_DeleteTag(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// --- BatchUpsert ---
+
+func TestBatchUpsert_HappyPath(t *testing.T) {
+	repo, ms := newTestRepo(t)
+	ctx := context.Background()
+
+	ms.hsetMultiFn = func(_ context.Context, items []db.HashSetItem) error {
+		if len(items) != 1 {
+			t.Errorf("expected 1 item, got %d", len(items))
+		}
+		if items[0].Key != "vecdex:notes:doc-1" {
+			t.Errorf("unexpected key: %s", items[0].Key)
+		}
+		return nil
+	}
+
+	doc := testDocument(t)
+	err := repo.BatchUpsert(ctx, "notes", []domdoc.Document{doc})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBatchUpsert_Empty(t *testing.T) {
+	repo, _ := newTestRepo(t)
+	ctx := context.Background()
+
+	err := repo.BatchUpsert(ctx, "notes", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- vectorToBytes / bytesToVector roundtrip ---
+
+func TestVectorRoundtrip(t *testing.T) {
+	original := []float32{0.1, 0.2, 0.3, 1.0, -0.5}
+	encoded := vectorToBytes(original)
+	decoded := bytesToVector(encoded)
+	if len(decoded) != len(original) {
+		t.Fatalf("expected %d elements, got %d", len(original), len(decoded))
+	}
+	for i := range original {
+		if original[i] != decoded[i] {
+			t.Errorf("mismatch at %d: %f != %f", i, original[i], decoded[i])
+		}
+	}
+}
+
