@@ -99,6 +99,34 @@ func TestHGetAll_Success(t *testing.T) {
 	}
 }
 
+func TestHSetMulti_Success(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	c := mock.NewClient(ctrl)
+
+	c.EXPECT().
+		DoMulti(gomock.Any(), gomock.Any()).
+		Return([]rueidis.RedisResult{
+			mock.Result(mock.RedisInt64(2)),
+			mock.Result(mock.RedisInt64(2)),
+		})
+
+	s := NewStoreForTest(c)
+	err := s.HSetMulti(context.Background(), []db.HashSetItem{
+		{Key: "k1", Fields: map[string]string{"f1": "v1"}},
+		{Key: "k2", Fields: map[string]string{"f2": "v2"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHSetMulti_Empty(t *testing.T) {
+	s := NewStoreForTest(nil)
+	if err := s.HSetMulti(context.Background(), nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestHGetAllMulti_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	c := mock.NewClient(ctrl)
