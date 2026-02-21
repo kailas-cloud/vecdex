@@ -31,9 +31,9 @@ func TestSearchKNN_HappyPath(t *testing.T) {
 					Key:   "vecdex:notes:doc-1",
 					Score: 0.877,
 					Fields: map[string]string{
-						"__content": "hello world",
-						"language":  "go",
-						"priority":  "1.5",
+						"__content":    "hello world",
+						"language":     "go",
+						"__n:priority": "1.5",
 					},
 				},
 				{

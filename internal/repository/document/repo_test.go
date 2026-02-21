@@ -52,6 +52,7 @@ func TestUpsert_Update(t *testing.T) {
 	doc := testDocument(t)
 
 	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
+	ms.delFn = func(_ context.Context, _ string) error { return nil }
 	ms.hsetFn = func(_ context.Context, _ string, _ map[string]string) error { return nil }
 
 	created, err := repo.Upsert(ctx, "notes", &doc)
@@ -90,10 +91,10 @@ func TestGet_HappyPath(t *testing.T) {
 			t.Errorf("unexpected key: %s", key)
 		}
 		return map[string]string{
-			"__content": "hello world",
-			"__vector":  vectorToBytes([]float32{0.1, 0.2}),
-			"language":  "go",
-			"priority":  "1.5",
+			"__content":    "hello world",
+			"__vector":     vectorToBytes([]float32{0.1, 0.2}),
+			"language":     "go",
+			"__n:priority": "1.5",
 		}, nil
 	}
 
@@ -261,6 +262,7 @@ func TestPatch_HappyPath(t *testing.T) {
 			"language":  "go",
 		}, nil
 	}
+	ms.delFn = func(_ context.Context, _ string) error { return nil }
 	ms.hsetFn = func(_ context.Context, _ string, fields map[string]string) error {
 		if fields["__content"] != "updated content" {
 			t.Errorf("expected updated content, got %v", fields["__content"])
@@ -299,11 +301,12 @@ func TestPatch_DeleteTag(t *testing.T) {
 
 	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
 		return map[string]string{
-			"__content": "text",
-			"language":  "go",
-			"priority":  "1.5",
+			"__content":    "text",
+			"language":     "go",
+			"__n:priority": "1.5",
 		}, nil
 	}
+	ms.delFn = func(_ context.Context, _ string) error { return nil }
 	ms.hsetFn = func(_ context.Context, _ string, fields map[string]string) error {
 		if _, ok := fields["language"]; ok {
 			t.Error("language field should have been deleted")

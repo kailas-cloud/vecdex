@@ -44,14 +44,11 @@ func (r *Repo) SearchKNN(
 ) ([]result.Result, error) {
 	indexName := fmt.Sprintf("%s%s:idx", domain.KeyPrefix, collectionName)
 
-	returnFields := []string{"__content", "__vector", "__vector_score"}
-
 	q := &db.KNNQuery{
 		IndexName:     indexName,
 		Filters:       filters,
 		Vector:        vector,
 		K:             topK,
-		ReturnFields:  returnFields,
 		IncludeVector: includeVectors,
 		RawScores:     rawScores,
 	}
@@ -122,6 +119,9 @@ func parseBM25Results(sr *db.SearchResult, collection string) ([]result.Result, 
 	return results, nil
 }
 
+// numericPrefix disambiguates numeric fields from tags in HASH storage.
+const numericPrefix = "__n:"
+
 // parseEntryFields parses a KNN entry from flat hash fields.
 func parseEntryFields(docID string, entry db.SearchEntry, includeVectors bool) result.Result {
 	var content string
@@ -130,21 +130,24 @@ func parseEntryFields(docID string, entry db.SearchEntry, includeVectors bool) r
 	numerics := make(map[string]float64)
 
 	for k, v := range entry.Fields {
-		switch k {
-		case "__content":
+		switch {
+		case k == "__content":
 			content = v
-		case "__vector":
+		case k == "__vector":
 			if includeVectors {
 				vector = bytesToVector(v)
 			}
-		case "__vector_score":
+		case k == "__vector_score":
 			// handled by db layer via entry.Score
-		default:
+		case strings.HasPrefix(k, numericPrefix):
+			name := k[len(numericPrefix):]
 			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				numerics[k] = f
-			} else {
-				tags[k] = v
+				numerics[name] = f
 			}
+		case strings.HasPrefix(k, "__"):
+			// skip other reserved fields
+		default:
+			tags[k] = v
 		}
 	}
 
@@ -158,17 +161,20 @@ func parseBM25EntryFields(docID string, score float64, entry db.SearchEntry) res
 	numerics := make(map[string]float64)
 
 	for k, v := range entry.Fields {
-		switch k {
-		case "__content":
+		switch {
+		case k == "__content":
 			content = v
-		case "__vector":
+		case k == "__vector":
 			// skip vector in BM25
-		default:
+		case strings.HasPrefix(k, numericPrefix):
+			name := k[len(numericPrefix):]
 			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				numerics[k] = f
-			} else {
-				tags[k] = v
+				numerics[name] = f
 			}
+		case strings.HasPrefix(k, "__"):
+			// skip reserved fields
+		default:
+			tags[k] = v
 		}
 	}
 

@@ -4,9 +4,14 @@ import (
 	"encoding/binary"
 	"math"
 	"strconv"
+	"strings"
 
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 )
+
+// numericPrefix disambiguates numeric fields from tags in HASH storage.
+// Tags are stored with bare field names, numerics with "__n:" prefix.
+const numericPrefix = "__n:"
 
 // buildHashFields converts a domain Document into a flat map[string]string for HSET.
 func buildHashFields(doc *domdoc.Document) map[string]string {
@@ -17,7 +22,7 @@ func buildHashFields(doc *domdoc.Document) map[string]string {
 		m[k] = v
 	}
 	for k, v := range doc.Numerics() {
-		m[k] = strconv.FormatFloat(v, 'f', -1, 64)
+		m[numericPrefix+k] = strconv.FormatFloat(v, 'f', -1, 64)
 	}
 	return m
 }
@@ -30,17 +35,20 @@ func parseHashFields(id string, m map[string]string) domdoc.Document {
 	numerics := make(map[string]float64)
 
 	for k, v := range m {
-		switch k {
-		case "__content":
+		switch {
+		case k == "__content":
 			content = v
-		case "__vector":
+		case k == "__vector":
 			vector = bytesToVector(v)
-		default:
+		case strings.HasPrefix(k, numericPrefix):
+			name := k[len(numericPrefix):]
 			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				numerics[k] = f
-			} else {
-				tags[k] = v
+				numerics[name] = f
 			}
+		case strings.HasPrefix(k, "__"):
+			// skip reserved fields (__vector_score, etc.)
+		default:
+			tags[k] = v
 		}
 	}
 

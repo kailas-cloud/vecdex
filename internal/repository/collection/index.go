@@ -32,16 +32,21 @@ func buildIndex(
 		switch f.FieldType() {
 		case field.Tag:
 			fieldType = db.IndexFieldTag
+			def.Fields = append(def.Fields, db.IndexField{
+				Name: f.Name(),
+				Type: fieldType,
+			})
 		case field.Numeric:
 			fieldType = db.IndexFieldNumeric
+			// Numerics are stored with "__n:" prefix; alias restores original name for queries.
+			def.Fields = append(def.Fields, db.IndexField{
+				Name:  "__n:" + f.Name(),
+				Alias: f.Name(),
+				Type:  fieldType,
+			})
 		default:
 			return nil, fmt.Errorf("unknown field type: %s", f.FieldType())
 		}
-
-		def.Fields = append(def.Fields, db.IndexField{
-			Name: f.Name(),
-			Type: fieldType,
-		})
 	}
 
 	// TEXT field for BM25 keyword search (only text collections, backend must support it)

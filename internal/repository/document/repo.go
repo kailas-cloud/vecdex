@@ -36,6 +36,7 @@ func New(s store) *Repo {
 }
 
 // Upsert creates or updates a document. Returns true if created.
+// On update, DEL+HSET ensures removed fields don't linger (HSET is additive).
 func (r *Repo) Upsert(ctx context.Context, collectionName string, doc *domdoc.Document) (bool, error) {
 	key := docKey(collectionName, doc.ID())
 	fields := buildHashFields(doc)
@@ -43,6 +44,12 @@ func (r *Repo) Upsert(ctx context.Context, collectionName string, doc *domdoc.Do
 	exists, err := r.store.Exists(ctx, key)
 	if err != nil {
 		return false, fmt.Errorf("check exists %s: %w", key, err)
+	}
+
+	if exists {
+		if err := r.store.Del(ctx, key); err != nil {
+			return false, fmt.Errorf("del %s: %w", key, err)
+		}
 	}
 
 	if err := r.store.HSet(ctx, key, fields); err != nil {
@@ -152,7 +159,8 @@ func (r *Repo) Delete(ctx context.Context, collectionName, id string) error {
 	return nil
 }
 
-// Patch performs a partial update: HGetAll, merge fields, HSet.
+// Patch performs a partial update: HGetAll, merge fields, DEL+HSET.
+// DEL+HSET ensures deleted tags/numerics don't linger in the hash.
 func (r *Repo) Patch(ctx context.Context, collectionName, id string, p patch.Patch, newVector []float32) error {
 	key := docKey(collectionName, id)
 
@@ -166,6 +174,9 @@ func (r *Repo) Patch(ctx context.Context, collectionName, id string, p patch.Pat
 
 	applyPatchToHash(m, p, newVector)
 
+	if err := r.store.Del(ctx, key); err != nil {
+		return fmt.Errorf("del %s: %w", key, err)
+	}
 	if err := r.store.HSet(ctx, key, m); err != nil {
 		return fmt.Errorf("hset %s: %w", key, err)
 	}
@@ -199,6 +210,7 @@ func parseListEntries(entries []db.SearchEntry, collectionName string, limit int
 }
 
 // applyPatchToHash merges patch fields into the current hash map in-place.
+// Numeric keys use numericPrefix ("__n:") for disambiguation with tags.
 func applyPatchToHash(m map[string]string, p patch.Patch, newVector []float32) {
 	if p.HasContent() {
 		m["__content"] = *p.Content()
@@ -211,10 +223,11 @@ func applyPatchToHash(m map[string]string, p patch.Patch, newVector []float32) {
 		}
 	}
 	for k, v := range p.Numerics() {
+		prefixedKey := numericPrefix + k
 		if v == nil {
-			delete(m, k)
+			delete(m, prefixedKey)
 		} else {
-			m[k] = strconv.FormatFloat(*v, 'f', -1, 64)
+			m[prefixedKey] = strconv.FormatFloat(*v, 'f', -1, 64)
 		}
 	}
 	if newVector != nil {
