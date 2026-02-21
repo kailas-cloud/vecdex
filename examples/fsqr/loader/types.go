@@ -19,7 +19,7 @@ type Category struct {
 // Venue — гео-коллекция, без embeddings.
 type Venue struct {
 	ID        string  `vecdex:"id,id"`
-	Name      string  `vecdex:"name,tag"`
+	Name      string  `vecdex:"name,stored"`
 	Cat       int     `vecdex:"cat,numeric"`
 	Latitude  float64 `vecdex:"latitude,geo_lat"`
 	Longitude float64 `vecdex:"longitude,geo_lon"`

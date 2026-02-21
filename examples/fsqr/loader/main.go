@@ -264,6 +264,16 @@ func stageVenues(
 		return nil, ingestResult{}, fmt.Errorf("ensure venues: %w", err)
 	}
 
+	// Cursor validation: если cursor говорит что обработано N, а в БД значительно меньше — сброс.
+	cur := cursor.Get()
+	if cur.TotalProcessed > 0 {
+		dbCount, countErr := venueIdx.Count(ctx)
+		if countErr == nil && dbCount < cur.TotalProcessed*9/10 {
+			log.Printf("WARNING: DB has %d docs but cursor claims %d processed. Resetting cursor.", dbCount, cur.TotalProcessed)
+			cursor.Reset()
+		}
+	}
+
 	reader, err := newParquetReader(filepath.Join(cfg.dataDir, "places"))
 	if err != nil {
 		return nil, ingestResult{}, fmt.Errorf("init parquet reader: %w", err)
