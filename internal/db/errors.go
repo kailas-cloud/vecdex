@@ -16,8 +16,6 @@ const (
 	OpDropIndex   = "FT.DROPINDEX"
 	OpIndexInfo   = "FT.INFO"
 	OpSearch      = "FT.SEARCH"
-	OpJSONGet     = "JSON.GET"
-	OpJSONSet     = "JSON.SET"
 	OpDel         = "DEL"
 	OpHGetAll     = "HGETALL"
 	OpHSet        = "HSET"

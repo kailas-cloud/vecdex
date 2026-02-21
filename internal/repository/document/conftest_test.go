@@ -39,7 +39,7 @@ func (m *mockStore) HGetAll(ctx context.Context, key string) (map[string]string,
 	if m.hgetAllFn != nil {
 		return m.hgetAllFn(ctx, key)
 	}
-	return nil, nil
+	return map[string]string{}, nil
 }
 
 func (m *mockStore) Del(ctx context.Context, key string) error {

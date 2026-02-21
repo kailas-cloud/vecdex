@@ -120,7 +120,7 @@ func TestGet_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
-		return nil, nil // empty map = not found
+		return map[string]string{}, nil // empty map = not found
 	}
 
 	_, err := repo.Get(ctx, "notes", "nonexistent")
@@ -282,7 +282,7 @@ func TestPatch_NotFound(t *testing.T) {
 	p, _ := patch.New(&newContent, nil, nil)
 
 	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
-		return nil, nil // empty = not found
+		return map[string]string{}, nil // empty = not found
 	}
 
 	err := repo.Patch(ctx, "notes", "doc-1", p, nil)
@@ -365,4 +365,3 @@ func TestVectorRoundtrip(t *testing.T) {
 		}
 	}
 }
-

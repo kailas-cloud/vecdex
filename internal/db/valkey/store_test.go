@@ -233,61 +233,6 @@ func TestScan_SinglePage(t *testing.T) {
 	}
 }
 
-// --- json.go tests ---
-
-func TestJSONSet_Success(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	c := mock.NewClient(ctrl)
-
-	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "JSON.SET" && cmd[1] == "mykey"
-		})).
-		Return(mock.Result(mock.RedisString("OK")))
-
-	s := NewStoreForTest(c)
-	if err := s.JSONSet(context.Background(), "mykey", "$", []byte(`{"a":1}`)); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestJSONGet_Success(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	c := mock.NewClient(ctrl)
-
-	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "JSON.GET"
-		})).
-		Return(mock.Result(mock.RedisString(`{"a":1}`)))
-
-	s := NewStoreForTest(c)
-	data, err := s.JSONGet(context.Background(), "mykey", "$")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(data) != `{"a":1}` {
-		t.Errorf("unexpected data: %s", data)
-	}
-}
-
-func TestJSONGet_NotFound(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	c := mock.NewClient(ctrl)
-
-	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "JSON.GET"
-		})).
-		Return(mock.Result(mock.RedisNil()))
-
-	s := NewStoreForTest(c)
-	_, err := s.JSONGet(context.Background(), "mykey", "$")
-	if !errors.Is(err, db.ErrKeyNotFound) {
-		t.Errorf("expected ErrKeyNotFound, got %v", err)
-	}
-}
-
 // --- kv.go tests ---
 
 func TestGet_Success(t *testing.T) {

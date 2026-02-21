@@ -13,6 +13,8 @@ import (
 )
 
 // store is the consumer interface for documents (ISP).
+//
+//nolint:interfacebloat // mirrors HashStore + search; splitting would add indirection without benefit
 type store interface {
 	HSet(ctx context.Context, key string, fields map[string]string) error
 	HSetMulti(ctx context.Context, items []db.HashSetItem) error
