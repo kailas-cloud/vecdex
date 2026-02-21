@@ -159,22 +159,19 @@ func TestUpsert_CollectionNotFound(t *testing.T) {
 	}
 }
 
-func TestUpsert_InvalidField(t *testing.T) {
+func TestUpsert_UnknownTagAllowed(t *testing.T) {
 	col := makeCollection(t, []field.Field{makeField(t, "category", field.Tag)})
 	repo := &mockDocRepo{}
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
 
 	svc := New(repo, colls, embed, embed)
-	// Document with tag "unknown" not in schema
+	// Document with tag "unknown" not in schema — stored but not indexed
 	doc := makeDocWithTags(t, "doc-1", "content", map[string]string{"unknown": "val"})
 
 	_, err := svc.Upsert(context.Background(), "test-col", &doc)
-	if err == nil {
-		t.Fatal("expected error for invalid field")
-	}
-	if !errors.Is(err, domain.ErrInvalidSchema) {
-		t.Errorf("expected ErrInvalidSchema, got %v", err)
+	if err != nil {
+		t.Fatalf("unexpected error: unknown tags should be allowed (stored fields): %v", err)
 	}
 }
 

@@ -102,6 +102,63 @@ func TestL2ToHaversineMeters_Consistency(t *testing.T) {
 	}
 }
 
+func TestFromECEF_Equator_PrimeMeridian(t *testing.T) {
+	v := ToECEF(0, 0)
+	lat, lon := FromECEF(v)
+	if !almost(lat, 0, 1e-5) || !almost(lon, 0, 1e-5) {
+		t.Fatalf("want (0,0) got (%f,%f)", lat, lon)
+	}
+}
+
+func TestFromECEF_NorthPole(t *testing.T) {
+	v := ToECEF(90, 0)
+	lat, _ := FromECEF(v)
+	if !almost(lat, 90, 1e-5) {
+		t.Fatalf("want lat=90, got %f", lat)
+	}
+	// lon is undefined at poles, don't check
+}
+
+func TestFromECEF_Roundtrip(t *testing.T) {
+	// Проверяем round-trip для разных точек с реалистичной точностью float32.
+	tests := []struct {
+		lat, lon float64
+	}{
+		{0, 0},
+		{55.7558, 37.6173},     // Москва
+		{40.7128, -74.0060},    // Нью-Йорк
+		{-33.8688, 151.2093},   // Сидней
+		{-90, 0},               // Южный полюс
+		{0, 180},               // Тихий океан
+		{0, -180},              // Тихий океан (другая сторона)
+		{85.0, 179.99},         // Высокие широты
+	}
+	for _, tt := range tests {
+		v := ToECEF(tt.lat, tt.lon)
+		gotLat, gotLon := FromECEF(v)
+		// float32 даёт ~0.001° точности ≈ ~100m на экваторе
+		if !almost(gotLat, tt.lat, 0.001) {
+			t.Errorf("lat roundtrip (%f,%f): want %f got %f", tt.lat, tt.lon, tt.lat, gotLat)
+		}
+		// Не проверяем lon при ±90° lat (не определён на полюсах)
+		if math.Abs(tt.lat) < 89.9 && !almost(gotLon, tt.lon, 0.001) {
+			t.Errorf("lon roundtrip (%f,%f): want %f got %f", tt.lat, tt.lon, tt.lon, gotLon)
+		}
+	}
+}
+
+func TestFromECEF_Precision(t *testing.T) {
+	// Проверяем что ошибка round-trip < 0.1m на поверхности Земли.
+	lat, lon := 55.7558, 37.6173 // Москва
+	v := ToECEF(lat, lon)
+	gotLat, gotLon := FromECEF(v)
+
+	distMeters := Haversine(lat, lon, gotLat, gotLon)
+	if distMeters > 0.5 { // 0.5m — консервативный порог
+		t.Errorf("round-trip error %.3fm exceeds 0.5m threshold", distMeters)
+	}
+}
+
 func TestValidateCoordinates(t *testing.T) {
 	tests := []struct {
 		lat, lon float64

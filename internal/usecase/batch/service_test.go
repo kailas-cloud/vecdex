@@ -172,20 +172,16 @@ func TestUpsert_PartialFailure(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{
-		makeDoc(t, "a"), // ok — no fields
-		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // fail — unknown field
-		makeDoc(t, "c"), // ok
+		makeDoc(t, "a"),                                              // ok — no fields
+		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // ok — unknown tags allowed (stored)
+		makeDoc(t, "c"),                                              // ok
 	}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
-	if results[0].Status() != dombatch.StatusOK {
-		t.Errorf("result[0] expected ok, got %v", results[0].Err())
-	}
-	if results[1].Status() != dombatch.StatusError {
-		t.Error("result[1] expected error for unknown field")
-	}
-	if results[2].Status() != dombatch.StatusOK {
-		t.Errorf("result[2] expected ok, got %v", results[2].Err())
+	for i, r := range results {
+		if r.Status() != dombatch.StatusOK {
+			t.Errorf("result[%d] expected ok, got %v", i, r.Err())
+		}
 	}
 }
 
@@ -301,7 +297,7 @@ func TestUpsert_BatchEmbedError(t *testing.T) {
 	}
 }
 
-func TestUpsert_InvalidFields(t *testing.T) {
+func TestUpsert_UnknownTagsAllowed(t *testing.T) {
 	col := makeCollection(t, []field.Field{makeField(t, "lang", field.Tag)})
 	docs := &mockDocUpserter{}
 	del := &mockDocDeleter{}
@@ -310,16 +306,15 @@ func TestUpsert_InvalidFields(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{
-		makeDocWithTags(t, "a", map[string]string{"lang": "go"}),     // ok
-		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // fail
+		makeDocWithTags(t, "a", map[string]string{"lang": "go"}),     // ok — known tag
+		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // ok — stored field
 	}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
-	if results[0].Status() != dombatch.StatusOK {
-		t.Errorf("result[0] expected ok, got %v", results[0].Err())
-	}
-	if results[1].Status() != dombatch.StatusError {
-		t.Error("result[1] expected error for invalid field")
+	for i, r := range results {
+		if r.Status() != dombatch.StatusOK {
+			t.Errorf("result[%d] expected ok, got %v", i, r.Err())
+		}
 	}
 }
 
@@ -454,7 +449,7 @@ func TestUpsert_NilBatchEmbedFallback(t *testing.T) {
 	}
 }
 
-func TestUpsert_PartialValidation_OnlyValidEmbedded(t *testing.T) {
+func TestUpsert_AllValidEmbedded(t *testing.T) {
 	col := makeCollection(t, []field.Field{makeField(t, "lang", field.Tag)})
 	docs := &mockDocUpserter{}
 	del := &mockDocDeleter{}
@@ -463,22 +458,18 @@ func TestUpsert_PartialValidation_OnlyValidEmbedded(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{
-		makeDocWithTags(t, "a", map[string]string{"lang": "go"}),     // valid
-		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // invalid
+		makeDocWithTags(t, "a", map[string]string{"lang": "go"}),     // valid — known tag
+		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // valid — stored field
 		makeDoc(t, "c"), // valid
 	}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
-	if results[0].Status() != dombatch.StatusOK {
-		t.Errorf("result[0] expected ok, got %v", results[0].Err())
+	for i, r := range results {
+		if r.Status() != dombatch.StatusOK {
+			t.Errorf("result[%d] expected ok, got %v", i, r.Err())
+		}
 	}
-	if results[1].Status() != dombatch.StatusError {
-		t.Error("result[1] expected validation error")
-	}
-	if results[2].Status() != dombatch.StatusOK {
-		t.Errorf("result[2] expected ok, got %v", results[2].Err())
-	}
-	// BatchEmbed вызван с 2 текстами (только валидные), не 3
+	// BatchEmbed вызван с 3 текстами (все валидные)
 	if embed.batchCalls != 1 {
 		t.Errorf("expected 1 batch call, got %d", embed.batchCalls)
 	}

@@ -92,13 +92,18 @@ func applyTag(meta *schemaMeta, idx int, fieldName, tag string) error {
 			return fmt.Errorf("vecdex: duplicate geo_lat tag on field %s", fieldName)
 		}
 		meta.geoLatIdx = idx
-		addNumeric(meta, idx, name)
+		// Only add to numericFields for toDocument — NOT to schema fields.
+		// Geo coords are encoded in the ECEF vector, not indexed separately.
+		meta.numericFields = append(meta.numericFields, fieldMapping{structIdx: idx, name: name})
 	case "geo_lon":
 		if meta.geoLonIdx != -1 {
 			return fmt.Errorf("vecdex: duplicate geo_lon tag on field %s", fieldName)
 		}
 		meta.geoLonIdx = idx
-		addNumeric(meta, idx, name)
+		meta.numericFields = append(meta.numericFields, fieldMapping{structIdx: idx, name: name})
+	case "stored":
+		// Stored field: goes into hash as a tag (bare key) but NOT indexed.
+		meta.tagFields = append(meta.tagFields, fieldMapping{structIdx: idx, name: name})
 	case "":
 		// Поле без модификатора — mapped name, не индексируется.
 	default:

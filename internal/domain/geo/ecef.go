@@ -53,6 +53,14 @@ func L2ToHaversineMeters(l2dist float64) float64 {
 	return EarthRadiusMeters * angle
 }
 
+// FromECEF converts a unit-sphere ECEF vector back to latitude/longitude (degrees).
+// Inverse of ToECEF. Precision is limited by float32 (~0.1m on Earth's surface).
+func FromECEF(v [3]float32) (latDeg, lonDeg float64) {
+	latDeg = math.Asin(float64(v[2])) * 180 / math.Pi
+	lonDeg = math.Atan2(float64(v[1]), float64(v[0])) * 180 / math.Pi
+	return
+}
+
 // ValidateCoordinates checks that latitude is in [-90,90] and longitude in [-180,180].
 func ValidateCoordinates(lat, lon float64) bool {
 	return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180

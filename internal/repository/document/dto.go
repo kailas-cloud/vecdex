@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
+	"github.com/kailas-cloud/vecdex/internal/domain/geo"
 )
 
 // numericPrefix disambiguates numeric fields from tags in HASH storage.
@@ -16,7 +17,9 @@ const numericPrefix = "__n:"
 // buildHashFields converts a domain Document into a flat map[string]string for HSET.
 func buildHashFields(doc *domdoc.Document) map[string]string {
 	m := make(map[string]string, 2+len(doc.Tags())+len(doc.Numerics()))
-	m["__content"] = doc.Content()
+	if doc.Content() != "" {
+		m["__content"] = doc.Content()
+	}
 	m["__vector"] = vectorToBytes(doc.Vector())
 	for k, v := range doc.Tags() {
 		m[k] = v
@@ -50,6 +53,13 @@ func parseHashFields(id string, m map[string]string) domdoc.Document {
 		default:
 			tags[k] = v
 		}
+	}
+
+	// Geo documents: reconstruct lat/lon from ECEF vector (dim=3).
+	if len(vector) == geo.GeoVectorDim {
+		lat, lon := geo.FromECEF([3]float32{vector[0], vector[1], vector[2]})
+		numerics["latitude"] = lat
+		numerics["longitude"] = lon
 	}
 
 	return domdoc.Reconstruct(id, content, tags, numerics, vector, 0)
