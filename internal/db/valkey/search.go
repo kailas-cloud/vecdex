@@ -148,10 +148,10 @@ func (s *Store) SearchCount(ctx context.Context, index, query string) (int, erro
 	return int(total), nil
 }
 
-// scanList implements listing via SCAN + JSON.GET for valkey-search
+// scanList implements listing via SCAN + HGETALL for valkey-search
 // which does not support bare FT.SEARCH without KNN.
 func (s *Store) scanList(
-	ctx context.Context, index string, offset, limit int, fields []string,
+	ctx context.Context, index string, offset, limit int, _ []string,
 ) (*db.SearchResult, error) {
 	prefix := indexToKeyPrefix(index)
 	keys, err := s.Scan(ctx, prefix+"*")
@@ -174,17 +174,13 @@ func (s *Store) scanList(
 
 	entries := make([]db.SearchEntry, 0, len(pageKeys))
 	for _, key := range pageKeys {
-		paths := fields
-		if len(paths) == 0 {
-			paths = []string{"$"}
-		}
-		raw, err := s.JSONGet(ctx, key, paths...)
+		m, err := s.HGetAll(ctx, key)
 		if err != nil {
 			continue // key may have been deleted between SCAN and GET
 		}
 		entries = append(entries, db.SearchEntry{
 			Key:    key,
-			Fields: map[string]string{"$": string(raw)},
+			Fields: m,
 		})
 	}
 

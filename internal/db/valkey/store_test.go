@@ -623,18 +623,18 @@ func TestSearchList_WildcardFallback(t *testing.T) {
 			mock.RedisArray(mock.RedisString("vecdex:col:doc1"), mock.RedisString("vecdex:col:doc2")),
 		)))
 
-	// JSON.GET for each key
+	// HGETALL for each key
 	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "JSON.GET" && cmd[1] == "vecdex:col:doc1"
-		})).
-		Return(mock.Result(mock.RedisString(`{"a":1}`)))
+		Do(gomock.Any(), mock.Match("HGETALL", "vecdex:col:doc1")).
+		Return(mock.Result(mock.RedisMap(map[string]rueidis.RedisMessage{
+			"__content": mock.RedisString("hello"),
+		})))
 
 	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "JSON.GET" && cmd[1] == "vecdex:col:doc2"
-		})).
-		Return(mock.Result(mock.RedisString(`{"a":2}`)))
+		Do(gomock.Any(), mock.Match("HGETALL", "vecdex:col:doc2")).
+		Return(mock.Result(mock.RedisMap(map[string]rueidis.RedisMessage{
+			"__content": mock.RedisString("world"),
+		})))
 
 	s := NewStoreForTest(c)
 	result, err := s.SearchList(context.Background(), "vecdex:col:idx", "*", 0, 10, nil)
@@ -646,6 +646,9 @@ func TestSearchList_WildcardFallback(t *testing.T) {
 	}
 	if len(result.Entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(result.Entries))
+	}
+	if result.Entries[0].Fields["__content"] != "hello" {
+		t.Errorf("unexpected content: %s", result.Entries[0].Fields["__content"])
 	}
 }
 
