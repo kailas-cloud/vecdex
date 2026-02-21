@@ -17,6 +17,7 @@ const (
 	OpIndexInfo   = "FT.INFO"
 	OpSearch      = "FT.SEARCH"
 	OpDel         = "DEL"
+	OpHDel        = "HDEL"
 	OpHGetAll     = "HGETALL"
 	OpHSet        = "HSET"
 	OpExists      = "EXISTS"

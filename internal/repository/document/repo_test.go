@@ -256,13 +256,7 @@ func TestPatch_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected error creating patch: %v", err)
 	}
 
-	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
-		return map[string]string{
-			"__content": "old content",
-			"language":  "go",
-		}, nil
-	}
-	ms.delFn = func(_ context.Context, _ string) error { return nil }
+	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
 	ms.hsetFn = func(_ context.Context, _ string, fields map[string]string) error {
 		if fields["__content"] != "updated content" {
 			t.Errorf("expected updated content, got %v", fields["__content"])
@@ -283,9 +277,7 @@ func TestPatch_NotFound(t *testing.T) {
 	newContent := "updated"
 	p, _ := patch.New(&newContent, nil, nil)
 
-	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
-		return map[string]string{}, nil // empty = not found
-	}
+	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
 
 	err := repo.Patch(ctx, "notes", "doc-1", p, nil)
 	if !errors.Is(err, domain.ErrDocumentNotFound) {
@@ -299,24 +291,19 @@ func TestPatch_DeleteTag(t *testing.T) {
 
 	p, _ := patch.New(nil, map[string]*string{"language": nil}, nil)
 
-	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
-		return map[string]string{
-			"__content":    "text",
-			"language":     "go",
-			"__n:priority": "1.5",
-		}, nil
-	}
-	ms.delFn = func(_ context.Context, _ string) error { return nil }
-	ms.hsetFn = func(_ context.Context, _ string, fields map[string]string) error {
-		if _, ok := fields["language"]; ok {
-			t.Error("language field should have been deleted")
-		}
+	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
+	var deletedFields []string
+	ms.hdelFn = func(_ context.Context, _ string, fields ...string) error {
+		deletedFields = fields
 		return nil
 	}
 
 	err := repo.Patch(ctx, "notes", "doc-1", p, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deletedFields) != 1 || deletedFields[0] != "language" {
+		t.Errorf("expected HDEL [language], got %v", deletedFields)
 	}
 }
 

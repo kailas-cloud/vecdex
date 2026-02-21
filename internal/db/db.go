@@ -38,6 +38,7 @@ type HashStore interface {
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
 	HGetAllMulti(ctx context.Context, keys []string) ([]map[string]string, error)
 	Del(ctx context.Context, key string) error
+	HDel(ctx context.Context, key string, fields ...string) error
 	Exists(ctx context.Context, key string) (bool, error)
 	Scan(ctx context.Context, pattern string) ([]string, error)
 }
