@@ -17,9 +17,10 @@ type optionFunc func(*clientConfig)
 func (f optionFunc) apply(c *clientConfig) { f(c) }
 
 type clientConfig struct {
-	driver   string // "valkey" or "redis"
-	addrs    []string
-	password string
+	driver     string // "valkey" or "redis"
+	addrs      []string
+	password   string
+	standalone bool
 
 	embedder Embedder
 
@@ -48,6 +49,14 @@ func WithRedis(addr, password string) Option {
 		c.addrs = []string{addr}
 		c.password = password
 	})
+}
+
+// WithStandalone disables cluster topology discovery.
+// Use for standalone Valkey/Redis instances (not managed by cluster operator).
+func WithStandalone() Option {
+	return func(c *clientConfig) {
+		c.standalone = true
+	}
 }
 
 // WithEmbedder sets the text embedding provider.
