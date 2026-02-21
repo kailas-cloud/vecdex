@@ -2,7 +2,9 @@ package search
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
@@ -29,14 +31,17 @@ func TestSearchKNN_HappyPath(t *testing.T) {
 					Key:   "vecdex:notes:doc-1",
 					Score: 0.877,
 					Fields: map[string]string{
-						"$": `{"__content":"hello world","language":"go","priority":1.5}`,
+						"__content": "hello world",
+						"language":  "go",
+						"priority":  "1.5",
 					},
 				},
 				{
 					Key:   "vecdex:notes:doc-2",
 					Score: 0.544,
 					Fields: map[string]string{
-						"$": `{"__content":"goodbye world","language":"rust"}`,
+						"__content": "goodbye world",
+						"language":  "rust",
 					},
 				},
 			},
@@ -66,6 +71,9 @@ func TestSearchKNN_IncludeVectors(t *testing.T) {
 	repo, ms := newTestRepo(t)
 	ctx := context.Background()
 
+	vec := []float32{0.1, 0.2, 0.3}
+	vecBytes := testVectorToBytes(vec)
+
 	ms.searchKNNFn = func(_ context.Context, q *db.KNNQuery) (*db.SearchResult, error) {
 		if !q.IncludeVector {
 			t.Error("expected IncludeVector=true")
@@ -77,7 +85,8 @@ func TestSearchKNN_IncludeVectors(t *testing.T) {
 					Key:   "vecdex:notes:doc-1",
 					Score: 0.9,
 					Fields: map[string]string{
-						"$": `{"__content":"text","__vector":[0.1,0.2,0.3]}`,
+						"__content": "text",
+						"__vector":  vecBytes,
 					},
 				},
 			},
@@ -148,7 +157,8 @@ func TestSearchKNN_WithFilter(t *testing.T) {
 					Key:   "vecdex:notes:doc-1",
 					Score: 0.9,
 					Fields: map[string]string{
-						"$": `{"__content":"filtered","language":"go"}`,
+						"__content": "filtered",
+						"language":  "go",
 					},
 				},
 			},
@@ -184,14 +194,16 @@ func TestSearchBM25_HappyPath(t *testing.T) {
 					Key:   "vecdex:notes:doc-1",
 					Score: 0.85,
 					Fields: map[string]string{
-						"$": `{"__content":"hello world","language":"go"}`,
+						"__content": "hello world",
+						"language":  "go",
 					},
 				},
 				{
 					Key:   "vecdex:notes:doc-2",
 					Score: 0.42,
 					Fields: map[string]string{
-						"$": `{"__content":"goodbye world","language":"rust"}`,
+						"__content": "goodbye world",
+						"language":  "rust",
 					},
 				},
 			},
@@ -258,4 +270,13 @@ func TestSupportsTextSearch(t *testing.T) {
 	if !repo.SupportsTextSearch(ctx) {
 		t.Fatal("expected SupportsTextSearch=true")
 	}
+}
+
+// testVectorToBytes is a helper for tests.
+func testVectorToBytes(v []float32) string {
+	buf := make([]byte, len(v)*4)
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
+	}
+	return string(buf)
 }
