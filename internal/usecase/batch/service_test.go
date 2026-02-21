@@ -172,9 +172,9 @@ func TestUpsert_PartialFailure(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{
-		makeDoc(t, "a"),                                              // ok — no fields
+		makeDoc(t, "a"), // ok — no fields
 		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // ok — unknown tags allowed (stored)
-		makeDoc(t, "c"),                                              // ok
+		makeDoc(t, "c"), // ok
 	}
 	results := svc.Upsert(context.Background(), "test-col", items)
 
