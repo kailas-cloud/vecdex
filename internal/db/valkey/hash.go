@@ -80,6 +80,18 @@ func (s *Store) HGetAllMulti(ctx context.Context, keys []string) ([]map[string]s
 	return out, nil
 }
 
+// HDel removes specific fields from a hash.
+func (s *Store) HDel(ctx context.Context, key string, fields ...string) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	cmd := s.b().Hdel().Key(key).Field(fields...).Build()
+	if err := s.do(ctx, cmd).Error(); err != nil {
+		return &db.Error{Op: db.OpHDel, Err: err}
+	}
+	return nil
+}
+
 // Del deletes a key.
 func (s *Store) Del(ctx context.Context, key string) error {
 	cmd := s.b().Del().Key(key).Build()

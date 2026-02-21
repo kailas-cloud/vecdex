@@ -94,11 +94,12 @@ func (s *Service) upsertGeoBatch(
 	validIdx := make([]int, 0, len(items))
 
 	for i := range items {
-		if err := validateItemFields(&items[i], fieldTypes); err != nil {
+		// vectorizeGeo removes lat/lon from numerics before validation.
+		if err := vectorizeGeo(&items[i]); err != nil {
 			results[i] = dombatch.NewError(items[i].ID(), err)
 			continue
 		}
-		if err := vectorizeGeo(&items[i]); err != nil {
+		if err := validateItemFields(&items[i], fieldTypes); err != nil {
 			results[i] = dombatch.NewError(items[i].ID(), err)
 			continue
 		}
@@ -205,6 +206,7 @@ func (s *Service) doBatchEmbed(ctx context.Context, texts []string) (domain.Batc
 }
 
 // vectorizeGeo sets ECEF vector from latitude/longitude numerics.
+// Removes lat/lon from numerics — they are encoded in the ECEF vector.
 func vectorizeGeo(item *domdoc.Document) error {
 	lat, hasLat := item.Numerics()["latitude"]
 	lon, hasLon := item.Numerics()["longitude"]
@@ -220,6 +222,9 @@ func vectorizeGeo(item *domdoc.Document) error {
 			lat, lon, domain.ErrGeoQueryInvalid,
 		)
 	}
+	// Remove geo coords — they'll be stored in the ECEF vector only.
+	delete(item.Numerics(), "latitude")
+	delete(item.Numerics(), "longitude")
 	item.SetVector(geo.ToVector(lat, lon))
 	return nil
 }
@@ -257,7 +262,7 @@ func validateItemFields(doc *domdoc.Document, fieldTypes map[string]field.Type) 
 	for k := range doc.Tags() {
 		ft, ok := fieldTypes[k]
 		if !ok {
-			return fmt.Errorf("unknown field %q: %w", k, domain.ErrInvalidSchema)
+			continue // stored (non-indexed) field, allowed
 		}
 		if ft != field.Tag {
 			return fmt.Errorf("field %q is %s, not tag: %w", k, ft, domain.ErrInvalidSchema)

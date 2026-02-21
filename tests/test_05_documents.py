@@ -450,14 +450,14 @@ class TestUpsertDocumentHeaders:
 class TestUpsertDocumentValidation:
     """PUT validation edge cases."""
 
-    def test_upsert_undeclared_tag_field_returns_400(self, client, collection_factory):
-        """4.1.9: Tag field not in schema → 400 validation_failed."""
+    def test_upsert_undeclared_tag_field_accepted(self, client, collection_factory):
+        """4.1.9: Tag field not in schema → stored but not indexed (201)."""
         coll = collection_factory(fields=[{"name": "lang", "type": "tag"}])
         resp = client.put(
-            f"/collections/{coll['name']}/documents/bad-tag",
+            f"/collections/{coll['name']}/documents/extra-tag",
             json={"content": "test", "tags": {"nonexistent": "value"}},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 201
 
 
 @pytest.mark.p1

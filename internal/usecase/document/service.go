@@ -52,12 +52,12 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc
 		return false, fmt.Errorf("get collection: %w", err)
 	}
 
-	if err := s.validateDocFields(doc, col); err != nil {
-		return false, err
+	if col.IsGeo() {
+		return s.upsertGeo(ctx, collectionName, doc, col)
 	}
 
-	if col.IsGeo() {
-		return s.upsertGeo(ctx, collectionName, doc)
+	if err := s.validateDocFields(doc, col); err != nil {
+		return false, err
 	}
 
 	if doc.Content() == "" {
@@ -88,7 +88,11 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc
 }
 
 // upsertGeo vectorizes a geo document from latitude/longitude numerics (no embedding API call).
-func (s *Service) upsertGeo(ctx context.Context, collectionName string, doc *domdoc.Document) (bool, error) {
+// Lat/lon are encoded into ECEF vector and removed from numerics to save storage.
+func (s *Service) upsertGeo(
+	ctx context.Context, collectionName string, doc *domdoc.Document,
+	col interface{ Fields() []field.Field },
+) (bool, error) {
 	lat, hasLat := doc.Numerics()["latitude"]
 	lon, hasLon := doc.Numerics()["longitude"]
 	if !hasLat || !hasLon {
@@ -96,6 +100,15 @@ func (s *Service) upsertGeo(ctx context.Context, collectionName string, doc *dom
 	}
 	if !geo.ValidateCoordinates(lat, lon) {
 		return false, fmt.Errorf("invalid coordinates: lat=%f lon=%f: %w", lat, lon, domain.ErrGeoQueryInvalid)
+	}
+
+	// Remove geo coords from numerics — they'll be encoded in ECEF vector.
+	delete(doc.Numerics(), "latitude")
+	delete(doc.Numerics(), "longitude")
+
+	// Validate remaining fields against schema.
+	if err := s.validateDocFields(doc, col); err != nil {
+		return false, err
 	}
 
 	doc.SetVector(geo.ToVector(lat, lon))
@@ -231,10 +244,7 @@ func validateSchemaFields(
 	for _, k := range tagKeys {
 		ft, ok := fieldTypes[k]
 		if !ok {
-			return fmt.Errorf(
-				"unknown field %q (not in collection schema): %w",
-				k, domain.ErrInvalidSchema,
-			)
+			continue // stored (non-indexed) field, allowed
 		}
 		if ft != field.Tag {
 			return fmt.Errorf(

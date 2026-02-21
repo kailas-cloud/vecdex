@@ -45,9 +45,9 @@ func TestParseSchema_GeoPlace(t *testing.T) {
 		t.Errorf("geoLonIdx = %d, want 4", meta.geoLonIdx)
 	}
 
-	// 3 fields: country(tag), latitude(numeric), longitude(numeric), population(numeric)
-	if len(meta.fields) != 4 {
-		t.Fatalf("len(fields) = %d, want 4", len(meta.fields))
+	// 2 fields: country(tag), population(numeric). geo_lat/geo_lon are NOT indexed.
+	if len(meta.fields) != 2 {
+		t.Fatalf("len(fields) = %d, want 2", len(meta.fields))
 	}
 	if meta.fields[0].Name != "country" || meta.fields[0].Type != FieldTag {
 		t.Errorf("fields[0] = %+v, want country/tag", meta.fields[0])
@@ -256,9 +256,9 @@ func TestCollectionOptions_Geo(t *testing.T) {
 	}
 
 	opts := meta.collectionOptions()
-	// 1 type option + 4 field options
-	if len(opts) != 5 {
-		t.Errorf("len(opts) = %d, want 5", len(opts))
+	// 1 type option + 2 field options (geo coords not in schema)
+	if len(opts) != 3 {
+		t.Errorf("len(opts) = %d, want 3", len(opts))
 	}
 
 	// Apply options to verify they work.
@@ -269,8 +269,8 @@ func TestCollectionOptions_Geo(t *testing.T) {
 	if cfg.colType != CollectionTypeGeo {
 		t.Errorf("colType = %q, want %q", cfg.colType, CollectionTypeGeo)
 	}
-	if len(cfg.fields) != 4 {
-		t.Errorf("len(fields) = %d, want 4", len(cfg.fields))
+	if len(cfg.fields) != 2 {
+		t.Errorf("len(fields) = %d, want 2", len(cfg.fields))
 	}
 }
 
@@ -323,6 +323,91 @@ func TestFromDocument_UintField(t *testing.T) {
 	}
 	if u.Val != 42 {
 		t.Errorf("Val = %d, want 42", u.Val)
+	}
+}
+
+type storedFieldDoc struct {
+	ID   string `vecdex:"id,id"`
+	Name string `vecdex:"name,stored"`
+	Cat  int    `vecdex:"cat,numeric"`
+}
+
+func TestParseSchema_StoredField(t *testing.T) {
+	meta, err := parseSchema[storedFieldDoc]()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// stored field should NOT appear in schema fields
+	if len(meta.fields) != 1 {
+		t.Fatalf("len(fields) = %d, want 1 (only cat)", len(meta.fields))
+	}
+	if meta.fields[0].Name != "cat" || meta.fields[0].Type != FieldNumeric {
+		t.Errorf("fields[0] = %+v, want cat/numeric", meta.fields[0])
+	}
+
+	// stored field should appear in tagFields (for toDocument)
+	if len(meta.tagFields) != 1 {
+		t.Fatalf("len(tagFields) = %d, want 1", len(meta.tagFields))
+	}
+	if meta.tagFields[0].name != "name" {
+		t.Errorf("tagFields[0].name = %q, want %q", meta.tagFields[0].name, "name")
+	}
+}
+
+func TestToDocument_StoredField(t *testing.T) {
+	meta, err := parseSchema[storedFieldDoc]()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	doc := meta.toDocument(storedFieldDoc{ID: "s1", Name: "Starbucks", Cat: 42})
+
+	if doc.Tags["name"] != "Starbucks" {
+		t.Errorf("Tags[name] = %q, want %q", doc.Tags["name"], "Starbucks")
+	}
+	if doc.Numerics["cat"] != 42 {
+		t.Errorf("Numerics[cat] = %f, want 42", doc.Numerics["cat"])
+	}
+}
+
+func TestFromDocument_StoredField(t *testing.T) {
+	meta, err := parseSchema[storedFieldDoc]()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	doc := Document{
+		ID:       "s1",
+		Tags:     map[string]string{"name": "Starbucks"},
+		Numerics: map[string]float64{"cat": 42},
+	}
+	result := meta.fromDocument(doc)
+	item, ok := result.(storedFieldDoc)
+	if !ok {
+		t.Fatalf("type assertion failed: got %T", result)
+	}
+	if item.Name != "Starbucks" {
+		t.Errorf("Name = %q, want %q", item.Name, "Starbucks")
+	}
+	if item.Cat != 42 {
+		t.Errorf("Cat = %d, want 42", item.Cat)
+	}
+}
+
+func TestCollectionOptions_StoredFieldExcluded(t *testing.T) {
+	meta, err := parseSchema[storedFieldDoc]()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	cfg := &collectionConfig{}
+	for _, o := range meta.collectionOptions() {
+		o.applyCollection(cfg)
+	}
+	// Only cat should be in fields, not name (stored)
+	if len(cfg.fields) != 1 {
+		t.Errorf("len(fields) = %d, want 1", len(cfg.fields))
 	}
 }
 

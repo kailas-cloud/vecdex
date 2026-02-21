@@ -14,11 +14,12 @@ import (
 
 // store is the consumer interface for documents (ISP).
 //
-//nolint:interfacebloat // mirrors HashStore + search; splitting would add indirection without benefit
+//nolint:interfacebloat,dupl // mirrors HashStore + search; splitting would add indirection without benefit
 type store interface {
 	HSet(ctx context.Context, key string, fields map[string]string) error
 	HSetMulti(ctx context.Context, items []db.HashSetItem) error
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
+	HDel(ctx context.Context, key string, fields ...string) error
 	Del(ctx context.Context, key string) error
 	Exists(ctx context.Context, key string) (bool, error)
 	SearchList(ctx context.Context, index, query string, offset, limit int, fields []string) (*db.SearchResult, error)
@@ -159,26 +160,30 @@ func (r *Repo) Delete(ctx context.Context, collectionName, id string) error {
 	return nil
 }
 
-// Patch performs a partial update: HGetAll, merge fields, DEL+HSET.
-// DEL+HSET ensures deleted tags/numerics don't linger in the hash.
+// Patch performs a partial update: HDEL removed fields, HSET updated fields.
+// No full-key DEL — avoids race where concurrent Patch sees empty key.
 func (r *Repo) Patch(ctx context.Context, collectionName, id string, p patch.Patch, newVector []float32) error {
 	key := docKey(collectionName, id)
 
-	m, err := r.store.HGetAll(ctx, key)
+	exists, err := r.store.Exists(ctx, key)
 	if err != nil {
-		return fmt.Errorf("hgetall %s: %w", key, err)
+		return fmt.Errorf("exists %s: %w", key, err)
 	}
-	if len(m) == 0 {
+	if !exists {
 		return domain.ErrDocumentNotFound
 	}
 
-	applyPatchToHash(m, p, newVector)
+	toSet, toDel := buildPatchOps(p, newVector)
 
-	if err := r.store.Del(ctx, key); err != nil {
-		return fmt.Errorf("del %s: %w", key, err)
+	if len(toDel) > 0 {
+		if err := r.store.HDel(ctx, key, toDel...); err != nil {
+			return fmt.Errorf("hdel %s: %w", key, err)
+		}
 	}
-	if err := r.store.HSet(ctx, key, m); err != nil {
-		return fmt.Errorf("hset %s: %w", key, err)
+	if len(toSet) > 0 {
+		if err := r.store.HSet(ctx, key, toSet); err != nil {
+			return fmt.Errorf("hset %s: %w", key, err)
+		}
 	}
 	return nil
 }
@@ -209,28 +214,30 @@ func parseListEntries(entries []db.SearchEntry, collectionName string, limit int
 	return docs
 }
 
-// applyPatchToHash merges patch fields into the current hash map in-place.
-// Numeric keys use numericPrefix ("__n:") for disambiguation with tags.
-func applyPatchToHash(m map[string]string, p patch.Patch, newVector []float32) {
+// buildPatchOps splits a patch into fields to set and fields to delete.
+func buildPatchOps(p patch.Patch, newVector []float32) (toSet map[string]string, toDel []string) {
+	toSet = make(map[string]string)
+
 	if p.HasContent() {
-		m["__content"] = *p.Content()
+		toSet["__content"] = *p.Content()
 	}
 	for k, v := range p.Tags() {
 		if v == nil {
-			delete(m, k)
+			toDel = append(toDel, k)
 		} else {
-			m[k] = *v
+			toSet[k] = *v
 		}
 	}
 	for k, v := range p.Numerics() {
 		prefixedKey := numericPrefix + k
 		if v == nil {
-			delete(m, prefixedKey)
+			toDel = append(toDel, prefixedKey)
 		} else {
-			m[prefixedKey] = strconv.FormatFloat(*v, 'f', -1, 64)
+			toSet[prefixedKey] = strconv.FormatFloat(*v, 'f', -1, 64)
 		}
 	}
 	if newVector != nil {
-		m["__vector"] = vectorToBytes(newVector)
+		toSet["__vector"] = vectorToBytes(newVector)
 	}
+	return toSet, toDel
 }

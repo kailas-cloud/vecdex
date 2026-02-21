@@ -253,6 +253,12 @@ func loadCategories(
 				m.rowsFailed.WithLabelValues(
 					"categories", "item_error",
 				).Add(float64(resp.Failed))
+				for _, r := range resp.Results {
+					if !r.OK {
+						log.Printf("category %s failed: %v", r.ID, r.Err)
+						break
+					}
+				}
 			}
 		}
 

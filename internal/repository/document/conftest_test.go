@@ -13,6 +13,7 @@ type mockStore struct {
 	hsetFn       func(ctx context.Context, key string, fields map[string]string) error
 	hsetMultiFn  func(ctx context.Context, items []db.HashSetItem) error
 	hgetAllFn    func(ctx context.Context, key string) (map[string]string, error)
+	hdelFn       func(ctx context.Context, key string, fields ...string) error
 	delFn        func(ctx context.Context, key string) error
 	existsFn     func(ctx context.Context, key string) (bool, error)
 	searchListFn func(
@@ -40,6 +41,13 @@ func (m *mockStore) HGetAll(ctx context.Context, key string) (map[string]string,
 		return m.hgetAllFn(ctx, key)
 	}
 	return map[string]string{}, nil
+}
+
+func (m *mockStore) HDel(ctx context.Context, key string, fields ...string) error {
+	if m.hdelFn != nil {
+		return m.hdelFn(ctx, key, fields...)
+	}
+	return nil
 }
 
 func (m *mockStore) Del(ctx context.Context, key string) error {
