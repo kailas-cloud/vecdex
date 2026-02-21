@@ -22,7 +22,7 @@ func buildIndex(
 
 	def := &db.IndexDefinition{
 		Name:        indexName(name),
-		StorageType: db.StorageJSON,
+		StorageType: db.StorageHash,
 		Prefixes:    []string{collectionPrefix(name)},
 		Fields:      make([]db.IndexField, 0, len(fields)+extraFields),
 	}
@@ -39,25 +39,23 @@ func buildIndex(
 		}
 
 		def.Fields = append(def.Fields, db.IndexField{
-			Name:  "$." + f.Name(),
-			Alias: f.Name(),
-			Type:  fieldType,
+			Name: f.Name(),
+			Type: fieldType,
 		})
 	}
 
 	// TEXT field for BM25 keyword search (only text collections, backend must support it)
 	if colType != domcol.TypeGeo && textSearchEnabled {
 		def.Fields = append(def.Fields, db.IndexField{
-			Name:  "$.__content",
-			Alias: "__content",
-			Type:  db.IndexFieldText,
+			Name: "__content",
+			Type: db.IndexFieldText,
 		})
 	}
 
 	// Vector field: geo uses FLAT/L2, text uses HNSW/COSINE
 	if colType == domcol.TypeGeo {
 		def.Fields = append(def.Fields, db.IndexField{
-			Name:           "$.__vector",
+			Name:           "__vector",
 			Alias:          "vector",
 			Type:           db.IndexFieldVector,
 			VectorAlgo:     db.VectorFlat,
@@ -66,7 +64,7 @@ func buildIndex(
 		})
 	} else {
 		def.Fields = append(def.Fields, db.IndexField{
-			Name:              "$.__vector",
+			Name:              "__vector",
 			Alias:             "vector",
 			Type:              db.IndexFieldVector,
 			VectorAlgo:        db.VectorHNSW,
