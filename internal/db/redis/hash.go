@@ -21,6 +21,30 @@ func (s *Store) HSet(ctx context.Context, key string, fields map[string]string) 
 	return nil
 }
 
+// HSetMulti stores multiple hashes in a single DoMulti round-trip.
+func (s *Store) HSetMulti(ctx context.Context, items []db.HashSetItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	cmds := make([]rueidis.Completed, len(items))
+	for i, item := range items {
+		cmd := s.b().Hset().Key(item.Key).FieldValue()
+		for k, v := range item.Fields {
+			cmd = cmd.FieldValue(k, v)
+		}
+		cmds[i] = cmd.Build()
+	}
+
+	results := s.client.DoMulti(ctx, cmds...)
+	for i, res := range results {
+		if err := res.Error(); err != nil {
+			return &db.Error{Op: db.OpHSet, Err: fmt.Errorf("key %s: %w", items[i].Key, err)}
+		}
+	}
+	return nil
+}
+
 // HGetAll returns all fields of a hash.
 func (s *Store) HGetAll(ctx context.Context, key string) (map[string]string, error) {
 	cmd := s.b().Hgetall().Key(key).Build()

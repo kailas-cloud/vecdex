@@ -10,36 +10,36 @@ import (
 
 // mockStore implements the consumer interface for tests.
 type mockStore struct {
-	jsonSetFn      func(ctx context.Context, key, path string, data []byte) error
-	jsonSetMultiFn func(ctx context.Context, items []db.JSONSetItem) error
-	jsonGetFn      func(ctx context.Context, key string, paths ...string) ([]byte, error)
-	delFn          func(ctx context.Context, key string) error
-	existsFn       func(ctx context.Context, key string) (bool, error)
-	searchListFn   func(
+	hsetFn       func(ctx context.Context, key string, fields map[string]string) error
+	hsetMultiFn  func(ctx context.Context, items []db.HashSetItem) error
+	hgetAllFn    func(ctx context.Context, key string) (map[string]string, error)
+	delFn        func(ctx context.Context, key string) error
+	existsFn     func(ctx context.Context, key string) (bool, error)
+	searchListFn func(
 		ctx context.Context, index, query string, offset, limit int, fields []string,
 	) (*db.SearchResult, error)
 	searchCountFn func(ctx context.Context, index, query string) (int, error)
 }
 
-func (m *mockStore) JSONSet(ctx context.Context, key, path string, data []byte) error {
-	if m.jsonSetFn != nil {
-		return m.jsonSetFn(ctx, key, path, data)
+func (m *mockStore) HSet(ctx context.Context, key string, fields map[string]string) error {
+	if m.hsetFn != nil {
+		return m.hsetFn(ctx, key, fields)
 	}
 	return nil
 }
 
-func (m *mockStore) JSONSetMulti(ctx context.Context, items []db.JSONSetItem) error {
-	if m.jsonSetMultiFn != nil {
-		return m.jsonSetMultiFn(ctx, items)
+func (m *mockStore) HSetMulti(ctx context.Context, items []db.HashSetItem) error {
+	if m.hsetMultiFn != nil {
+		return m.hsetMultiFn(ctx, items)
 	}
 	return nil
 }
 
-func (m *mockStore) JSONGet(ctx context.Context, key string, paths ...string) ([]byte, error) {
-	if m.jsonGetFn != nil {
-		return m.jsonGetFn(ctx, key, paths...)
+func (m *mockStore) HGetAll(ctx context.Context, key string) (map[string]string, error) {
+	if m.hgetAllFn != nil {
+		return m.hgetAllFn(ctx, key)
 	}
-	return nil, db.ErrKeyNotFound
+	return map[string]string{}, nil
 }
 
 func (m *mockStore) Del(ctx context.Context, key string) error {

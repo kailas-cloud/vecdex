@@ -2,8 +2,10 @@ package search
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/binary"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
@@ -42,14 +44,11 @@ func (r *Repo) SearchKNN(
 ) ([]result.Result, error) {
 	indexName := fmt.Sprintf("%s%s:idx", domain.KeyPrefix, collectionName)
 
-	returnFields := []string{"$", "__vector_score"}
-
 	q := &db.KNNQuery{
 		IndexName:     indexName,
 		Filters:       filters,
 		Vector:        vector,
 		K:             topK,
-		ReturnFields:  returnFields,
 		IncludeVector: includeVectors,
 		RawScores:     rawScores,
 	}
@@ -70,11 +69,10 @@ func (r *Repo) SearchBM25(
 	indexName := fmt.Sprintf("%s%s:idx", domain.KeyPrefix, collectionName)
 
 	q := &db.TextQuery{
-		IndexName:    indexName,
-		Query:        query,
-		Filters:      filters,
-		TopK:         topK,
-		ReturnFields: []string{"$"},
+		IndexName: indexName,
+		Query:     query,
+		Filters:   filters,
+		TopK:      topK,
 	}
 
 	sr, err := r.store.SearchBM25(ctx, q)
@@ -121,75 +119,77 @@ func parseBM25Results(sr *db.SearchResult, collection string) ([]result.Result, 
 	return results, nil
 }
 
-// parseEntryFields parses a KNN entry: score from entry.Score (set by db layer), content/tags/numerics from $.
+// numericPrefix disambiguates numeric fields from tags in HASH storage.
+const numericPrefix = "__n:"
+
+// parseEntryFields parses a KNN entry from flat hash fields.
 func parseEntryFields(docID string, entry db.SearchEntry, includeVectors bool) result.Result {
 	var content string
 	var vector []float32
 	tags := make(map[string]string)
 	numerics := make(map[string]float64)
 
-	if jsonStr, ok := entry.Fields["$"]; ok {
-		parseJSONField(jsonStr, &content, tags, numerics, includeVectors, &vector)
+	for k, v := range entry.Fields {
+		switch {
+		case k == "__content":
+			content = v
+		case k == "__vector":
+			if includeVectors {
+				vector = bytesToVector(v)
+			}
+		case k == "__vector_score":
+			// handled by db layer via entry.Score
+		case strings.HasPrefix(k, numericPrefix):
+			name := k[len(numericPrefix):]
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				numerics[name] = f
+			}
+		case strings.HasPrefix(k, "__"):
+			// skip other reserved fields
+		default:
+			tags[k] = v
+		}
 	}
 
 	return result.New(docID, entry.Score, content, tags, numerics, vector)
 }
 
-// parseBM25EntryFields parses a BM25 entry: score from SearchEntry.Score, content/tags/numerics from $.
+// parseBM25EntryFields parses a BM25 entry from flat hash fields.
 func parseBM25EntryFields(docID string, score float64, entry db.SearchEntry) result.Result {
 	var content string
 	tags := make(map[string]string)
 	numerics := make(map[string]float64)
 
-	if jsonStr, ok := entry.Fields["$"]; ok {
-		parseJSONField(jsonStr, &content, tags, numerics, false, nil)
+	for k, v := range entry.Fields {
+		switch {
+		case k == "__content":
+			content = v
+		case k == "__vector":
+			// skip vector in BM25
+		case strings.HasPrefix(k, numericPrefix):
+			name := k[len(numericPrefix):]
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				numerics[name] = f
+			}
+		case strings.HasPrefix(k, "__"):
+			// skip reserved fields
+		default:
+			tags[k] = v
+		}
 	}
 
 	return result.New(docID, score, content, tags, numerics, nil)
 }
 
-// parseJSONField parses the JSON string from the $ field of a search result.
-func parseJSONField(
-	jsonStr string, content *string,
-	tags map[string]string, numerics map[string]float64,
-	includeVectors bool, vector *[]float32,
-) {
-	var m map[string]any
-	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
-		return
-	}
-	for k, v := range m {
-		switch k {
-		case "__content":
-			if s, ok := v.(string); ok {
-				*content = s
-			}
-		case "__vector":
-			if includeVectors && vector != nil {
-				*vector = parseVectorField(v)
-			}
-		default:
-			switch val := v.(type) {
-			case string:
-				tags[k] = val
-			case float64:
-				numerics[k] = val
-			}
-		}
-	}
-}
-
-// parseVectorField converts a JSON array ([]any of float64) into []float32.
-func parseVectorField(v any) []float32 {
-	arr, ok := v.([]any)
-	if !ok {
+// bytesToVector deserializes a binary string to []float32.
+func bytesToVector(s string) []float32 {
+	b := []byte(s)
+	if len(b)%4 != 0 {
 		return nil
 	}
-	vec := make([]float32, 0, len(arr))
-	for _, elem := range arr {
-		if f, ok := elem.(float64); ok {
-			vec = append(vec, float32(f))
-		}
+	v := make([]float32, len(b)/4)
+	for i := range v {
+		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
 	}
-	return vec
+	return v
 }

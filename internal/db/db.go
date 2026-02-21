@@ -11,7 +11,6 @@ import (
 type Store interface {
 	Pinger
 	HashStore
-	JSONStore
 	KVStore
 	IndexManager
 	Searcher
@@ -24,30 +23,23 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+// HashSetItem holds a single key+fields pair for pipelined HSET.
+type HashSetItem struct {
+	Key    string
+	Fields map[string]string
+}
+
 // HashStore provides hash-based key-value operations.
+//
+//nolint:interfacebloat // absorbs Del/Exists/Scan from removed JSONStore
 type HashStore interface {
 	HSet(ctx context.Context, key string, fields map[string]string) error
+	HSetMulti(ctx context.Context, items []HashSetItem) error
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
 	HGetAllMulti(ctx context.Context, keys []string) ([]map[string]string, error)
 	Del(ctx context.Context, key string) error
 	Exists(ctx context.Context, key string) (bool, error)
 	Scan(ctx context.Context, pattern string) ([]string, error)
-}
-
-// JSONSetItem holds a single key+path+data triple for pipelined JSON.SET.
-type JSONSetItem struct {
-	Key  string
-	Path string
-	Data []byte
-}
-
-// JSONStore provides JSON document operations.
-type JSONStore interface {
-	JSONSet(ctx context.Context, key, path string, data []byte) error
-	JSONSetMulti(ctx context.Context, items []JSONSetItem) error
-	JSONGet(ctx context.Context, key string, paths ...string) ([]byte, error)
-	Del(ctx context.Context, key string) error
-	Exists(ctx context.Context, key string) (bool, error)
 }
 
 // KVStore provides simple key-value operations.

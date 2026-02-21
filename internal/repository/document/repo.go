@@ -2,8 +2,6 @@ package document
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,11 +14,11 @@ import (
 
 // store is the consumer interface for documents (ISP).
 //
-//nolint:interfacebloat // mirrors JSONStore + search; splitting would add indirection without benefit
+//nolint:interfacebloat // mirrors HashStore + search; splitting would add indirection without benefit
 type store interface {
-	JSONSet(ctx context.Context, key, path string, data []byte) error
-	JSONSetMulti(ctx context.Context, items []db.JSONSetItem) error
-	JSONGet(ctx context.Context, key string, paths ...string) ([]byte, error)
+	HSet(ctx context.Context, key string, fields map[string]string) error
+	HSetMulti(ctx context.Context, items []db.HashSetItem) error
+	HGetAll(ctx context.Context, key string) (map[string]string, error)
 	Del(ctx context.Context, key string) error
 	Exists(ctx context.Context, key string) (bool, error)
 	SearchList(ctx context.Context, index, query string, offset, limit int, fields []string) (*db.SearchResult, error)
@@ -38,21 +36,24 @@ func New(s store) *Repo {
 }
 
 // Upsert creates or updates a document. Returns true if created.
+// On update, DEL+HSET ensures removed fields don't linger (HSET is additive).
 func (r *Repo) Upsert(ctx context.Context, collectionName string, doc *domdoc.Document) (bool, error) {
 	key := docKey(collectionName, doc.ID())
-	jsonDoc := buildJSONDoc(doc)
-	data, err := json.Marshal(jsonDoc)
-	if err != nil {
-		return false, fmt.Errorf("marshal document: %w", err)
-	}
+	fields := buildHashFields(doc)
 
 	exists, err := r.store.Exists(ctx, key)
 	if err != nil {
 		return false, fmt.Errorf("check exists %s: %w", key, err)
 	}
 
-	if err := r.store.JSONSet(ctx, key, "$", data); err != nil {
-		return false, fmt.Errorf("json.set %s: %w", key, err)
+	if exists {
+		if err := r.store.Del(ctx, key); err != nil {
+			return false, fmt.Errorf("del %s: %w", key, err)
+		}
+	}
+
+	if err := r.store.HSet(ctx, key, fields); err != nil {
+		return false, fmt.Errorf("hset %s: %w", key, err)
 	}
 
 	return !exists, nil
@@ -65,22 +66,16 @@ func (r *Repo) BatchUpsert(ctx context.Context, collectionName string, docs []do
 		return nil
 	}
 
-	items := make([]db.JSONSetItem, len(docs))
+	items := make([]db.HashSetItem, len(docs))
 	for i := range docs {
-		jsonDoc := buildJSONDoc(&docs[i])
-		data, err := json.Marshal(jsonDoc)
-		if err != nil {
-			return fmt.Errorf("marshal document %s: %w", docs[i].ID(), err)
-		}
-		items[i] = db.JSONSetItem{
-			Key:  docKey(collectionName, docs[i].ID()),
-			Path: "$",
-			Data: data,
+		items[i] = db.HashSetItem{
+			Key:    docKey(collectionName, docs[i].ID()),
+			Fields: buildHashFields(&docs[i]),
 		}
 	}
 
-	if err := r.store.JSONSetMulti(ctx, items); err != nil {
-		return fmt.Errorf("json.set multi: %w", err)
+	if err := r.store.HSetMulti(ctx, items); err != nil {
+		return fmt.Errorf("hset multi: %w", err)
 	}
 	return nil
 }
@@ -88,14 +83,14 @@ func (r *Repo) BatchUpsert(ctx context.Context, collectionName string, docs []do
 // Get returns a document by ID.
 func (r *Repo) Get(ctx context.Context, collectionName, id string) (domdoc.Document, error) {
 	key := docKey(collectionName, id)
-	raw, err := r.store.JSONGet(ctx, key, "$")
+	m, err := r.store.HGetAll(ctx, key)
 	if err != nil {
-		if errors.Is(err, db.ErrKeyNotFound) {
-			return domdoc.Document{}, domain.ErrDocumentNotFound
-		}
-		return domdoc.Document{}, fmt.Errorf("json.get %s: %w", key, err)
+		return domdoc.Document{}, fmt.Errorf("hgetall %s: %w", key, err)
 	}
-	return parseJSONGetResult(id, string(raw))
+	if len(m) == 0 {
+		return domdoc.Document{}, domain.ErrDocumentNotFound
+	}
+	return parseHashFields(id, m), nil
 }
 
 // List returns documents with cursor-based pagination via FT.SEARCH.
@@ -118,7 +113,7 @@ func (r *Repo) List(ctx context.Context, collectionName, cursor string, limit in
 	idxName := indexName(collectionName)
 	fetchCount := limit + 1
 
-	result, err := r.store.SearchList(ctx, idxName, "*", offset, fetchCount, []string{"$"})
+	result, err := r.store.SearchList(ctx, idxName, "*", offset, fetchCount, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("search list %s: %w", collectionName, err)
 	}
@@ -164,36 +159,26 @@ func (r *Repo) Delete(ctx context.Context, collectionName, id string) error {
 	return nil
 }
 
-// Patch performs a partial update: JSON.GET, merge fields, JSON.SET.
+// Patch performs a partial update: HGetAll, merge fields, DEL+HSET.
+// DEL+HSET ensures deleted tags/numerics don't linger in the hash.
 func (r *Repo) Patch(ctx context.Context, collectionName, id string, p patch.Patch, newVector []float32) error {
 	key := docKey(collectionName, id)
 
-	raw, err := r.store.JSONGet(ctx, key, "$")
+	m, err := r.store.HGetAll(ctx, key)
 	if err != nil {
-		if errors.Is(err, db.ErrKeyNotFound) {
-			return domain.ErrDocumentNotFound
-		}
-		return fmt.Errorf("json.get %s: %w", key, err)
+		return fmt.Errorf("hgetall %s: %w", key, err)
 	}
-
-	var docs []map[string]any
-	if err := json.Unmarshal(raw, &docs); err != nil {
-		return fmt.Errorf("unmarshal for patch: %w", err)
-	}
-	if len(docs) == 0 {
+	if len(m) == 0 {
 		return domain.ErrDocumentNotFound
 	}
 
-	current := docs[0]
-	applyPatchFields(current, p, newVector)
+	applyPatchToHash(m, p, newVector)
 
-	data, err := json.Marshal(current)
-	if err != nil {
-		return fmt.Errorf("marshal patched doc: %w", err)
+	if err := r.store.Del(ctx, key); err != nil {
+		return fmt.Errorf("del %s: %w", key, err)
 	}
-
-	if err := r.store.JSONSet(ctx, key, "$", data); err != nil {
-		return fmt.Errorf("json.set %s: %w", key, err)
+	if err := r.store.HSet(ctx, key, m); err != nil {
+		return fmt.Errorf("hset %s: %w", key, err)
 	}
 	return nil
 }
@@ -219,41 +204,33 @@ func parseListEntries(entries []db.SearchEntry, collectionName string, limit int
 			break
 		}
 		docID := extractDocID(entry.Key, collectionName)
-		jsonStr := entry.Fields["$"]
-		if jsonStr == "" {
-			docs = append(docs, domdoc.Reconstruct(docID, "", nil, nil, nil, 0))
-			continue
-		}
-		var m map[string]any
-		if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
-			docs = append(docs, domdoc.Reconstruct(docID, "", nil, nil, nil, 0))
-			continue
-		}
-		docs = append(docs, parseDocMap(docID, m))
+		docs = append(docs, parseHashFields(docID, entry.Fields))
 	}
 	return docs
 }
 
-// applyPatchFields merges patch fields into the current JSON map in-place.
-func applyPatchFields(current map[string]any, p patch.Patch, newVector []float32) {
+// applyPatchToHash merges patch fields into the current hash map in-place.
+// Numeric keys use numericPrefix ("__n:") for disambiguation with tags.
+func applyPatchToHash(m map[string]string, p patch.Patch, newVector []float32) {
 	if p.HasContent() {
-		current["__content"] = *p.Content()
+		m["__content"] = *p.Content()
 	}
 	for k, v := range p.Tags() {
 		if v == nil {
-			delete(current, k)
+			delete(m, k)
 		} else {
-			current[k] = *v
+			m[k] = *v
 		}
 	}
 	for k, v := range p.Numerics() {
+		prefixedKey := numericPrefix + k
 		if v == nil {
-			delete(current, k)
+			delete(m, prefixedKey)
 		} else {
-			current[k] = *v
+			m[prefixedKey] = strconv.FormatFloat(*v, 'f', -1, 64)
 		}
 	}
 	if newVector != nil {
-		current["__vector"] = newVector
+		m["__vector"] = vectorToBytes(newVector)
 	}
 }
