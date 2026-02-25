@@ -416,6 +416,51 @@ func (s *Server) SearchDocuments(
 	})
 }
 
+// FindSimilarDocuments handles POST /collections/{collection}/documents/{id}/similar.
+func (s *Server) FindSimilarDocuments(
+	w http.ResponseWriter,
+	r *http.Request,
+	collection gen.CollectionName,
+	id gen.DocumentId,
+	params gen.FindSimilarDocumentsParams,
+) {
+	var req gen.SimilarRequest
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
+			return
+		}
+	}
+
+	simReq, err := similarRequestFromGen(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
+		return
+	}
+
+	results, total, err := s.search.Similar(r.Context(), collection, id, &simReq)
+	if err != nil {
+		s.handleDomainError(w, err)
+		return
+	}
+
+	items := make([]gen.SearchResultItem, len(results))
+	for i := range results {
+		items[i] = searchResultToGen(&results[i])
+	}
+
+	limit := len(items)
+	if req.Limit != nil {
+		limit = *req.Limit
+	}
+
+	writeJSON(w, http.StatusOK, gen.SearchResultListResponse{
+		Items: items,
+		Limit: limit,
+		Total: total,
+	})
+}
+
 // BatchUpsert handles POST /collections/{collection}/documents/batch.
 func (s *Server) BatchUpsert(
 	w http.ResponseWriter,
@@ -856,6 +901,36 @@ func searchRequestFromGen(
 		return request.Request{}, fmt.Errorf("build search request: %w", err)
 	}
 	return r, nil
+}
+
+func similarRequestFromGen(req gen.SimilarRequest) (request.SimilarRequest, error) {
+	filters, err := filtersFromGen(req.Filters)
+	if err != nil {
+		return request.SimilarRequest{}, fmt.Errorf("parse filters: %w", err)
+	}
+
+	if req.TopK != nil {
+		if *req.TopK <= 0 || *req.TopK > request.MaxTopK {
+			return request.SimilarRequest{}, fmt.Errorf("top_k must be between 1 and %d", request.MaxTopK)
+		}
+	}
+	if req.Limit != nil {
+		if *req.Limit <= 0 || *req.Limit > request.MaxLimit {
+			return request.SimilarRequest{}, fmt.Errorf("limit must be between 1 and %d", request.MaxLimit)
+		}
+	}
+
+	sr, err := request.NewSimilar(
+		filters,
+		derefInt(req.TopK),
+		derefInt(req.Limit),
+		derefFloat(req.MinScore),
+		derefBool(req.IncludeVectors),
+	)
+	if err != nil {
+		return request.SimilarRequest{}, fmt.Errorf("build similar request: %w", err)
+	}
+	return sr, nil
 }
 
 func filtersFromGen(
