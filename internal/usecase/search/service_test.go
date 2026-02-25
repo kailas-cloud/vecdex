@@ -8,6 +8,7 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
+	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/mode"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/request"
@@ -393,5 +394,234 @@ func TestSearch_IncludeVectors(t *testing.T) {
 	}
 	if !repo.lastIncludeVec {
 		t.Error("expected includeVectors=true to be passed to repo")
+	}
+}
+
+// --- Document reader mock ---
+
+type mockDocs struct {
+	doc domdoc.Document
+	err error
+}
+
+func (m *mockDocs) Get(_ context.Context, _, _ string) (domdoc.Document, error) {
+	return m.doc, m.err
+}
+
+func makeSimilarRequest(t *testing.T) *request.SimilarRequest {
+	t.Helper()
+	r, err := request.NewSimilar(filter.Expression{}, 10, 10, 0, false)
+	if err != nil {
+		t.Fatalf("request.NewSimilar: %v", err)
+	}
+	return &r
+}
+
+func mockGeoColls() *mockColls {
+	col := domcol.Reconstruct("geo-col", domcol.TypeGeo, nil, 3, 0, 1)
+	return &mockColls{col: col}
+}
+
+// --- Similar tests ---
+
+func TestSimilar_HappyPath(t *testing.T) {
+	repo := &mockRepo{
+		knnResults: []result.Result{
+			result.New("source", 1.0, "source doc", nil, nil, nil),
+			result.New("similar-1", 0.9, "similar doc", nil, nil, nil),
+			result.New("similar-2", 0.7, "another doc", nil, nil, nil),
+		},
+	}
+	docs := &mockDocs{
+		doc: domdoc.Reconstruct("source", "source content", nil, nil, []float32{0.1, 0.2, 0.3}, 1),
+	}
+	embed := &mockEmbedder{vec: []float32{0.1}}
+	svc := New(repo, defaultMockColls(), embed).WithDocuments(docs)
+
+	req := makeSimilarRequest(t)
+	results, total, err := svc.Similar(context.Background(), "test-col", "source", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("expected total=2 (source excluded), got %d", total)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.ID() == "source" {
+			t.Error("source document should be excluded from results")
+		}
+	}
+	if embed.called {
+		t.Error("embedder should NOT be called — similar reuses stored vector")
+	}
+	if !repo.knnCalled {
+		t.Error("expected SearchKNN to be called")
+	}
+}
+
+func TestSimilar_CollectionNotFound(t *testing.T) {
+	repo := &mockRepo{}
+	docs := &mockDocs{}
+	embed := &mockEmbedder{}
+	colls := &mockColls{err: domain.ErrNotFound}
+	svc := New(repo, colls, embed).WithDocuments(docs)
+
+	req := makeSimilarRequest(t)
+	_, _, err := svc.Similar(context.Background(), "missing", "doc-1", req)
+	if err == nil {
+		t.Fatal("expected error for missing collection")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestSimilar_GeoCollection_ReturnsError(t *testing.T) {
+	repo := &mockRepo{}
+	docs := &mockDocs{}
+	embed := &mockEmbedder{}
+	svc := New(repo, mockGeoColls(), embed).WithDocuments(docs)
+
+	req := makeSimilarRequest(t)
+	_, _, err := svc.Similar(context.Background(), "geo-col", "doc-1", req)
+	if err == nil {
+		t.Fatal("expected error for geo collection")
+	}
+	if !errors.Is(err, domain.ErrCollectionTypeMismatch) {
+		t.Errorf("expected ErrCollectionTypeMismatch, got %v", err)
+	}
+}
+
+func TestSimilar_DocumentNotFound(t *testing.T) {
+	repo := &mockRepo{}
+	docs := &mockDocs{err: domain.ErrDocumentNotFound}
+	embed := &mockEmbedder{}
+	svc := New(repo, defaultMockColls(), embed).WithDocuments(docs)
+
+	req := makeSimilarRequest(t)
+	_, _, err := svc.Similar(context.Background(), "test-col", "missing", req)
+	if err == nil {
+		t.Fatal("expected error for missing document")
+	}
+	if !errors.Is(err, domain.ErrDocumentNotFound) {
+		t.Errorf("expected ErrDocumentNotFound, got %v", err)
+	}
+}
+
+func TestSimilar_DocumentHasNoVector(t *testing.T) {
+	repo := &mockRepo{}
+	docs := &mockDocs{
+		doc: domdoc.Reconstruct("no-vec", "content", nil, nil, nil, 1),
+	}
+	embed := &mockEmbedder{}
+	svc := New(repo, defaultMockColls(), embed).WithDocuments(docs)
+
+	req := makeSimilarRequest(t)
+	_, _, err := svc.Similar(context.Background(), "test-col", "no-vec", req)
+	if err == nil {
+		t.Fatal("expected error for document without vector")
+	}
+	if !errors.Is(err, domain.ErrDocumentNotFound) {
+		t.Errorf("expected ErrDocumentNotFound, got %v", err)
+	}
+}
+
+func TestSimilar_KNNError(t *testing.T) {
+	repo := &mockRepo{knnErr: errors.New("knn failure")}
+	docs := &mockDocs{
+		doc: domdoc.Reconstruct("doc-1", "content", nil, nil, []float32{0.1}, 1),
+	}
+	embed := &mockEmbedder{}
+	svc := New(repo, defaultMockColls(), embed).WithDocuments(docs)
+
+	req := makeSimilarRequest(t)
+	_, _, err := svc.Similar(context.Background(), "test-col", "doc-1", req)
+	if err == nil {
+		t.Fatal("expected error from KNN failure")
+	}
+}
+
+func TestSimilar_MinScoreFilter(t *testing.T) {
+	repo := &mockRepo{
+		knnResults: []result.Result{
+			result.New("a", 0.95, "high", nil, nil, nil),
+			result.New("b", 0.4, "low", nil, nil, nil),
+		},
+	}
+	docs := &mockDocs{
+		doc: domdoc.Reconstruct("source", "content", nil, nil, []float32{0.1}, 1),
+	}
+	embed := &mockEmbedder{}
+	svc := New(repo, defaultMockColls(), embed).WithDocuments(docs)
+
+	r, _ := request.NewSimilar(filter.Expression{}, 10, 10, 0.5, false)
+	results, total, err := svc.Similar(context.Background(), "test-col", "source", &r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("expected total=1 after min_score, got %d", total)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ID() != "a" {
+		t.Errorf("expected 'a', got %s", results[0].ID())
+	}
+}
+
+func TestSimilar_SourceExcluded_ResultsSorted(t *testing.T) {
+	repo := &mockRepo{
+		knnResults: []result.Result{
+			result.New("source", 1.0, "self", nil, nil, nil),
+			result.New("c", 0.5, "low", nil, nil, nil),
+			result.New("a", 0.9, "high", nil, nil, nil),
+			result.New("b", 0.7, "mid", nil, nil, nil),
+		},
+	}
+	docs := &mockDocs{
+		doc: domdoc.Reconstruct("source", "content", nil, nil, []float32{0.1}, 1),
+	}
+	embed := &mockEmbedder{}
+	svc := New(repo, defaultMockColls(), embed).WithDocuments(docs)
+
+	req := makeSimilarRequest(t)
+	results, _, err := svc.Similar(context.Background(), "test-col", "source", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	// Проверяем сортировку по убыванию score
+	for i := 1; i < len(results); i++ {
+		if results[i].Score() > results[i-1].Score() {
+			t.Errorf("results not sorted descending: [%d]=%f > [%d]=%f",
+				i, results[i].Score(), i-1, results[i-1].Score())
+		}
+	}
+}
+
+func TestSimilar_FilterValidation(t *testing.T) {
+	repo := &mockRepo{}
+	docs := &mockDocs{
+		doc: domdoc.Reconstruct("doc-1", "content", nil, nil, []float32{0.1}, 1),
+	}
+	embed := &mockEmbedder{}
+	svc := New(repo, mockCollsWithFields(), embed).WithDocuments(docs)
+
+	matchCond, _ := filter.NewMatch("nonexistent", "val")
+	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
+	r, _ := request.NewSimilar(expr, 10, 10, 0, false)
+
+	_, _, err := svc.Similar(context.Background(), "test-col", "doc-1", &r)
+	if err == nil {
+		t.Fatal("expected error for unknown filter field")
+	}
+	if !errors.Is(err, domain.ErrInvalidSchema) {
+		t.Errorf("expected ErrInvalidSchema, got %v", err)
 	}
 }

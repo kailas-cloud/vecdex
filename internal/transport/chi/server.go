@@ -868,16 +868,8 @@ func searchRequestFromGen(
 		return request.Request{}, fmt.Errorf("parse filters: %w", err)
 	}
 
-	// Validate explicitly provided parameters (0 from derefInt means "not set").
-	if req.TopK != nil {
-		if *req.TopK <= 0 || *req.TopK > request.MaxTopK {
-			return request.Request{}, fmt.Errorf("top_k must be between 1 and %d", request.MaxTopK)
-		}
-	}
-	if req.Limit != nil {
-		if *req.Limit <= 0 || *req.Limit > request.MaxLimit {
-			return request.Request{}, fmt.Errorf("limit must be between 1 and %d", request.MaxLimit)
-		}
+	if err := validateTopKLimit(req.TopK, req.Limit); err != nil {
+		return request.Request{}, err
 	}
 
 	topK := derefInt(req.TopK)
@@ -908,24 +900,13 @@ func similarRequestFromGen(req gen.SimilarRequest) (request.SimilarRequest, erro
 	if err != nil {
 		return request.SimilarRequest{}, fmt.Errorf("parse filters: %w", err)
 	}
-
-	if req.TopK != nil {
-		if *req.TopK <= 0 || *req.TopK > request.MaxTopK {
-			return request.SimilarRequest{}, fmt.Errorf("top_k must be between 1 and %d", request.MaxTopK)
-		}
-	}
-	if req.Limit != nil {
-		if *req.Limit <= 0 || *req.Limit > request.MaxLimit {
-			return request.SimilarRequest{}, fmt.Errorf("limit must be between 1 and %d", request.MaxLimit)
-		}
+	if err := validateTopKLimit(req.TopK, req.Limit); err != nil {
+		return request.SimilarRequest{}, err
 	}
 
 	sr, err := request.NewSimilar(
-		filters,
-		derefInt(req.TopK),
-		derefInt(req.Limit),
-		derefFloat(req.MinScore),
-		derefBool(req.IncludeVectors),
+		filters, derefInt(req.TopK), derefInt(req.Limit),
+		derefFloat(req.MinScore), derefBool(req.IncludeVectors),
 	)
 	if err != nil {
 		return request.SimilarRequest{}, fmt.Errorf("build similar request: %w", err)
@@ -1040,6 +1021,16 @@ func parseGeoQuery(query string) (*request.GeoQuery, error) {
 		return nil, fmt.Errorf("invalid longitude in geo query: %w", err)
 	}
 	return &request.GeoQuery{Latitude: lat, Longitude: lon}, nil
+}
+
+func validateTopKLimit(topK, limit *int) error {
+	if topK != nil && (*topK <= 0 || *topK > request.MaxTopK) {
+		return fmt.Errorf("top_k must be between 1 and %d", request.MaxTopK)
+	}
+	if limit != nil && (*limit <= 0 || *limit > request.MaxLimit) {
+		return fmt.Errorf("limit must be between 1 and %d", request.MaxLimit)
+	}
+	return nil
 }
 
 func derefInt(p *int) int {

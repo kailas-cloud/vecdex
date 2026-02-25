@@ -124,51 +124,62 @@ func filterByScore(results []result.Result, minScore float64, m mode.Mode) []res
 func (s *Service) Similar(
 	ctx context.Context, collectionName, documentID string, req *request.SimilarRequest,
 ) ([]result.Result, int, error) {
-	col, err := s.colls.Get(ctx, collectionName)
+	vector, err := s.loadDocumentVector(ctx, collectionName, documentID, req.Filters())
 	if err != nil {
-		return nil, 0, fmt.Errorf("get collection: %w", err)
+		return nil, 0, err
 	}
 
-	if col.IsGeo() {
-		return nil, 0, fmt.Errorf("similar on geo collection: %w", domain.ErrCollectionTypeMismatch)
-	}
-
-	if err := validateFiltersAgainstSchema(req.Filters(), col); err != nil {
-		return nil, 0, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
-	}
-
-	doc, err := s.docs.Get(ctx, collectionName, documentID)
-	if err != nil {
-		return nil, 0, fmt.Errorf("get document: %w", err)
-	}
-
-	if len(doc.Vector()) == 0 {
-		return nil, 0, fmt.Errorf("document has no vector: %w", domain.ErrDocumentNotFound)
-	}
-
-	// Reuse stored vector — zero embedding cost.
+	// Reuse stored vector — zero embedding cost. TopK+1 to compensate for source exclusion.
 	results, err := s.repo.SearchKNN(
-		ctx, collectionName, doc.Vector(), req.Filters(), req.TopK()+1, req.IncludeVectors(), false,
+		ctx, collectionName, vector, req.Filters(), req.TopK()+1, req.IncludeVectors(), false,
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("search knn: %w", err)
 	}
 
-	// Enforce descending similarity order (HNSW approximate).
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score() > results[j].Score()
 	})
 
-	// Exclude the source document.
+	results = excludeByID(results, documentID)
+	out, total := applyPostFilters(results, req.MinScore(), req.Limit(), mode.Semantic)
+	return out, total, nil
+}
+
+// loadDocumentVector validates the collection/document and returns the stored vector.
+func (s *Service) loadDocumentVector(
+	ctx context.Context, collectionName, documentID string, filters filter.Expression,
+) ([]float32, error) {
+	col, err := s.colls.Get(ctx, collectionName)
+	if err != nil {
+		return nil, fmt.Errorf("get collection: %w", err)
+	}
+	if col.IsGeo() {
+		return nil, fmt.Errorf("similar on geo collection: %w", domain.ErrCollectionTypeMismatch)
+	}
+	if err := validateFiltersAgainstSchema(filters, col); err != nil {
+		return nil, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
+	}
+
+	doc, err := s.docs.Get(ctx, collectionName, documentID)
+	if err != nil {
+		return nil, fmt.Errorf("get document: %w", err)
+	}
+	if len(doc.Vector()) == 0 {
+		return nil, fmt.Errorf("document has no vector: %w", domain.ErrDocumentNotFound)
+	}
+	return doc.Vector(), nil
+}
+
+// excludeByID removes a single document by ID from results.
+func excludeByID(results []result.Result, id string) []result.Result {
 	filtered := make([]result.Result, 0, len(results))
 	for _, r := range results {
-		if r.ID() != documentID {
+		if r.ID() != id {
 			filtered = append(filtered, r)
 		}
 	}
-
-	out, total := applyPostFilters(filtered, req.MinScore(), req.Limit(), mode.Semantic)
-	return out, total, nil
+	return filtered
 }
 
 // searchSemantic embeds the query and runs KNN search (works on any backend).
