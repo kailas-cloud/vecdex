@@ -755,7 +755,8 @@ func documentFromUpsert(
 		}
 	}
 
-	doc, err := domdoc.New(id, req.Content, tags, numerics)
+	content := derefString(req.Content)
+	doc, err := domdoc.New(id, content, tags, numerics)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("build document: %w", err)
 	}
@@ -775,7 +776,8 @@ func batchItemToDoc(item gen.BatchUpsertItem) (domdoc.Document, error) {
 		}
 	}
 
-	doc, err := domdoc.New(item.Id, item.Content, tags, numerics)
+	content := derefString(item.Content)
+	doc, err := domdoc.New(item.Id, content, tags, numerics)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("build batch item: %w", err)
 	}
@@ -982,6 +984,13 @@ func derefFloat(p *float64) float64 {
 func derefBool(p *bool) bool {
 	if p == nil {
 		return false
+	}
+	return *p
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
 	}
 	return *p
 }

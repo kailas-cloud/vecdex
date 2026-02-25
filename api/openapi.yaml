@@ -1875,18 +1875,10 @@ components:
       content:
         application/json:
           schema:
-            allOf:
-              - $ref: '#/components/schemas/ErrorResponse'
-              - type: object
-                properties:
-                  current_revision:
-                    type: integer
-                    description: Current revision of the resource
-                    example: 5
+            $ref: '#/components/schemas/ErrorResponse'
           example:
             code: revision_conflict
             message: "Resource was modified. Re-read and retry with current revision."
-            current_revision: 5
 
     RateLimited:
       description: Rate limit exceeded (reserved for future use)
