@@ -159,7 +159,7 @@ func main() {
 	collSvc := collectionuc.New(collRepo, vectorDim)
 	docSvc := documentuc.New(docRepo, collRepo, docEmbedder, queryEmbedder).
 		WithPagination(cfg.Index.DefaultPageSize, cfg.Index.MaxPageSize)
-	searchSvc := searchuc.New(searchRepo, collRepo, queryEmbedder)
+	searchSvc := searchuc.New(searchRepo, collRepo, queryEmbedder).WithDocuments(docRepo)
 	// Type-assert: если docEmbedder поддерживает batch — передаём в batch service
 	var batchEmb batchuc.BulkEmbedder
 	if be, ok := docEmbedder.(domain.BatchEmbedder); ok {
