@@ -54,9 +54,9 @@ func WithRedis(addr, password string) Option {
 // WithStandalone disables cluster topology discovery.
 // Use for standalone Valkey/Redis instances (not managed by cluster operator).
 func WithStandalone() Option {
-	return func(c *clientConfig) {
+	return optionFunc(func(c *clientConfig) {
 		c.standalone = true
-	}
+	})
 }
 
 // WithEmbedder sets the text embedding provider.
