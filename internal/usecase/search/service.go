@@ -21,11 +21,18 @@ type Service struct {
 	repo  Repository
 	colls CollectionReader
 	embed Embedder
+	docs  DocumentReader
 }
 
 // New creates a search service.
 func New(repo Repository, colls CollectionReader, embed Embedder) *Service {
 	return &Service{repo: repo, colls: colls, embed: embed}
+}
+
+// WithDocuments sets the document reader for Similar() functionality.
+func (s *Service) WithDocuments(docs DocumentReader) *Service {
+	s.docs = docs
+	return s
 }
 
 // Search executes a document search across semantic, keyword, hybrid, or geo modes.
@@ -110,6 +117,58 @@ func filterByScore(results []result.Result, minScore float64, m mode.Mode) []res
 		}
 	}
 	return filtered
+}
+
+// Similar finds documents similar to a given document by reusing its stored vector.
+// Only supported on text collections. Returns results (post-filtered), total, and error.
+func (s *Service) Similar(
+	ctx context.Context, collectionName, documentID string, req *request.SimilarRequest,
+) ([]result.Result, int, error) {
+	col, err := s.colls.Get(ctx, collectionName)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get collection: %w", err)
+	}
+
+	if col.IsGeo() {
+		return nil, 0, fmt.Errorf("similar on geo collection: %w", domain.ErrCollectionTypeMismatch)
+	}
+
+	if err := validateFiltersAgainstSchema(req.Filters(), col); err != nil {
+		return nil, 0, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
+	}
+
+	doc, err := s.docs.Get(ctx, collectionName, documentID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get document: %w", err)
+	}
+
+	if len(doc.Vector()) == 0 {
+		return nil, 0, fmt.Errorf("document has no vector: %w", domain.ErrDocumentNotFound)
+	}
+
+	// Reuse stored vector — zero embedding cost.
+	results, err := s.repo.SearchKNN(
+		ctx, collectionName, doc.Vector(), req.Filters(), req.TopK()+1, req.IncludeVectors(), false,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("search knn: %w", err)
+	}
+
+	// Enforce descending similarity order (HNSW approximate).
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score() > results[j].Score()
+	})
+
+	// Exclude the source document.
+	filtered := make([]result.Result, 0, len(results))
+	for _, r := range results {
+		if r.ID() != documentID {
+			filtered = append(filtered, r)
+		}
+	}
+
+	out, total := applyPostFilters(filtered, req.MinScore(), req.Limit(), mode.Semantic)
+	return out, total, nil
 }
 
 // searchSemantic embeds the query and runs KNN search (works on any backend).
