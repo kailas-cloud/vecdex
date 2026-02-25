@@ -21,11 +21,18 @@ type Service struct {
 	repo  Repository
 	colls CollectionReader
 	embed Embedder
+	docs  DocumentReader
 }
 
 // New creates a search service.
 func New(repo Repository, colls CollectionReader, embed Embedder) *Service {
 	return &Service{repo: repo, colls: colls, embed: embed}
+}
+
+// WithDocuments sets the document reader for Similar() functionality.
+func (s *Service) WithDocuments(docs DocumentReader) *Service {
+	s.docs = docs
+	return s
 }
 
 // Search executes a document search across semantic, keyword, hybrid, or geo modes.
@@ -106,6 +113,69 @@ func filterByScore(results []result.Result, minScore float64, m mode.Mode) []res
 		if m == mode.Geo && r.Score() <= minScore {
 			filtered = append(filtered, r)
 		} else if m != mode.Geo && r.Score() >= minScore {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+// Similar finds documents similar to a given document by reusing its stored vector.
+// Only supported on text collections. Returns results (post-filtered), total, and error.
+func (s *Service) Similar(
+	ctx context.Context, collectionName, documentID string, req *request.SimilarRequest,
+) ([]result.Result, int, error) {
+	vector, err := s.loadDocumentVector(ctx, collectionName, documentID, req.Filters())
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Reuse stored vector — zero embedding cost. TopK+1 to compensate for source exclusion.
+	results, err := s.repo.SearchKNN(
+		ctx, collectionName, vector, req.Filters(), req.TopK()+1, req.IncludeVectors(), false,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("search knn: %w", err)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score() > results[j].Score()
+	})
+
+	results = excludeByID(results, documentID)
+	out, total := applyPostFilters(results, req.MinScore(), req.Limit(), mode.Semantic)
+	return out, total, nil
+}
+
+// loadDocumentVector validates the collection/document and returns the stored vector.
+func (s *Service) loadDocumentVector(
+	ctx context.Context, collectionName, documentID string, filters filter.Expression,
+) ([]float32, error) {
+	col, err := s.colls.Get(ctx, collectionName)
+	if err != nil {
+		return nil, fmt.Errorf("get collection: %w", err)
+	}
+	if col.IsGeo() {
+		return nil, fmt.Errorf("similar on geo collection: %w", domain.ErrCollectionTypeMismatch)
+	}
+	if err := validateFiltersAgainstSchema(filters, col); err != nil {
+		return nil, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
+	}
+
+	doc, err := s.docs.Get(ctx, collectionName, documentID)
+	if err != nil {
+		return nil, fmt.Errorf("get document: %w", err)
+	}
+	if len(doc.Vector()) == 0 {
+		return nil, fmt.Errorf("document has no vector: %w", domain.ErrDocumentNotFound)
+	}
+	return doc.Vector(), nil
+}
+
+// excludeByID removes a single document by ID from results.
+func excludeByID(results []result.Result, id string) []result.Result {
+	filtered := make([]result.Result, 0, len(results))
+	for _, r := range results {
+		if r.ID() != id {
 			filtered = append(filtered, r)
 		}
 	}

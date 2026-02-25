@@ -5,6 +5,7 @@ import (
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
+	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/result"
 )
@@ -28,6 +29,11 @@ type Repository interface {
 // CollectionReader reads collections for existence checks.
 type CollectionReader interface {
 	Get(ctx context.Context, name string) (domcol.Collection, error)
+}
+
+// DocumentReader reads documents for vector retrieval (used by Similar).
+type DocumentReader interface {
+	Get(ctx context.Context, collectionName, id string) (domdoc.Document, error)
 }
 
 // Embedder vectorizes text into embeddings.

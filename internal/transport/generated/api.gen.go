@@ -122,8 +122,9 @@ type BatchResultItemStatus string
 
 // BatchUpsertItem defines model for BatchUpsertItem.
 type BatchUpsertItem struct {
-	// Content Document text content
-	Content string `json:"content"`
+	// Content Document text content. Required for text collections.
+	// Optional for geo collections.
+	Content *string `json:"content,omitempty"`
 
 	// Id Document ID
 	Id       string              `json:"id"`
@@ -213,10 +214,10 @@ type CreateCollectionRequest struct {
 	// - **text** (default): embedding-based vector search. Documents have
 	//   `content` that is automatically vectorized. Supports hybrid,
 	//   semantic, and keyword search modes.
-	// - **geo**: geographic proximity search. Documents have `latitude`
-	//   and `longitude` numeric fields. Content is optional. Coordinates
-	//   are converted to ECEF vectors for KNN search. Only `geo` search
-	//   mode is supported.
+	// - **geo**: geographic proximity search. Documents must include
+	//   `latitude` (-90 to 90) and `longitude` (-180 to 180) as numeric
+	//   fields. Content is optional. Coordinates are converted to ECEF
+	//   vectors for KNN search. Only `geo` search mode is supported.
 	Type *CreateCollectionRequestType `json:"type,omitempty"`
 }
 
@@ -224,10 +225,10 @@ type CreateCollectionRequest struct {
 //   - **text** (default): embedding-based vector search. Documents have
 //     `content` that is automatically vectorized. Supports hybrid,
 //     semantic, and keyword search modes.
-//   - **geo**: geographic proximity search. Documents have `latitude`
-//     and `longitude` numeric fields. Content is optional. Coordinates
-//     are converted to ECEF vectors for KNN search. Only `geo` search
-//     mode is supported.
+//   - **geo**: geographic proximity search. Documents must include
+//     `latitude` (-90 to 90) and `longitude` (-180 to 180) as numeric
+//     fields. Content is optional. Coordinates are converted to ECEF
+//     vectors for KNN search. Only `geo` search mode is supported.
 type CreateCollectionRequestType string
 
 // DocumentCursorListResponse defines model for DocumentCursorListResponse.
@@ -442,10 +443,13 @@ type SearchRequest struct {
 
 	// MinScore Minimum relevance score threshold. Results below this score are
 	// excluded from the response. Applied as a post-filter on the server.
-	// - In **semantic** mode: cosine similarity threshold.
-	// - In **hybrid** mode: RRF score threshold (not cosine).
+	// - In **semantic** mode: cosine similarity threshold (0.0–1.0).
+	// - In **hybrid** mode: RRF score threshold (0.0–1.0, not cosine).
 	// - In **keyword** mode: ignored (BM25 scores are not comparable
 	//   across queries, so thresholding is unreliable).
+	// - In **geo** mode: maximum distance in meters. Results farther
+	//   than this distance are excluded. E.g., `min_score: 5000` returns
+	//   only results within 5 km.
 	MinScore *float64 `json:"min_score,omitempty"`
 
 	// Mode Search mode:
@@ -516,12 +520,55 @@ type SearchResultListResponse struct {
 	Total int `json:"total"`
 }
 
+// SimilarRequest defines model for SimilarRequest.
+type SimilarRequest struct {
+	// Filters Flat filter with `must`, `should`, `must_not` semantics.
+	// One level only — no recursive nesting.
+	//
+	// - **must**: all conditions must match (AND).
+	// - **should**: at least one condition must match (OR).
+	// - **must_not**: none of the conditions may match (NOT).
+	//
+	// Each condition targets a field by `key` and uses either `match`
+	// (exact value, for tag fields) or `range` (for numeric fields).
+	//
+	// Equivalent boolean query semantics:
+	// ```
+	// language=python AND NOT archived=true AND (repo=vecdex OR repo=redcat)
+	// ```
+	//
+	// An empty filter (`{}`) or a filter with all empty arrays is a no-op —
+	// no filtering is applied, all candidates are returned.
+	//
+	// **Error handling:** Invalid filter expressions return 400 with
+	// `code: validation_failed`. The `details` array contains per-field
+	// errors, e.g. `{"field": "filters.must[0].key", "message": "unknown field"}`.
+	// Unknown field names (not in collection schema) also return 400.
+	Filters *FilterExpression `json:"filters,omitempty"`
+
+	// IncludeVectors Include embedding vectors in the response.
+	IncludeVectors *bool `json:"include_vectors,omitempty"`
+
+	// Limit Maximum results to return from the top_k window.
+	Limit *int `json:"limit,omitempty"`
+
+	// MinScore Minimum cosine similarity threshold (0.0–1.0). Results below
+	// this score are excluded.
+	MinScore *float64 `json:"min_score,omitempty"`
+
+	// TopK Number of nearest neighbors for KNN (the computation window).
+	// Same semantics as search top_k.
+	TopK *int `json:"top_k,omitempty"`
+}
+
 // UpsertDocumentRequest defines model for UpsertDocumentRequest.
 type UpsertDocumentRequest struct {
 	// Content Document text content (will be auto-vectorized). Maximum size is
 	// 160 KB (~41k tokens for the default embedding model). Requests
 	// exceeding this limit return 400 with code `validation_failed`.
-	Content string `json:"content"`
+	// Required for text collections. Optional for geo collections
+	// (geo vectorization uses latitude/longitude numerics, not content).
+	Content *string `json:"content,omitempty"`
 
 	// Numerics Numeric fields for filtering (must match collection schema)
 	Numerics *map[string]float32 `json:"numerics,omitempty"`
@@ -715,6 +762,12 @@ type UpsertDocumentParams struct {
 	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
 }
 
+// FindSimilarDocumentsParams defines parameters for FindSimilarDocuments.
+type FindSimilarDocumentsParams struct {
+	// XRequestID Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+}
+
 // GetUsageParams defines parameters for GetUsage.
 type GetUsageParams struct {
 	// Collection Filter usage by collection name. If omitted, returns global usage.
@@ -747,6 +800,9 @@ type PatchDocumentJSONRequestBody = PatchDocumentRequest
 
 // UpsertDocumentJSONRequestBody defines body for UpsertDocument for application/json ContentType.
 type UpsertDocumentJSONRequestBody = UpsertDocumentRequest
+
+// FindSimilarDocumentsJSONRequestBody defines body for FindSimilarDocuments for application/json ContentType.
+type FindSimilarDocumentsJSONRequestBody = SimilarRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -786,6 +842,9 @@ type ServerInterface interface {
 	// Upsert document
 	// (PUT /collections/{collection}/documents/{id})
 	UpsertDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params UpsertDocumentParams)
+	// Find similar documents
+	// (POST /collections/{collection}/documents/{id}/similar)
+	FindSimilarDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params FindSimilarDocumentsParams)
 	// Health check
 	// (GET /health)
 	HealthCheck(w http.ResponseWriter, r *http.Request)
@@ -870,6 +929,12 @@ func (_ Unimplemented) PatchDocument(w http.ResponseWriter, r *http.Request, col
 // Upsert document
 // (PUT /collections/{collection}/documents/{id})
 func (_ Unimplemented) UpsertDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params UpsertDocumentParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Find similar documents
+// (POST /collections/{collection}/documents/{id}/similar)
+func (_ Unimplemented) FindSimilarDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params FindSimilarDocumentsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1648,6 +1713,70 @@ func (siw *ServerInterfaceWrapper) UpsertDocument(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// FindSimilarDocuments operation middleware
+func (siw *ServerInterfaceWrapper) FindSimilarDocuments(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "collection" -------------
+	var collection CollectionName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "collection", chi.URLParam(r, "collection"), &collection, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "collection", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "id" -------------
+	var id DocumentId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params FindSimilarDocumentsParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.FindSimilarDocuments(w, r, collection, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // HealthCheck operation middleware
 func (siw *ServerInterfaceWrapper) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
@@ -1886,6 +2015,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/collections/{collection}/documents/{id}", wrapper.UpsertDocument)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/collections/{collection}/documents/{id}/similar", wrapper.FindSimilarDocuments)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/health", wrapper.HealthCheck)

@@ -712,6 +712,66 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
 
+  /collections/{collection}/documents/{id}/similar:
+    post:
+      summary: Find similar documents
+      description: |
+        Finds documents similar to the given document by reusing its stored
+        vector. Zero embedding cost — no embedding API calls.
+
+        Only supported on text collections. Geo collections return 400
+        with `collection_type_mismatch`.
+
+        The source document is always excluded from results.
+
+        Score semantics: cosine similarity (0.0–1.0), same as semantic
+        search mode. Results sorted by score descending.
+      operationId: findSimilarDocuments
+      parameters:
+        - $ref: '#/components/parameters/CollectionName'
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimilarRequest'
+            examples:
+              simple:
+                summary: Find 5 similar documents
+                value:
+                  top_k: 20
+                  limit: 5
+              filtered:
+                summary: Similar with tag filter
+                value:
+                  top_k: 50
+                  limit: 10
+                  filters:
+                    must:
+                      - key: language
+                        match: python
+                  min_score: 0.6
+      responses:
+        '200':
+          description: Similar documents (no embedding headers — zero cost)
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResultListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/DocumentNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /usage:
     get:
       summary: Get embedding usage and budget
@@ -1257,6 +1317,42 @@ components:
             returns only the top 10. If limit > top_k, the server silently
             caps to top_k (no error).
 
+    SimilarRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/FilterExpression'
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 10
+          description: |
+            Number of nearest neighbors for KNN (the computation window).
+            Same semantics as search top_k.
+          example: 20
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: |
+            Maximum results to return from the top_k window.
+          example: 5
+        min_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: |
+            Minimum cosine similarity threshold (0.0–1.0). Results below
+            this score are excluded.
+          example: 0.5
+        include_vectors:
+          type: boolean
+          default: false
+          description: Include embedding vectors in the response.
+
     FilterExpression:
       type: object
       description: |
@@ -1779,18 +1875,10 @@ components:
       content:
         application/json:
           schema:
-            allOf:
-              - $ref: '#/components/schemas/ErrorResponse'
-              - type: object
-                properties:
-                  current_revision:
-                    type: integer
-                    description: Current revision of the resource
-                    example: 5
+            $ref: '#/components/schemas/ErrorResponse'
           example:
             code: revision_conflict
             message: "Resource was modified. Re-read and retry with current revision."
-            current_revision: 5
 
     RateLimited:
       description: Rate limit exceeded (reserved for future use)
