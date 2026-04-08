@@ -7,7 +7,6 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
-	"github.com/kailas-cloud/vecdex/internal/domain/geo"
 )
 
 // Service handles collection CRUD operations.
@@ -25,12 +24,7 @@ func New(repo Repository, vectorDim int) *Service {
 func (s *Service) Create(
 	ctx context.Context, name string, colType domcol.Type, fields []field.Field,
 ) (domcol.Collection, error) {
-	vectorDim := s.vectorDim
-	if colType == domcol.TypeGeo {
-		vectorDim = geo.GeoVectorDim
-	}
-
-	col, err := domcol.New(name, colType, fields, vectorDim)
+	col, err := domcol.New(name, colType, fields, s.vectorDim)
 	if err != nil {
 		return domcol.Collection{}, fmt.Errorf("validate collection: %w: %w", domain.ErrInvalidSchema, err)
 	}

@@ -8,7 +8,6 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
-	"github.com/kailas-cloud/vecdex/internal/domain/geo"
 )
 
 // Service handles document CRUD with automatic vectorization.
@@ -52,16 +51,12 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc
 		return false, fmt.Errorf("get collection: %w", err)
 	}
 
-	if col.IsGeo() {
-		return s.upsertGeo(ctx, collectionName, doc, col)
-	}
-
 	if err := s.validateDocFields(doc, col); err != nil {
 		return false, err
 	}
 
 	if doc.Content() == "" {
-		return false, fmt.Errorf("content is required for text collections: %w", domain.ErrInvalidSchema)
+		return false, fmt.Errorf("content is required: %w", domain.ErrInvalidSchema)
 	}
 
 	result, err := s.docEmbedder.Embed(ctx, doc.Content())
@@ -84,38 +79,6 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc
 		return false, fmt.Errorf("upsert document: %w", err)
 	}
 
-	return created, nil
-}
-
-// upsertGeo vectorizes a geo document from latitude/longitude numerics (no embedding API call).
-// Lat/lon are encoded into ECEF vector and removed from numerics to save storage.
-func (s *Service) upsertGeo(
-	ctx context.Context, collectionName string, doc *domdoc.Document,
-	col interface{ Fields() []field.Field },
-) (bool, error) {
-	lat, hasLat := doc.Numerics()["latitude"]
-	lon, hasLon := doc.Numerics()["longitude"]
-	if !hasLat || !hasLon {
-		return false, fmt.Errorf("geo document requires latitude and longitude numerics: %w", domain.ErrInvalidSchema)
-	}
-	if !geo.ValidateCoordinates(lat, lon) {
-		return false, fmt.Errorf("invalid coordinates: lat=%f lon=%f: %w", lat, lon, domain.ErrGeoQueryInvalid)
-	}
-
-	// Remove geo coords from numerics — they'll be encoded in ECEF vector.
-	delete(doc.Numerics(), "latitude")
-	delete(doc.Numerics(), "longitude")
-
-	// Validate remaining fields against schema.
-	if err := s.validateDocFields(doc, col); err != nil {
-		return false, err
-	}
-
-	doc.SetVector(geo.ToVector(lat, lon))
-	created, err := s.repo.Upsert(ctx, collectionName, doc)
-	if err != nil {
-		return false, fmt.Errorf("upsert geo document: %w", err)
-	}
 	return created, nil
 }
 
@@ -178,11 +141,9 @@ func (s *Service) Patch(ctx context.Context, collectionName, id string, p patch.
 		return domdoc.Document{}, err
 	}
 
-	// Re-vectorize when content changes (text) or coordinates change (geo)
+	// Re-vectorize when content changes.
 	var newVector []float32
-	if col.IsGeo() {
-		newVector = geoVectorFromPatch(p)
-	} else if p.HasContent() {
+	if p.HasContent() {
 		result, embedErr := s.docEmbedder.Embed(ctx, *p.Content())
 		if embedErr != nil {
 			return domdoc.Document{}, fmt.Errorf("vectorize updated content: %w", embedErr)
@@ -303,21 +264,4 @@ func keysPtrFloat(m map[string]*float64) []string {
 		keys = append(keys, k)
 	}
 	return keys
-}
-
-// geoVectorFromPatch computes ECEF vector if latitude or longitude were patched.
-// Returns nil if no coordinate change.
-func geoVectorFromPatch(p patch.Patch) []float32 {
-	nums := p.Numerics()
-	latPtr, hasLat := nums["latitude"]
-	lonPtr, hasLon := nums["longitude"]
-	if !hasLat && !hasLon {
-		return nil
-	}
-	// At least one coordinate changed — need both for re-vectorization.
-	// The caller must ensure both are provided (or handle partial via read-modify-write).
-	if hasLat && latPtr != nil && hasLon && lonPtr != nil {
-		return geo.ToVector(*latPtr, *lonPtr)
-	}
-	return nil
 }

@@ -139,7 +139,7 @@ func wireClient(store db.Store, cfg *clientConfig, obs *observer) (*Client, erro
 	docRepo := documentrepo.New(store)
 	searchRepo := searchrepo.New(store)
 
-	// Embedder: noop если не задан (geo работает, text вернёт ошибку)
+	// Embedder: noop если не задан — embedding-required operations will fail explicitly.
 	var domEmb domain.Embedder = &noopEmbedder{}
 	if cfg.embedder != nil {
 		domEmb = &embedderAdapter{inner: cfg.embedder}

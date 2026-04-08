@@ -10,19 +10,17 @@ import (
 
 var nameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-// Type distinguishes collection kinds (text vs geo).
+// Type distinguishes supported collection kinds.
 type Type string
 
 const (
 	// TypeText is the default collection type with embedding-based vector search.
 	TypeText Type = "text"
-	// TypeGeo is a geo collection using ECEF vectors for spatial search.
-	TypeGeo Type = "geo"
 )
 
 // IsValid checks if the collection type is supported.
 func (t Type) IsValid() bool {
-	return t == TypeText || t == TypeGeo
+	return t == TypeText
 }
 
 // Collection is the document collection aggregate (immutable value object).
@@ -112,11 +110,8 @@ func Reconstruct(
 // Name returns the collection name.
 func (c Collection) Name() string { return c.name }
 
-// Type returns the collection type (text or geo).
+// Type returns the collection type.
 func (c Collection) Type() Type { return c.collectionType }
-
-// IsGeo returns true if this is a geo collection.
-func (c Collection) IsGeo() bool { return c.collectionType == TypeGeo }
 
 // Fields returns the indexed field definitions.
 func (c Collection) Fields() []field.Field { return c.fields }

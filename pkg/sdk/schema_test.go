@@ -1,57 +1,53 @@
 package vecdex
 
-import (
-	"testing"
-)
-
-type geoPlace struct {
-	ID      string  `vecdex:"id,id"`
-	Name    string  `vecdex:"name,content"`
-	Country string  `vecdex:"country,tag"`
-	Lat     float64 `vecdex:"latitude,geo_lat"`
-	Lon     float64 `vecdex:"longitude,geo_lon"`
-	Pop     int     `vecdex:"population,numeric"`
-}
+import "testing"
 
 type textDoc struct {
-	ID      string `vecdex:"id,id"`
-	Content string `vecdex:"body,content"`
-	Author  string `vecdex:"author,tag"`
+	ID       string `vecdex:"id,id"`
+	Content  string `vecdex:"body,content"`
+	Author   string `vecdex:"author,tag"`
+	Priority int    `vecdex:"priority,numeric"`
 }
 
 type minimalDoc struct {
 	ID string `vecdex:"id,id"`
 }
 
-func TestParseSchema_GeoPlace(t *testing.T) {
-	meta, err := parseSchema[geoPlace]()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+type noIDDoc struct {
+	Name string `vecdex:"name,content"`
+}
 
-	if meta.colType != CollectionTypeGeo {
-		t.Errorf("colType = %q, want %q", meta.colType, CollectionTypeGeo)
-	}
-	if meta.idIdx != 0 {
-		t.Errorf("idIdx = %d, want 0", meta.idIdx)
-	}
-	if meta.contentIdx != 1 {
-		t.Errorf("contentIdx = %d, want 1", meta.contentIdx)
-	}
-	if meta.geoLatIdx != 3 {
-		t.Errorf("geoLatIdx = %d, want 3", meta.geoLatIdx)
-	}
-	if meta.geoLonIdx != 4 {
-		t.Errorf("geoLonIdx = %d, want 4", meta.geoLonIdx)
-	}
+type duplicateIDDoc struct {
+	ID1 string `vecdex:"id1,id"`
+	ID2 string `vecdex:"id2,id"`
+}
 
-	// 2 fields: country(tag), population(numeric). geo_lat/geo_lon are NOT indexed.
-	if len(meta.fields) != 2 {
-		t.Fatalf("len(fields) = %d, want 2", len(meta.fields))
-	}
-	if meta.fields[0].Name != "country" || meta.fields[0].Type != FieldTag {
-		t.Errorf("fields[0] = %+v, want country/tag", meta.fields[0])
-	}
+type duplicateContentDoc struct {
+	ID string `vecdex:"id,id"`
+	A  string `vecdex:"a,content"`
+	B  string `vecdex:"b,content"`
+}
+
+type unsupportedModifierDoc struct {
+	ID  string  `vecdex:"id,id"`
+	Lat float64 `vecdex:"lat,unknown"`
+}
+
+type skipFieldDoc struct {
+	ID      string `vecdex:"id,id"`
+	Ignored string `vecdex:"-"`
+	NoTag   string
+}
+
+type storedFieldDoc struct {
+	ID   string `vecdex:"id,id"`
+	Name string `vecdex:"name,stored"`
+	Cat  int    `vecdex:"cat,numeric"`
+}
+
+type uintDoc struct {
+	ID  string `vecdex:"id,id"`
+	Val uint32 `vecdex:"val,numeric"`
 }
 
 func TestParseSchema_TextDoc(t *testing.T) {
@@ -63,11 +59,20 @@ func TestParseSchema_TextDoc(t *testing.T) {
 	if meta.colType != CollectionTypeText {
 		t.Errorf("colType = %q, want %q", meta.colType, CollectionTypeText)
 	}
+	if meta.idIdx != 0 {
+		t.Errorf("idIdx = %d, want 0", meta.idIdx)
+	}
 	if meta.contentIdx != 1 {
 		t.Errorf("contentIdx = %d, want 1", meta.contentIdx)
 	}
-	if meta.geoLatIdx != -1 {
-		t.Errorf("geoLatIdx = %d, want -1", meta.geoLatIdx)
+	if len(meta.fields) != 2 {
+		t.Fatalf("len(fields) = %d, want 2", len(meta.fields))
+	}
+	if meta.fields[0].Name != "author" || meta.fields[0].Type != FieldTag {
+		t.Errorf("fields[0] = %+v, want author/tag", meta.fields[0])
+	}
+	if meta.fields[1].Name != "priority" || meta.fields[1].Type != FieldNumeric {
+		t.Errorf("fields[1] = %+v, want priority/numeric", meta.fields[1])
 	}
 }
 
@@ -84,20 +89,11 @@ func TestParseSchema_MinimalDoc(t *testing.T) {
 	}
 }
 
-type noIDDoc struct {
-	Name string `vecdex:"name,content"`
-}
-
 func TestParseSchema_NoID(t *testing.T) {
 	_, err := parseSchema[noIDDoc]()
 	if err == nil {
 		t.Fatal("expected error for struct without id tag")
 	}
-}
-
-type duplicateIDDoc struct {
-	ID1 string `vecdex:"id1,id"`
-	ID2 string `vecdex:"id2,id"`
 }
 
 func TestParseSchema_DuplicateID(t *testing.T) {
@@ -107,27 +103,17 @@ func TestParseSchema_DuplicateID(t *testing.T) {
 	}
 }
 
-type geoLatOnly struct {
-	ID  string  `vecdex:"id,id"`
-	Lat float64 `vecdex:"lat,geo_lat"`
-}
-
-func TestParseSchema_GeoLatOnly(t *testing.T) {
-	_, err := parseSchema[geoLatOnly]()
+func TestParseSchema_DuplicateContent(t *testing.T) {
+	_, err := parseSchema[duplicateContentDoc]()
 	if err == nil {
-		t.Fatal("expected error when only geo_lat present")
+		t.Fatal("expected error for duplicate content tag")
 	}
 }
 
-type unknownModifier struct {
-	ID   string `vecdex:"id,id"`
-	Name string `vecdex:"name,foobar"`
-}
-
-func TestParseSchema_UnknownModifier(t *testing.T) {
-	_, err := parseSchema[unknownModifier]()
+func TestParseSchema_UnsupportedModifier(t *testing.T) {
+	_, err := parseSchema[unsupportedModifierDoc]()
 	if err == nil {
-		t.Fatal("expected error for unknown modifier")
+		t.Fatal("expected error for unsupported modifier")
 	}
 }
 
@@ -138,139 +124,82 @@ func TestParseSchema_NonStruct(t *testing.T) {
 	}
 }
 
-type skipFieldDoc struct {
-	ID      string `vecdex:"id,id"`
-	Ignored string `vecdex:"-"`
-	NoTag   string
-}
-
 func TestParseSchema_SkipFields(t *testing.T) {
 	meta, err := parseSchema[skipFieldDoc]()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(meta.fields) != 0 {
-		t.Errorf("len(fields) = %d, want 0 (skipped fields should not appear)", len(meta.fields))
+		t.Errorf("len(fields) = %d, want 0", len(meta.fields))
 	}
 }
 
-func TestToDocument_GeoPlace(t *testing.T) {
-	meta, err := parseSchema[geoPlace]()
+func TestToDocument_TextDoc(t *testing.T) {
+	meta, err := parseSchema[textDoc]()
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 
-	place := geoPlace{
-		ID: "test-1", Name: "Test Place", Country: "CY",
-		Lat: 34.77, Lon: 32.42, Pop: 50000,
-	}
+	doc := meta.toDocument(textDoc{
+		ID:       "doc-1",
+		Content:  "hello world",
+		Author:   "alice",
+		Priority: 42,
+	})
 
-	doc := meta.toDocument(place)
-
-	if doc.ID != "test-1" {
-		t.Errorf("ID = %q, want %q", doc.ID, "test-1")
+	if doc.ID != "doc-1" {
+		t.Errorf("ID = %q, want doc-1", doc.ID)
 	}
-	if doc.Content != "Test Place" {
-		t.Errorf("Content = %q, want %q", doc.Content, "Test Place")
+	if doc.Content != "hello world" {
+		t.Errorf("Content = %q, want hello world", doc.Content)
 	}
-	if doc.Tags["country"] != "CY" {
-		t.Errorf("Tags[country] = %q, want %q", doc.Tags["country"], "CY")
+	if doc.Tags["author"] != "alice" {
+		t.Errorf("Tags[author] = %q, want alice", doc.Tags["author"])
 	}
-	if doc.Numerics["latitude"] != 34.77 {
-		t.Errorf("Numerics[latitude] = %f, want 34.77", doc.Numerics["latitude"])
-	}
-	if doc.Numerics["longitude"] != 32.42 {
-		t.Errorf("Numerics[longitude] = %f, want 32.42", doc.Numerics["longitude"])
-	}
-	if doc.Numerics["population"] != 50000 {
-		t.Errorf("Numerics[population] = %f, want 50000", doc.Numerics["population"])
+	if doc.Numerics["priority"] != 42 {
+		t.Errorf("Numerics[priority] = %f, want 42", doc.Numerics["priority"])
 	}
 }
 
-func TestFromDocument_GeoPlace(t *testing.T) {
-	meta, err := parseSchema[geoPlace]()
+func TestFromDocument_TextDoc(t *testing.T) {
+	meta, err := parseSchema[textDoc]()
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 
-	doc := Document{
-		ID:       "test-1",
-		Content:  "Test Place",
-		Tags:     map[string]string{"country": "CY"},
-		Numerics: map[string]float64{"latitude": 34.77, "longitude": 32.42, "population": 50000},
-	}
-
-	result := meta.fromDocument(doc)
-	place, ok := result.(geoPlace)
+	result := meta.fromDocument(Document{
+		ID:       "doc-1",
+		Content:  "hello world",
+		Tags:     map[string]string{"author": "alice"},
+		Numerics: map[string]float64{"priority": 42},
+	})
+	item, ok := result.(textDoc)
 	if !ok {
 		t.Fatalf("type assertion failed: got %T", result)
 	}
-
-	if place.ID != "test-1" {
-		t.Errorf("ID = %q, want %q", place.ID, "test-1")
-	}
-	if place.Name != "Test Place" {
-		t.Errorf("Name = %q, want %q", place.Name, "Test Place")
-	}
-	if place.Country != "CY" {
-		t.Errorf("Country = %q, want %q", place.Country, "CY")
-	}
-	if place.Lat != 34.77 {
-		t.Errorf("Lat = %f, want 34.77", place.Lat)
-	}
-	if place.Lon != 32.42 {
-		t.Errorf("Lon = %f, want 32.42", place.Lon)
-	}
-	if place.Pop != 50000 {
-		t.Errorf("Pop = %d, want 50000", place.Pop)
+	if item != (textDoc{ID: "doc-1", Content: "hello world", Author: "alice", Priority: 42}) {
+		t.Errorf("item = %+v", item)
 	}
 }
 
 func TestToDocument_Roundtrip(t *testing.T) {
-	meta, err := parseSchema[geoPlace]()
+	meta, err := parseSchema[textDoc]()
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 
-	original := geoPlace{
-		ID: "rt-1", Name: "Roundtrip", Country: "GR",
-		Lat: 37.97, Lon: 23.72, Pop: 3000000,
+	original := textDoc{
+		ID:       "rt-1",
+		Content:  "roundtrip",
+		Author:   "bob",
+		Priority: 7,
 	}
-
-	doc := meta.toDocument(original)
-
-	restored, ok := meta.fromDocument(doc).(geoPlace)
+	restored, ok := meta.fromDocument(meta.toDocument(original)).(textDoc)
 	if !ok {
 		t.Fatal("type assertion failed")
 	}
-
 	if original != restored {
 		t.Errorf("roundtrip mismatch:\n  original: %+v\n  restored: %+v", original, restored)
-	}
-}
-
-func TestCollectionOptions_Geo(t *testing.T) {
-	meta, err := parseSchema[geoPlace]()
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	opts := meta.collectionOptions()
-	// 1 type option + 2 field options (geo coords not in schema)
-	if len(opts) != 3 {
-		t.Errorf("len(opts) = %d, want 3", len(opts))
-	}
-
-	// Apply options to verify they work.
-	cfg := &collectionConfig{}
-	for _, o := range opts {
-		o.applyCollection(cfg)
-	}
-	if cfg.colType != CollectionTypeGeo {
-		t.Errorf("colType = %q, want %q", cfg.colType, CollectionTypeGeo)
-	}
-	if len(cfg.fields) != 2 {
-		t.Errorf("len(fields) = %d, want 2", len(cfg.fields))
 	}
 }
 
@@ -287,11 +216,81 @@ func TestCollectionOptions_Text(t *testing.T) {
 	if cfg.colType != CollectionTypeText {
 		t.Errorf("colType = %q, want %q", cfg.colType, CollectionTypeText)
 	}
+	if len(cfg.fields) != 2 {
+		t.Errorf("len(fields) = %d, want 2", len(cfg.fields))
+	}
 }
 
-type uintDoc struct {
-	ID  string `vecdex:"id,id"`
-	Val uint32 `vecdex:"val,numeric"`
+func TestParseSchema_StoredFieldExcluded(t *testing.T) {
+	meta, err := parseSchema[storedFieldDoc]()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(meta.fields) != 1 {
+		t.Fatalf("len(fields) = %d, want 1", len(meta.fields))
+	}
+	if meta.fields[0].Name != "cat" || meta.fields[0].Type != FieldNumeric {
+		t.Errorf("fields[0] = %+v, want cat/numeric", meta.fields[0])
+	}
+	if len(meta.tagFields) != 1 {
+		t.Fatalf("len(tagFields) = %d, want 1", len(meta.tagFields))
+	}
+	if meta.tagFields[0].name != "name" {
+		t.Errorf("tagFields[0].name = %q, want name", meta.tagFields[0].name)
+	}
+}
+
+func TestToDocument_StoredField(t *testing.T) {
+	meta, err := parseSchema[storedFieldDoc]()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	doc := meta.toDocument(storedFieldDoc{ID: "s1", Name: "Starbucks", Cat: 42})
+	if doc.Tags["name"] != "Starbucks" {
+		t.Errorf("Tags[name] = %q, want Starbucks", doc.Tags["name"])
+	}
+	if doc.Numerics["cat"] != 42 {
+		t.Errorf("Numerics[cat] = %f, want 42", doc.Numerics["cat"])
+	}
+}
+
+func TestFromDocument_StoredField(t *testing.T) {
+	meta, err := parseSchema[storedFieldDoc]()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	result := meta.fromDocument(Document{
+		ID:       "s1",
+		Tags:     map[string]string{"name": "Starbucks"},
+		Numerics: map[string]float64{"cat": 42},
+	})
+	item, ok := result.(storedFieldDoc)
+	if !ok {
+		t.Fatalf("type assertion failed: got %T", result)
+	}
+	if item.Name != "Starbucks" {
+		t.Errorf("Name = %q, want Starbucks", item.Name)
+	}
+	if item.Cat != 42 {
+		t.Errorf("Cat = %d, want 42", item.Cat)
+	}
+}
+
+func TestCollectionOptions_StoredFieldExcluded(t *testing.T) {
+	meta, err := parseSchema[storedFieldDoc]()
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	cfg := &collectionConfig{}
+	for _, o := range meta.collectionOptions() {
+		o.applyCollection(cfg)
+	}
+	if len(cfg.fields) != 1 {
+		t.Errorf("len(fields) = %d, want 1", len(cfg.fields))
+	}
 }
 
 func TestToDocument_UintField(t *testing.T) {
@@ -316,138 +315,11 @@ func TestFromDocument_UintField(t *testing.T) {
 		ID:       "u1",
 		Numerics: map[string]float64{"val": 42},
 	})
-
-	u, ok := result.(uintDoc)
+	item, ok := result.(uintDoc)
 	if !ok {
 		t.Fatalf("type assertion failed: got %T", result)
 	}
-	if u.Val != 42 {
-		t.Errorf("Val = %d, want 42", u.Val)
-	}
-}
-
-type storedFieldDoc struct {
-	ID   string `vecdex:"id,id"`
-	Name string `vecdex:"name,stored"`
-	Cat  int    `vecdex:"cat,numeric"`
-}
-
-func TestParseSchema_StoredField(t *testing.T) {
-	meta, err := parseSchema[storedFieldDoc]()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// stored field should NOT appear in schema fields
-	if len(meta.fields) != 1 {
-		t.Fatalf("len(fields) = %d, want 1 (only cat)", len(meta.fields))
-	}
-	if meta.fields[0].Name != "cat" || meta.fields[0].Type != FieldNumeric {
-		t.Errorf("fields[0] = %+v, want cat/numeric", meta.fields[0])
-	}
-
-	// stored field should appear in tagFields (for toDocument)
-	if len(meta.tagFields) != 1 {
-		t.Fatalf("len(tagFields) = %d, want 1", len(meta.tagFields))
-	}
-	if meta.tagFields[0].name != "name" {
-		t.Errorf("tagFields[0].name = %q, want %q", meta.tagFields[0].name, "name")
-	}
-}
-
-func TestToDocument_StoredField(t *testing.T) {
-	meta, err := parseSchema[storedFieldDoc]()
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	doc := meta.toDocument(storedFieldDoc{ID: "s1", Name: "Starbucks", Cat: 42})
-
-	if doc.Tags["name"] != "Starbucks" {
-		t.Errorf("Tags[name] = %q, want %q", doc.Tags["name"], "Starbucks")
-	}
-	if doc.Numerics["cat"] != 42 {
-		t.Errorf("Numerics[cat] = %f, want 42", doc.Numerics["cat"])
-	}
-}
-
-func TestFromDocument_StoredField(t *testing.T) {
-	meta, err := parseSchema[storedFieldDoc]()
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	doc := Document{
-		ID:       "s1",
-		Tags:     map[string]string{"name": "Starbucks"},
-		Numerics: map[string]float64{"cat": 42},
-	}
-	result := meta.fromDocument(doc)
-	item, ok := result.(storedFieldDoc)
-	if !ok {
-		t.Fatalf("type assertion failed: got %T", result)
-	}
-	if item.Name != "Starbucks" {
-		t.Errorf("Name = %q, want %q", item.Name, "Starbucks")
-	}
-	if item.Cat != 42 {
-		t.Errorf("Cat = %d, want 42", item.Cat)
-	}
-}
-
-func TestCollectionOptions_StoredFieldExcluded(t *testing.T) {
-	meta, err := parseSchema[storedFieldDoc]()
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	cfg := &collectionConfig{}
-	for _, o := range meta.collectionOptions() {
-		o.applyCollection(cfg)
-	}
-	// Only cat should be in fields, not name (stored)
-	if len(cfg.fields) != 1 {
-		t.Errorf("len(fields) = %d, want 1", len(cfg.fields))
-	}
-}
-
-type duplicateContent struct {
-	ID string `vecdex:"id,id"`
-	A  string `vecdex:"a,content"`
-	B  string `vecdex:"b,content"`
-}
-
-func TestParseSchema_DuplicateContent(t *testing.T) {
-	_, err := parseSchema[duplicateContent]()
-	if err == nil {
-		t.Fatal("expected error for duplicate content tag")
-	}
-}
-
-type duplicateGeoLat struct {
-	ID   string  `vecdex:"id,id"`
-	Lat1 float64 `vecdex:"lat1,geo_lat"`
-	Lat2 float64 `vecdex:"lat2,geo_lat"`
-	Lon  float64 `vecdex:"lon,geo_lon"`
-}
-
-func TestParseSchema_DuplicateGeoLat(t *testing.T) {
-	_, err := parseSchema[duplicateGeoLat]()
-	if err == nil {
-		t.Fatal("expected error for duplicate geo_lat tag")
-	}
-}
-
-type duplicateGeoLon struct {
-	ID   string  `vecdex:"id,id"`
-	Lat  float64 `vecdex:"lat,geo_lat"`
-	Lon1 float64 `vecdex:"lon1,geo_lon"`
-	Lon2 float64 `vecdex:"lon2,geo_lon"`
-}
-
-func TestParseSchema_DuplicateGeoLon(t *testing.T) {
-	_, err := parseSchema[duplicateGeoLon]()
-	if err == nil {
-		t.Fatal("expected error for duplicate geo_lon tag")
+	if item.Val != 42 {
+		t.Errorf("Val = %d, want 42", item.Val)
 	}
 }

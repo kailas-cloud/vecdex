@@ -25,13 +25,11 @@ const (
 
 // Defines values for CollectionType.
 const (
-	CollectionTypeGeo  CollectionType = "geo"
 	CollectionTypeText CollectionType = "text"
 )
 
 // Defines values for CreateCollectionRequestType.
 const (
-	CreateCollectionRequestTypeGeo  CreateCollectionRequestType = "geo"
 	CreateCollectionRequestTypeText CreateCollectionRequestType = "text"
 )
 
@@ -40,11 +38,9 @@ const (
 	ErrorResponseCodeBadRequest                ErrorResponseCode = "bad_request"
 	ErrorResponseCodeCollectionAlreadyExists   ErrorResponseCode = "collection_already_exists"
 	ErrorResponseCodeCollectionNotFound        ErrorResponseCode = "collection_not_found"
-	ErrorResponseCodeCollectionTypeMismatch    ErrorResponseCode = "collection_type_mismatch"
 	ErrorResponseCodeDocumentNotFound          ErrorResponseCode = "document_not_found"
 	ErrorResponseCodeEmbeddingProviderError    ErrorResponseCode = "embedding_provider_error"
 	ErrorResponseCodeEmbeddingQuotaExceeded    ErrorResponseCode = "embedding_quota_exceeded"
-	ErrorResponseCodeGeoQueryInvalid           ErrorResponseCode = "geo_query_invalid"
 	ErrorResponseCodeInternalError             ErrorResponseCode = "internal_error"
 	ErrorResponseCodeKeywordSearchNotSupported ErrorResponseCode = "keyword_search_not_supported"
 	ErrorResponseCodeNotImplemented            ErrorResponseCode = "not_implemented"
@@ -75,7 +71,6 @@ const (
 
 // Defines values for SearchRequestMode.
 const (
-	Geo      SearchRequestMode = "geo"
 	Hybrid   SearchRequestMode = "hybrid"
 	Keyword  SearchRequestMode = "keyword"
 	Semantic SearchRequestMode = "semantic"
@@ -122,9 +117,8 @@ type BatchResultItemStatus string
 
 // BatchUpsertItem defines model for BatchUpsertItem.
 type BatchUpsertItem struct {
-	// Content Document text content. Required for text collections.
-	// Optional for geo collections.
-	Content *string `json:"content,omitempty"`
+	// Content Document text content.
+	Content string `json:"content"`
 
 	// Id Document ID
 	Id       string              `json:"id"`
@@ -179,14 +173,14 @@ type Collection struct {
 	// mutation (field schema changes, etc). Starts at 1.
 	Revision int `json:"revision"`
 
-	// Type Collection type (text or geo)
+	// Type Collection type
 	Type *CollectionType `json:"type,omitempty"`
 
 	// VectorDimensions Vector dimensions (set automatically by the platform)
 	VectorDimensions *int `json:"vector_dimensions,omitempty"`
 }
 
-// CollectionType Collection type (text or geo)
+// CollectionType Collection type
 type CollectionType string
 
 // CollectionCursorListResponse defines model for CollectionCursorListResponse.
@@ -210,25 +204,11 @@ type CreateCollectionRequest struct {
 	// Name Collection name (alphanumeric, underscores, hyphens)
 	Name string `json:"name"`
 
-	// Type Collection type:
-	// - **text** (default): embedding-based vector search. Documents have
-	//   `content` that is automatically vectorized. Supports hybrid,
-	//   semantic, and keyword search modes.
-	// - **geo**: geographic proximity search. Documents must include
-	//   `latitude` (-90 to 90) and `longitude` (-180 to 180) as numeric
-	//   fields. Content is optional. Coordinates are converted to ECEF
-	//   vectors for KNN search. Only `geo` search mode is supported.
+	// Type Collection type. Only text collections are supported.
 	Type *CreateCollectionRequestType `json:"type,omitempty"`
 }
 
-// CreateCollectionRequestType Collection type:
-//   - **text** (default): embedding-based vector search. Documents have
-//     `content` that is automatically vectorized. Supports hybrid,
-//     semantic, and keyword search modes.
-//   - **geo**: geographic proximity search. Documents must include
-//     `latitude` (-90 to 90) and `longitude` (-180 to 180) as numeric
-//     fields. Content is optional. Coordinates are converted to ECEF
-//     vectors for KNN search. Only `geo` search mode is supported.
+// CreateCollectionRequestType Collection type. Only text collections are supported.
 type CreateCollectionRequestType string
 
 // DocumentCursorListResponse defines model for DocumentCursorListResponse.
@@ -447,9 +427,6 @@ type SearchRequest struct {
 	// - In **hybrid** mode: RRF score threshold (0.0–1.0, not cosine).
 	// - In **keyword** mode: ignored (BM25 scores are not comparable
 	//   across queries, so thresholding is unreliable).
-	// - In **geo** mode: maximum distance in meters. Results farther
-	//   than this distance are excluded. E.g., `min_score: 5000` returns
-	//   only results within 5 km.
 	MinScore *float64 `json:"min_score,omitempty"`
 
 	// Mode Search mode:
@@ -458,9 +435,6 @@ type SearchRequest struct {
 	//   semantic meaning.
 	// - **semantic**: pure vector KNN search.
 	// - **keyword**: pure BM25 full-text search.
-	// - **geo**: geographic proximity search. Query must be `"lat,lon"`
-	//   string (e.g., `"40.7128,-74.0060"`). Only works on geo
-	//   collections. Score is distance in meters.
 	Mode *SearchRequestMode `json:"mode,omitempty"`
 
 	// Query Search query text (auto-vectorized for semantic/hybrid modes).
@@ -480,9 +454,6 @@ type SearchRequest struct {
 //     semantic meaning.
 //   - **semantic**: pure vector KNN search.
 //   - **keyword**: pure BM25 full-text search.
-//   - **geo**: geographic proximity search. Query must be `"lat,lon"`
-//     string (e.g., `"40.7128,-74.0060"`). Only works on geo
-//     collections. Score is distance in meters.
 type SearchRequestMode string
 
 // SearchResultItem defines model for SearchResultItem.
@@ -496,8 +467,6 @@ type SearchResultItem struct {
 	// - In **keyword** mode: normalized BM25 score, 0.0–1.0.
 	// - In **hybrid** mode: fused RRF score, 0.0–1.0. Not directly comparable
 	//   to cosine similarity — represents relative ranking quality.
-	// - In **geo** mode: great-circle distance in meters (Haversine).
-	//   Lower values mean closer. NOT normalized to 0-1.
 	// Note: `min_score` thresholds mean different things in each mode.
 	Score float64            `json:"score"`
 	Tags  *map[string]string `json:"tags,omitempty"`
@@ -566,9 +535,7 @@ type UpsertDocumentRequest struct {
 	// Content Document text content (will be auto-vectorized). Maximum size is
 	// 160 KB (~41k tokens for the default embedding model). Requests
 	// exceeding this limit return 400 with code `validation_failed`.
-	// Required for text collections. Optional for geo collections
-	// (geo vectorization uses latitude/longitude numerics, not content).
-	Content *string `json:"content,omitempty"`
+	Content string `json:"content"`
 
 	// Numerics Numeric fields for filtering (must match collection schema)
 	Numerics *map[string]float32 `json:"numerics,omitempty"`

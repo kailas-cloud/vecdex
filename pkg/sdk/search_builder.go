@@ -7,19 +7,13 @@ import (
 
 // Hit is a typed search result.
 type Hit[T any] struct {
-	Item     T
-	Score    float64
-	Distance float64 // meters (geo only, 0 for text)
+	Item  T
+	Score float64
 }
 
 // SearchBuilder is a fluent builder for typed search queries.
 type SearchBuilder[T any] struct {
 	idx *TypedIndex[T]
-
-	// Geo parameters.
-	lat, lon float64
-	radiusKm float64
-
 	// Text parameters.
 	query string
 	mode  SearchMode
@@ -27,20 +21,6 @@ type SearchBuilder[T any] struct {
 	// Common parameters.
 	filters []FilterCondition
 	limit   int
-}
-
-// Near sets the geographic center point for geo search.
-func (b *SearchBuilder[T]) Near(lat, lon float64) *SearchBuilder[T] {
-	b.lat = lat
-	b.lon = lon
-	return b
-}
-
-// Km sets the search radius in kilometers for geo search.
-// Converted to minScore (meters) internally.
-func (b *SearchBuilder[T]) Km(radius float64) *SearchBuilder[T] {
-	b.radiusKm = radius
-	return b
 }
 
 // Query sets the text query for semantic/keyword/hybrid search.
@@ -69,34 +49,7 @@ func (b *SearchBuilder[T]) Limit(n int) *SearchBuilder[T] {
 
 // Do executes the search and returns typed results.
 func (b *SearchBuilder[T]) Do(ctx context.Context) ([]Hit[T], error) {
-	if b.idx.meta.colType == CollectionTypeGeo {
-		return b.doGeo(ctx)
-	}
 	return b.doText(ctx)
-}
-
-func (b *SearchBuilder[T]) doGeo(ctx context.Context) ([]Hit[T], error) {
-	topK := b.limit
-	if topK == 0 {
-		topK = 10
-	}
-
-	opts := &SearchOptions{}
-	if len(b.filters) > 0 {
-		opts.Filters = FilterExpression{Must: b.filters}
-	}
-	if b.radiusKm > 0 {
-		opts.MinScore = b.radiusKm * 1000 // km → meters
-	}
-	opts.Limit = b.limit
-
-	resp, err := b.idx.client.Search(b.idx.name).Geo(
-		ctx, b.lat, b.lon, topK, opts,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("geo search: %w", err)
-	}
-	return b.toHits(resp.Results, true)
 }
 
 func (b *SearchBuilder[T]) doText(ctx context.Context) ([]Hit[T], error) {
@@ -112,12 +65,10 @@ func (b *SearchBuilder[T]) doText(ctx context.Context) ([]Hit[T], error) {
 	if err != nil {
 		return nil, fmt.Errorf("text search: %w", err)
 	}
-	return b.toHits(resp.Results, false)
+	return b.toHits(resp.Results)
 }
 
-func (b *SearchBuilder[T]) toHits(
-	results []SearchResult, isGeo bool,
-) ([]Hit[T], error) {
+func (b *SearchBuilder[T]) toHits(results []SearchResult) ([]Hit[T], error) {
 	hits := make([]Hit[T], len(results))
 	for i, r := range results {
 		doc := Document{
@@ -135,9 +86,6 @@ func (b *SearchBuilder[T]) toHits(
 		hits[i] = Hit[T]{
 			Item:  item,
 			Score: r.Score,
-		}
-		if isGeo {
-			hits[i].Distance = r.Score
 		}
 	}
 	return hits, nil

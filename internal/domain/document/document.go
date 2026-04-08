@@ -25,7 +25,7 @@ type Document struct {
 
 // New validates and creates a Document.
 // ID: ^[a-zA-Z0-9_-]+$, 1-256 chars, not reserved.
-// Content: max 160KB (may be empty for geo collections).
+// Content: max 160KB.
 // Tags/Numerics schema validation happens in the service layer.
 func New(id, content string, tags map[string]string, numerics map[string]float64) (Document, error) {
 	if id == "" {

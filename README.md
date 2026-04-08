@@ -62,7 +62,7 @@ func main() {
     // Index some code
     _ = idx.UpsertBatch(ctx, []CodeChunk{
         {ID: "1", Content: "CreateCollection validates the name and builds an FT index", Language: "go", Repo: "vecdex"},
-        {ID: "2", Content: "SearchBuilder chains Near, Km, Where, Limit into a query", Language: "go", Repo: "vecdex"},
+        {ID: "2", Content: "SearchBuilder chains Query, Mode, Where, Limit into a query", Language: "go", Repo: "vecdex"},
         {ID: "3", Content: "BudgetTracker enforces daily and monthly token limits", Language: "go", Repo: "vecdex"},
     })
 
@@ -80,39 +80,6 @@ func main() {
 }
 ```
 
-### Find places nearby
-
-Geo collections need no embedder — distance is computed from coordinates:
-
-```go
-type Cafe struct {
-    ID   string  `vecdex:"id"`
-    Name string  `vecdex:"name,content"`
-    City string  `vecdex:"city,tag"`
-    Lat  float64 `vecdex:"lat,geo_lat"`
-    Lon  float64 `vecdex:"lon,geo_lon"`
-}
-
-idx, _ := vecdex.NewIndex[Cafe](client, "cafes")
-_ = idx.Ensure(ctx)
-
-_ = idx.UpsertBatch(ctx, []Cafe{
-    {ID: "1", Name: "Skuratov",  City: "moscow", Lat: 55.7558, Lon: 37.6173},
-    {ID: "2", Name: "Surf Coffee", City: "moscow", Lat: 55.7601, Lon: 37.6186},
-})
-
-// Find cafes within 2 km of Red Square
-hits, _ := idx.Search().
-    Near(55.7539, 37.6208).
-    Km(2).
-    Where("city", "moscow").
-    Limit(10).
-    Do(ctx)
-
-for _, h := range hits {
-    fmt.Printf("%s — %.0f m away\n", h.Item.Name, h.Distance)
-}
-```
 
 ### Low-level API
 
@@ -171,14 +138,13 @@ for _, r := range resp.Results {
 | `hybrid` (default) | Vector KNN + BM25 fused via Reciprocal Rank Fusion | 1 call | Redis 8 |
 | `semantic` | Pure cosine-similarity KNN | 1 call | Redis 8, Valkey 9 |
 | `keyword` | BM25 full-text search | 0 calls | Redis 8 |
-| `geo` | ECEF-based geographic proximity | 0 calls | Redis 8, Valkey 9 |
 
 ## Backend support
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| **Valkey 9+** (valkey-search) | Supported | Semantic + geo search. Keyword/hybrid when valkey-search adds BM25 |
-| **Redis 8+** (Redis Search) | Supported | Full hybrid search (semantic + keyword + RRF + geo) |
+| **Valkey 9+** (valkey-search) | Supported | Semantic search. Keyword/hybrid when valkey-search adds BM25 |
+| **Redis 8+** (Redis Search) | Supported | Full hybrid search (semantic + keyword + RRF) |
 | AWS ElastiCache | Planned | |
 | PostgreSQL + pgvector | Planned | |
 
@@ -189,7 +155,6 @@ for _, r := range resp.Results {
 | **Hybrid search** | Reciprocal Rank Fusion combining vector KNN and BM25 keyword search |
 | **Semantic search** | Pure cosine-similarity KNN over HNSW vectors |
 | **Keyword search** | BM25 full-text search — zero embedding tokens consumed |
-| **Geo search** | ECEF-based geographic proximity with radius filtering |
 | **Structured filters** | `must` / `should` / `must_not` with tag match and numeric range operators |
 | **Auto-embedding** | Send text, get vectors via any OpenAI-compatible provider |
 | **Typed Go SDK** | Schema-first generics with `TypedIndex[T]` and fluent search builder |
@@ -242,12 +207,12 @@ go get github.com/kailas-cloud/vecdex
 |------|-------------|
 | `vecdex.Client` | Connection to Valkey/Redis, entry point for all operations |
 | `vecdex.TypedIndex[T]` | Generic index with schema inferred from struct tags |
-| `vecdex.SearchBuilder[T]` | Fluent search: `.Query()`, `.Near()`, `.Where()`, `.Limit()`, `.Do()` |
-| `vecdex.Hit[T]` | Search result with `.Item`, `.Score`, `.Distance` |
+| `vecdex.SearchBuilder[T]` | Fluent search: `.Query()`, `.Mode()`, `.Where()`, `.Limit()`, `.Do()` |
+| `vecdex.Hit[T]` | Search result with `.Item` and `.Score` |
 | `vecdex.Document` | Untyped document for low-level API |
 | `vecdex.Embedder` | Interface for text-to-vector providers |
 
-Struct tag format: `vecdex:"name,modifier"` — modifiers: `id`, `content`, `tag`, `numeric`, `geo_lat`, `geo_lon`.
+Struct tag format: `vecdex:"name,modifier"` — modifiers: `id`, `content`, `tag`, `numeric`, `stored`.
 
 ### REST API
 

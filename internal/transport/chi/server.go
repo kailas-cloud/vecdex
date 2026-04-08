@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -87,8 +86,6 @@ func NewServer(
 			http.StatusPaymentRequired, gen.ErrorResponseCodeEmbeddingQuotaExceeded),
 		sentinelHandler(domain.ErrEmbeddingProviderError,
 			http.StatusBadGateway, gen.ErrorResponseCodeEmbeddingProviderError),
-		sentinelHandler(domain.ErrGeoQueryInvalid, http.StatusBadRequest, gen.ErrorResponseCodeGeoQueryInvalid),
-		sentinelHandler(domain.ErrCollectionTypeMismatch, http.StatusBadRequest, gen.ErrorResponseCodeCollectionTypeMismatch),
 		sentinelHandler(domain.ErrKeywordSearchNotSupported,
 			http.StatusNotImplemented, gen.ErrorResponseCodeKeywordSearchNotSupported),
 		sentinelHandler(domain.ErrNotImplemented, http.StatusNotImplemented, gen.ErrorResponseCodeNotImplemented),
@@ -660,8 +657,6 @@ func safeDomainMessage(err error) string {
 		domain.ErrEmbeddingQuotaExceeded,
 		domain.ErrEmbeddingProviderError,
 		domain.ErrKeywordSearchNotSupported,
-		domain.ErrGeoQueryInvalid,
-		domain.ErrCollectionTypeMismatch,
 		domain.ErrNotImplemented,
 	}
 	for _, s := range sentinels {
@@ -800,8 +795,7 @@ func documentFromUpsert(
 		}
 	}
 
-	content := derefString(req.Content)
-	doc, err := domdoc.New(id, content, tags, numerics)
+	doc, err := domdoc.New(id, req.Content, tags, numerics)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("build document: %w", err)
 	}
@@ -821,8 +815,7 @@ func batchItemToDoc(item gen.BatchUpsertItem) (domdoc.Document, error) {
 		}
 	}
 
-	content := derefString(item.Content)
-	doc, err := domdoc.New(item.Id, content, tags, numerics)
+	doc, err := domdoc.New(item.Id, item.Content, tags, numerics)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("build batch item: %w", err)
 	}
@@ -877,17 +870,8 @@ func searchRequestFromGen(
 	minScore := derefFloat(req.MinScore)
 	includeVectors := derefBool(req.IncludeVectors)
 
-	var geoQuery *request.GeoQuery
-	if m == mode.Geo {
-		gq, parseErr := parseGeoQuery(req.Query)
-		if parseErr != nil {
-			return request.Request{}, parseErr
-		}
-		geoQuery = gq
-	}
-
 	r, err := request.New(
-		req.Query, m, filters, topK, limit, minScore, includeVectors, geoQuery,
+		req.Query, m, filters, topK, limit, minScore, includeVectors,
 	)
 	if err != nil {
 		return request.Request{}, fmt.Errorf("build search request: %w", err)
@@ -1006,23 +990,6 @@ func f64Ptr(v *float32) *float64 {
 	return &f
 }
 
-// parseGeoQuery parses "lat,lon" string into a GeoQuery.
-func parseGeoQuery(query string) (*request.GeoQuery, error) {
-	parts := strings.SplitN(query, ",", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("geo query must be \"lat,lon\" (e.g. \"40.7128,-74.0060\")")
-	}
-	lat, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid latitude in geo query: %w", err)
-	}
-	lon, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid longitude in geo query: %w", err)
-	}
-	return &request.GeoQuery{Latitude: lat, Longitude: lon}, nil
-}
-
 func validateTopKLimit(topK, limit *int) error {
 	if topK != nil && (*topK <= 0 || *topK > request.MaxTopK) {
 		return fmt.Errorf("top_k must be between 1 and %d", request.MaxTopK)
@@ -1050,13 +1017,6 @@ func derefFloat(p *float64) float64 {
 func derefBool(p *bool) bool {
 	if p == nil {
 		return false
-	}
-	return *p
-}
-
-func derefString(p *string) string {
-	if p == nil {
-		return ""
 	}
 	return *p
 }

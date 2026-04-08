@@ -101,8 +101,8 @@ func TestNew_ReservedIDs(t *testing.T) {
 }
 
 func TestNew_EmptyContent(t *testing.T) {
-	// Empty content is allowed at the domain level (geo collections don't need content).
-	// Content validation for text collections is enforced in the usecase layer.
+	// Empty content is allowed at the domain level.
+	// Upsert validation is enforced in the usecase layer.
 	doc, err := New("doc-1", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

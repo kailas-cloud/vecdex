@@ -52,7 +52,7 @@ func (s *Store) SearchKNN(ctx context.Context, q *db.KNNQuery) (*db.SearchResult
 		return nil, &db.Error{Op: db.OpSearch, Err: err}
 	}
 
-	return parseKNNResult(raw, q.RawScores)
+	return parseKNNResult(raw)
 }
 
 // SearchBM25 runs a BM25 text search via FT.SEARCH.
@@ -207,7 +207,7 @@ func indexToKeyPrefix(index string) string {
 
 // --- Result parsing ---
 
-func parseKNNResult(raw []rueidis.RedisMessage, rawScores bool) (*db.SearchResult, error) {
+func parseKNNResult(raw []rueidis.RedisMessage) (*db.SearchResult, error) {
 	if len(raw) == 0 {
 		return &db.SearchResult{}, nil
 	}
@@ -240,11 +240,7 @@ func parseKNNResult(raw []rueidis.RedisMessage, rawScores bool) (*db.SearchResul
 
 		if scoreStr, ok := entry.Fields["__vector_score"]; ok {
 			if s, err := strconv.ParseFloat(scoreStr, 64); err == nil {
-				if rawScores {
-					entry.Score = s
-				} else {
-					entry.Score = max(0, 1.0-s) // cosine distance → similarity, clamped to [0,1]
-				}
+				entry.Score = max(0, 1.0-s) // cosine distance → similarity, clamped to [0,1]
 			}
 			delete(entry.Fields, "__vector_score")
 		}

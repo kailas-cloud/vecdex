@@ -1,36 +1,37 @@
 // Package vecdex provides a Go client for the vecdex vector index service
 // backed by Valkey or Redis with search modules.
 //
-// Vecdex supports two collection types:
-//   - Text collections with embedding-based semantic search
-//   - Geo collections with ECEF-based geographic proximity search
+// Vecdex manages text collections with automatic embeddings and
+// semantic, keyword, or hybrid search.
 //
 // # Low-level API — explicit control
 //
 //	client, _ := vecdex.New(ctx, vecdex.WithValkey("localhost:6379", ""))
 //	defer client.Close()
 //
-//	client.Collections().Create(ctx, "places", vecdex.Geo(),
-//	    vecdex.WithField("country", vecdex.FieldTag),
+//	client.Collections().Create(ctx, "articles",
+//	    vecdex.WithField("author", vecdex.FieldTag),
 //	)
-//	client.Documents("places").BatchUpsert(ctx, docs)
-//	resp, _ := client.Search("places").Geo(ctx, 55.75, 37.62, 10, nil)
+//	client.Documents("articles").BatchUpsert(ctx, docs)
+//	resp, _ := client.Search("articles").Query(ctx, "redis vector search", &vecdex.SearchOptions{
+//	    Mode:  vecdex.ModeHybrid,
+//	    Limit: 10,
+//	})
 //	for _, r := range resp.Results { ... }
 //
 // # High-level API — schema-first with Go generics
 //
-//	type Place struct {
-//	    ID      string  `vecdex:"id"`
-//	    Name    string  `vecdex:"name,content"`
-//	    Country string  `vecdex:"country,tag"`
-//	    Lat     float64 `vecdex:"lat,geo_lat"`
-//	    Lon     float64 `vecdex:"lon,geo_lon"`
+//	type Article struct {
+//	    ID      string `vecdex:"id,id"`
+//	    Title   string `vecdex:"title,content"`
+//	    Author  string `vecdex:"author,tag"`
+//	    Year    int    `vecdex:"year,numeric"`
 //	}
 //
-//	idx, _ := vecdex.NewIndex[Place](client, "places")
+//	idx, _ := vecdex.NewIndex[Article](client, "articles")
 //	_ = idx.Ensure(ctx)
-//	_ = idx.UpsertBatch(ctx, places)
-//	hits, _ := idx.Search().Near(55.75, 37.62).Km(10).Limit(50).Do(ctx)
+//	_ = idx.UpsertBatch(ctx, articles)
+//	hits, _ := idx.Search().Query("vector search").Mode(vecdex.ModeSemantic).Limit(10).Do(ctx)
 //
 // # Health and Usage
 //

@@ -50,7 +50,7 @@ func (s *SearchService) Query(
 
 	req, err := request.New(
 		query, m, filters,
-		opts.TopK, opts.Limit, opts.MinScore, opts.IncludeVectors, nil,
+		opts.TopK, opts.Limit, opts.MinScore, opts.IncludeVectors,
 	)
 	if err != nil {
 		return SearchResponse{}, fmt.Errorf("query: %w", err)
@@ -59,44 +59,6 @@ func (s *SearchService) Query(
 	results, total, err := s.svc.Search(ctx, s.collection, &req)
 	if err != nil {
 		return SearchResponse{}, fmt.Errorf("query: %w", err)
-	}
-	return SearchResponse{
-		Results: fromSearchResults(results),
-		Total:   total,
-		Limit:   opts.Limit,
-	}, nil
-}
-
-// Geo executes a geographic proximity search.
-// Returns results sorted by distance (meters, ascending).
-func (s *SearchService) Geo(
-	ctx context.Context, lat, lon float64, topK int,
-	opts *SearchOptions,
-) (_ SearchResponse, err error) {
-	start := time.Now()
-	defer func() { s.obs.observe("search.geo", start, err) }()
-
-	if opts == nil {
-		opts = &SearchOptions{}
-	}
-
-	filters, err := toInternalFilters(opts.Filters)
-	if err != nil {
-		return SearchResponse{}, fmt.Errorf("geo search: %w", err)
-	}
-
-	geoQuery := &request.GeoQuery{Latitude: lat, Longitude: lon}
-	req, err := request.New(
-		"geo", mode.Geo, filters,
-		topK, opts.Limit, opts.MinScore, opts.IncludeVectors, geoQuery,
-	)
-	if err != nil {
-		return SearchResponse{}, fmt.Errorf("geo search: %w", err)
-	}
-
-	results, total, err := s.svc.Search(ctx, s.collection, &req)
-	if err != nil {
-		return SearchResponse{}, fmt.Errorf("geo search: %w", err)
 	}
 	return SearchResponse{
 		Results: fromSearchResults(results),

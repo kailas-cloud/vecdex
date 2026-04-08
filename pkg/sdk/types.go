@@ -6,7 +6,6 @@ type CollectionType string
 // Collection type constants.
 const (
 	CollectionTypeText CollectionType = "text"
-	CollectionTypeGeo  CollectionType = "geo"
 )
 
 // FieldType defines the type of a collection field.
@@ -26,7 +25,6 @@ const (
 	ModeHybrid   SearchMode = "hybrid"
 	ModeSemantic SearchMode = "semantic"
 	ModeKeyword  SearchMode = "keyword"
-	ModeGeo      SearchMode = "geo"
 )
 
 // CollectionInfo represents collection metadata.

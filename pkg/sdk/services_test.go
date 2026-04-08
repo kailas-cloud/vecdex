@@ -22,7 +22,7 @@ import (
 
 func TestCollectionService_Create(t *testing.T) {
 	f, _ := field.New("country", field.Tag)
-	col := domcol.Reconstruct("places", domcol.TypeGeo, []field.Field{f}, 3, 1000, 1)
+	col := domcol.Reconstruct("places", domcol.TypeText, []field.Field{f}, 1024, 1000, 1)
 
 	mock := &mockCollectionUC{
 		createFn: func(_ context.Context, name string, _ domcol.Type, _ []field.Field) (domcol.Collection, error) {
@@ -34,7 +34,7 @@ func TestCollectionService_Create(t *testing.T) {
 	}
 
 	svc := &CollectionService{svc: mock}
-	info, err := svc.Create(context.Background(), "places", Geo(), WithField("country", FieldTag))
+	info, err := svc.Create(context.Background(), "places", Text(), WithField("country", FieldTag))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestCollectionService_Delete_Error(t *testing.T) {
 }
 
 func TestCollectionService_Ensure_New(t *testing.T) {
-	col := domcol.Reconstruct("test", domcol.TypeGeo, nil, 3, 1000, 1)
+	col := domcol.Reconstruct("test", domcol.TypeText, nil, 1024, 1000, 1)
 	mock := &mockCollectionUC{
 		createFn: func(_ context.Context, _ string, _ domcol.Type, _ []field.Field) (domcol.Collection, error) {
 			return col, nil
@@ -150,7 +150,8 @@ func TestCollectionService_Ensure_New(t *testing.T) {
 	}
 
 	svc := &CollectionService{svc: mock}
-	info, err := svc.Ensure(context.Background(), "test", Geo())
+	info, err := svc.Ensure(context.Background(), "test", Text())
+
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestCollectionService_Ensure_New(t *testing.T) {
 }
 
 func TestCollectionService_Ensure_Exists(t *testing.T) {
-	col := domcol.Reconstruct("test", domcol.TypeGeo, nil, 3, 1000, 1)
+	col := domcol.Reconstruct("test", domcol.TypeText, nil, 1024, 1000, 1)
 	mock := &mockCollectionUC{
 		createFn: func(_ context.Context, _ string, _ domcol.Type, _ []field.Field) (domcol.Collection, error) {
 			return domcol.Collection{}, ErrAlreadyExists
@@ -171,7 +172,7 @@ func TestCollectionService_Ensure_Exists(t *testing.T) {
 	}
 
 	svc := &CollectionService{svc: mock}
-	info, err := svc.Ensure(context.Background(), "test", Geo())
+	info, err := svc.Ensure(context.Background(), "test", Text())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -466,54 +467,6 @@ func TestSearchService_Query_Error(t *testing.T) {
 
 	svc := &SearchService{collection: "test", svc: mock}
 	_, err := svc.Query(context.Background(), "hello", nil)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestSearchService_Geo(t *testing.T) {
-	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
-			return []result.Result{result.New("place-1", 500, "", nil, nil, nil)}, 1, nil
-		},
-	}
-
-	svc := &SearchService{collection: "test", svc: mock}
-	resp, err := svc.Geo(context.Background(), 34.77, 32.42, 10, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(resp.Results) != 1 {
-		t.Fatalf("len = %d, want 1", len(resp.Results))
-	}
-}
-
-func TestSearchService_Geo_WithOpts(t *testing.T) {
-	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
-			return nil, 0, nil
-		},
-	}
-
-	svc := &SearchService{collection: "test", svc: mock}
-	opts := &SearchOptions{
-		Filters: FilterExpression{Must: []FilterCondition{{Key: "country", Match: "CY"}}},
-	}
-	_, err := svc.Geo(context.Background(), 34.77, 32.42, 10, opts)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestSearchService_Geo_Error(t *testing.T) {
-	mock := &mockSearchUC{
-		searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
-			return nil, 0, errors.New("fail")
-		},
-	}
-
-	svc := &SearchService{collection: "test", svc: mock}
-	_, err := svc.Geo(context.Background(), 34.77, 32.42, 10, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
