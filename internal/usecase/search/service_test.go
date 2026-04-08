@@ -417,7 +417,6 @@ func makeSimilarRequest(t *testing.T) *request.SimilarRequest {
 	return &r
 }
 
-
 // --- Similar tests ---
 
 func TestSimilar_HappyPath(t *testing.T) {
@@ -474,7 +473,6 @@ func TestSimilar_CollectionNotFound(t *testing.T) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
-
 
 func TestSimilar_DocumentNotFound(t *testing.T) {
 	repo := &mockRepo{}

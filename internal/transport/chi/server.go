@@ -990,7 +990,6 @@ func f64Ptr(v *float32) *float64 {
 	return &f
 }
 
-
 func validateTopKLimit(topK, limit *int) error {
 	if topK != nil && (*topK <= 0 || *topK > request.MaxTopK) {
 		return fmt.Errorf("top_k must be between 1 and %d", request.MaxTopK)
@@ -1018,13 +1017,6 @@ func derefFloat(p *float64) float64 {
 func derefBool(p *bool) bool {
 	if p == nil {
 		return false
-	}
-	return *p
-}
-
-func derefString(p *string) string {
-	if p == nil {
-		return ""
 	}
 	return *p
 }

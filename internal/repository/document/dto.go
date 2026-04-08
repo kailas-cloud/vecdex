@@ -54,7 +54,6 @@ func parseHashFields(id string, m map[string]string) domdoc.Document {
 		}
 	}
 
-
 	return domdoc.Reconstruct(id, content, tags, numerics, vector, 0)
 }
 

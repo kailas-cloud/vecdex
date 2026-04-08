@@ -67,7 +67,6 @@ func (s *SearchService) Query(
 	}, nil
 }
 
-
 func toInternalFilters(fe FilterExpression) (filter.Expression, error) {
 	must, err := toConditions(fe.Must)
 	if err != nil {

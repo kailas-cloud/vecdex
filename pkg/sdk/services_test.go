@@ -472,7 +472,6 @@ func TestSearchService_Query_Error(t *testing.T) {
 	}
 }
 
-
 // --- Health ---
 
 func TestClient_Health(t *testing.T) {
