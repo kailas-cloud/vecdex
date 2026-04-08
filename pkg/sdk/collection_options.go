@@ -15,13 +15,6 @@ type collectionConfig struct {
 	fields  []FieldInfo
 }
 
-// Geo sets the collection type to geographic (ECEF-based proximity search).
-func Geo() CollectionOption {
-	return collectionOptionFunc(func(c *collectionConfig) {
-		c.colType = CollectionTypeGeo
-	})
-}
-
 // Text sets the collection type to text (embedding-based semantic search).
 // This is the default if no type option is provided.
 func Text() CollectionOption {

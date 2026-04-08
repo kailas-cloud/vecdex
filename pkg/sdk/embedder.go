@@ -3,7 +3,7 @@ package vecdex
 import "context"
 
 // Embedder converts text to vector embeddings.
-// Required for text collections; geo collections work without it.
+// Required for document upserts and semantic or hybrid search.
 type Embedder interface {
 	Embed(ctx context.Context, text string) (EmbeddingResult, error)
 }

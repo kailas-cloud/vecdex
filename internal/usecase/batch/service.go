@@ -8,7 +8,6 @@ import (
 	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
-	"github.com/kailas-cloud/vecdex/internal/domain/geo"
 )
 
 // MaxBatchSize is the maximum number of items per batch request.
@@ -74,54 +73,7 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 		fieldTypes[f.Name()] = f.FieldType()
 	}
 
-	if col.IsGeo() {
-		return s.upsertGeoBatch(ctx, collectionName, items, fieldTypes)
-	}
 	return s.upsertTextBatch(ctx, collectionName, items, fieldTypes)
-}
-
-// upsertGeoBatch validates, vectorizes, and stores all geo docs in a single pipeline.
-func (s *Service) upsertGeoBatch(
-	ctx context.Context,
-	collectionName string,
-	items []domdoc.Document,
-	fieldTypes map[string]field.Type,
-) []dombatch.Result {
-	results := make([]dombatch.Result, len(items))
-
-	// Validate and vectorize all items; collect valid ones for batch upsert.
-	valid := make([]domdoc.Document, 0, len(items))
-	validIdx := make([]int, 0, len(items))
-
-	for i := range items {
-		// vectorizeGeo removes lat/lon from numerics before validation.
-		if err := vectorizeGeo(&items[i]); err != nil {
-			results[i] = dombatch.NewError(items[i].ID(), err)
-			continue
-		}
-		if err := validateItemFields(&items[i], fieldTypes); err != nil {
-			results[i] = dombatch.NewError(items[i].ID(), err)
-			continue
-		}
-		valid = append(valid, items[i])
-		validIdx = append(validIdx, i)
-	}
-
-	if len(valid) == 0 {
-		return results
-	}
-
-	if err := s.batchDocs.BatchUpsert(ctx, collectionName, valid); err != nil {
-		for _, i := range validIdx {
-			results[i] = dombatch.NewError(items[i].ID(), fmt.Errorf("batch upsert: %w", err))
-		}
-		return results
-	}
-
-	for _, i := range validIdx {
-		results[i] = dombatch.NewOK(items[i].ID())
-	}
-	return results
 }
 
 // upsertTextBatch validates all docs first, then batch-embeds, then bulk upserts.
@@ -138,6 +90,13 @@ func (s *Service) upsertTextBatch(
 	var validIdx []int
 
 	for i := range items {
+		if items[i].Content() == "" {
+			results[i] = dombatch.NewError(
+				items[i].ID(),
+				fmt.Errorf("content is required: %w", domain.ErrInvalidSchema),
+			)
+			continue
+		}
 		if err := validateItemFields(&items[i], fieldTypes); err != nil {
 			results[i] = dombatch.NewError(items[i].ID(), err)
 			continue
@@ -203,30 +162,6 @@ func (s *Service) doBatchEmbed(ctx context.Context, texts []string) (domain.Batc
 		return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed fallback: %w", err)
 	}
 	return res, nil
-}
-
-// vectorizeGeo sets ECEF vector from latitude/longitude numerics.
-// Removes lat/lon from numerics — they are encoded in the ECEF vector.
-func vectorizeGeo(item *domdoc.Document) error {
-	lat, hasLat := item.Numerics()["latitude"]
-	lon, hasLon := item.Numerics()["longitude"]
-	if !hasLat || !hasLon {
-		return fmt.Errorf(
-			"geo document requires latitude and longitude numerics: %w",
-			domain.ErrInvalidSchema,
-		)
-	}
-	if !geo.ValidateCoordinates(lat, lon) {
-		return fmt.Errorf(
-			"invalid coordinates: lat=%f lon=%f: %w",
-			lat, lon, domain.ErrGeoQueryInvalid,
-		)
-	}
-	// Remove geo coords — they'll be stored in the ECEF vector only.
-	delete(item.Numerics(), "latitude")
-	delete(item.Numerics(), "longitude")
-	item.SetVector(geo.ToVector(lat, lon))
-	return nil
 }
 
 // Delete removes documents by ID in batch.

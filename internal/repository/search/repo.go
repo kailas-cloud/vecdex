@@ -40,7 +40,7 @@ func (r *Repo) SupportsTextSearch(ctx context.Context) bool {
 func (r *Repo) SearchKNN(
 	ctx context.Context, collectionName string,
 	vector []float32, filters filter.Expression, topK int,
-	includeVectors bool, rawScores bool,
+	includeVectors bool,
 ) ([]result.Result, error) {
 	indexName := fmt.Sprintf("%s%s:idx", domain.KeyPrefix, collectionName)
 
@@ -50,7 +50,6 @@ func (r *Repo) SearchKNN(
 		Vector:        vector,
 		K:             topK,
 		IncludeVector: includeVectors,
-		RawScores:     rawScores,
 	}
 
 	sr, err := r.store.SearchKNN(ctx, q)

@@ -37,7 +37,7 @@ clean:
 
 # Generate API code from OpenAPI spec
 generate:
-    cd api && go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen --config=oapi-codegen.yaml openapi.yaml
+    cd api && go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.5.1 --config=oapi-codegen.yaml openapi.yaml
     @echo "✓ Generated internal/transport/generated/api.gen.go"
 
 # Build vecdex binary into build/

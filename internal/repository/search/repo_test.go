@@ -48,7 +48,7 @@ func TestSearchKNN_HappyPath(t *testing.T) {
 		}, nil
 	}
 
-	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false, false)
+	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestSearchKNN_IncludeVectors(t *testing.T) {
 		}, nil
 	}
 
-	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, true, false)
+	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestSearchKNN_EmptyResults(t *testing.T) {
 		return &db.SearchResult{Total: 0}, nil
 	}
 
-	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false, false)
+	results, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestSearchKNN_Error(t *testing.T) {
 		return nil, errors.New("index not found")
 	}
 
-	_, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false, false)
+	_, err := repo.SearchKNN(ctx, "notes", testVector(), filter.Expression{}, 10, false)
 	if err == nil {
 		t.Fatal("expected error on SearchKNN failure")
 	}
@@ -165,7 +165,7 @@ func TestSearchKNN_WithFilter(t *testing.T) {
 		}, nil
 	}
 
-	results, err := repo.SearchKNN(ctx, "notes", testVector(), expr, 10, false, false)
+	results, err := repo.SearchKNN(ctx, "notes", testVector(), expr, 10, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

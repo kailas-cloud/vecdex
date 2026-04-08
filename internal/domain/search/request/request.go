@@ -17,12 +17,6 @@ const (
 	MaxLimit       = 100
 )
 
-// GeoQuery holds parsed latitude/longitude for geo search.
-type GeoQuery struct {
-	Latitude  float64
-	Longitude float64
-}
-
 // Request is a validated search query.
 type Request struct {
 	query          string
@@ -32,7 +26,6 @@ type Request struct {
 	limit          int
 	minScore       float64
 	includeVectors bool
-	geoQuery       *GeoQuery
 }
 
 // New validates and normalizes search parameters.
@@ -44,7 +37,6 @@ func New(
 	topK, limit int,
 	minScore float64,
 	includeVectors bool,
-	geoQuery *GeoQuery,
 ) (Request, error) {
 	if query == "" {
 		return Request{}, fmt.Errorf("query is required")
@@ -73,8 +65,7 @@ func New(
 	if limit > topK {
 		limit = topK
 	}
-	// min_score 0-1 validation only for non-geo modes (geo scores are meters)
-	if m != mode.Geo && (minScore < 0 || minScore > 1) {
+	if minScore < 0 || minScore > 1 {
 		return Request{}, fmt.Errorf("min_score must be between 0 and 1")
 	}
 
@@ -86,7 +77,6 @@ func New(
 		limit:          limit,
 		minScore:       minScore,
 		includeVectors: includeVectors,
-		geoQuery:       geoQuery,
 	}, nil
 }
 
@@ -110,6 +100,3 @@ func (r *Request) MinScore() float64 { return r.minScore }
 
 // IncludeVectors reports whether vectors should be included in results.
 func (r *Request) IncludeVectors() bool { return r.includeVectors }
-
-// GeoQuery returns the parsed geo coordinates (nil for non-geo modes).
-func (r *Request) GeoQuery() *GeoQuery { return r.geoQuery }

@@ -60,7 +60,7 @@ func WithStandalone() Option {
 }
 
 // WithEmbedder sets the text embedding provider.
-// Required for text collections; geo collections work without it.
+// Required for document upserts and semantic or hybrid search.
 func WithEmbedder(e Embedder) Option {
 	return optionFunc(func(c *clientConfig) {
 		c.embedder = e

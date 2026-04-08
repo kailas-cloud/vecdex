@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
-	"github.com/kailas-cloud/vecdex/internal/domain/geo"
 )
 
 // numericPrefix disambiguates numeric fields from tags in HASH storage.
@@ -55,12 +54,6 @@ func parseHashFields(id string, m map[string]string) domdoc.Document {
 		}
 	}
 
-	// Geo documents: reconstruct lat/lon from ECEF vector (dim=3).
-	if len(vector) == geo.GeoVectorDim {
-		lat, lon := geo.FromECEF([3]float32{vector[0], vector[1], vector[2]})
-		numerics["latitude"] = lat
-		numerics["longitude"] = lon
-	}
 
 	return domdoc.Reconstruct(id, content, tags, numerics, vector, 0)
 }

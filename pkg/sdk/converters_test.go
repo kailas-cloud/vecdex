@@ -43,17 +43,17 @@ func TestToInternalFields_InvalidName(t *testing.T) {
 func TestFromInternalCollection(t *testing.T) {
 	f1, _ := field.New("country", field.Tag)
 	f2, _ := field.New("pop", field.Numeric)
-	col := domcol.Reconstruct("places", domcol.TypeGeo, []field.Field{f1, f2}, 3, 1000, 1)
+	col := domcol.Reconstruct("places", domcol.TypeText, []field.Field{f1, f2}, 1024, 1000, 1)
 
 	info := fromInternalCollection(col)
 	if info.Name != "places" {
 		t.Errorf("Name = %q, want places", info.Name)
 	}
-	if info.Type != CollectionTypeGeo {
-		t.Errorf("Type = %q, want geo", info.Type)
+	if info.Type != CollectionTypeText {
+		t.Errorf("Type = %q, want text", info.Type)
 	}
-	if info.VectorDim != 3 {
-		t.Errorf("VectorDim = %d, want 3", info.VectorDim)
+	if info.VectorDim != 1024 {
+		t.Errorf("VectorDim = %d, want 1024", info.VectorDim)
 	}
 	if info.CreatedAt != 1000 {
 		t.Errorf("CreatedAt = %d, want 1000", info.CreatedAt)
@@ -151,25 +151,19 @@ func TestToBatchResponse_Nil(t *testing.T) {
 
 func TestCollectionOptionFunctions(t *testing.T) {
 	cfg := &collectionConfig{}
-	Geo().applyCollection(cfg)
-	if cfg.colType != CollectionTypeGeo {
-		t.Errorf("Geo() → colType = %q, want geo", cfg.colType)
+	Text().applyCollection(cfg)
+	if cfg.colType != CollectionTypeText {
+		t.Errorf("Text() → colType = %q, want text", cfg.colType)
 	}
 
 	cfg2 := &collectionConfig{}
-	Text().applyCollection(cfg2)
-	if cfg2.colType != CollectionTypeText {
-		t.Errorf("Text() → colType = %q, want text", cfg2.colType)
+	WithField("country", FieldTag).applyCollection(cfg2)
+	WithField("pop", FieldNumeric).applyCollection(cfg2)
+	if len(cfg2.fields) != 2 {
+		t.Fatalf("len(fields) = %d, want 2", len(cfg2.fields))
 	}
-
-	cfg3 := &collectionConfig{}
-	WithField("country", FieldTag).applyCollection(cfg3)
-	WithField("pop", FieldNumeric).applyCollection(cfg3)
-	if len(cfg3.fields) != 2 {
-		t.Fatalf("len(fields) = %d, want 2", len(cfg3.fields))
-	}
-	if cfg3.fields[0].Name != "country" || cfg3.fields[0].Type != FieldTag {
-		t.Errorf("fields[0] = %+v", cfg3.fields[0])
+	if cfg2.fields[0].Name != "country" || cfg2.fields[0].Type != FieldTag {
+		t.Errorf("fields[0] = %+v", cfg2.fields[0])
 	}
 }
 

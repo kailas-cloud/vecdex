@@ -114,13 +114,6 @@ class TestSimilarErrors:
         assert "code" in data
         assert "message" in data
 
-    def test_geo_collection_returns_400(self, client, populated_geo_collection):
-        """Similar is not supported on geo collections."""
-        coll = populated_geo_collection["name"]
-        resp = similar(client, coll, "times-square")
-        assert resp.status_code == 400
-        assert resp.json()["code"] == "collection_type_mismatch"
-
 
 # ============================================================
 # P1 — Parameters

@@ -16,8 +16,6 @@ type schemaMeta struct {
 	// Field index in the struct for each role.
 	idIdx      int
 	contentIdx int // -1 if not present
-	geoLatIdx  int // -1 if not geo
-	geoLonIdx  int // -1 if not geo
 
 	// Schema fields for collection creation.
 	fields []FieldInfo
@@ -44,8 +42,8 @@ func parseSchema[T any]() (*schemaMeta, error) {
 	}
 
 	meta := &schemaMeta{
-		typ: t, idIdx: -1, contentIdx: -1,
-		geoLatIdx: -1, geoLonIdx: -1,
+		typ: t, colType: CollectionTypeText,
+		idIdx: -1, contentIdx: -1,
 	}
 
 	for i := range t.NumField() {
@@ -87,20 +85,6 @@ func applyTag(meta *schemaMeta, idx int, fieldName, tag string) error {
 		meta.tagFields = append(meta.tagFields, fieldMapping{structIdx: idx, name: name})
 	case "numeric":
 		addNumeric(meta, idx, name)
-	case "geo_lat":
-		if meta.geoLatIdx != -1 {
-			return fmt.Errorf("vecdex: duplicate geo_lat tag on field %s", fieldName)
-		}
-		meta.geoLatIdx = idx
-		// Only add to numericFields for toDocument — NOT to schema fields.
-		// Geo coords are encoded in the ECEF vector, not indexed separately.
-		meta.numericFields = append(meta.numericFields, fieldMapping{structIdx: idx, name: name})
-	case "geo_lon":
-		if meta.geoLonIdx != -1 {
-			return fmt.Errorf("vecdex: duplicate geo_lon tag on field %s", fieldName)
-		}
-		meta.geoLonIdx = idx
-		meta.numericFields = append(meta.numericFields, fieldMapping{structIdx: idx, name: name})
 	case "stored":
 		// Stored field: goes into hash as a tag (bare key) but NOT indexed.
 		meta.tagFields = append(meta.tagFields, fieldMapping{structIdx: idx, name: name})
@@ -121,27 +105,13 @@ func validateSchema(meta *schemaMeta, t reflect.Type) (*schemaMeta, error) {
 	if meta.idIdx == -1 {
 		return nil, fmt.Errorf("vecdex: no field with `vecdex:\"...,id\"` tag in %s", t)
 	}
-	hasGeoLat := meta.geoLatIdx != -1
-	hasGeoLon := meta.geoLonIdx != -1
-	if hasGeoLat != hasGeoLon {
-		return nil, fmt.Errorf("vecdex: geo_lat and geo_lon must both be present in %s", t)
-	}
-	if hasGeoLat {
-		meta.colType = CollectionTypeGeo
-	} else {
-		meta.colType = CollectionTypeText
-	}
 	return meta, nil
 }
 
 // collectionOptions builds CollectionOption slice from parsed schema.
 func (m *schemaMeta) collectionOptions() []CollectionOption {
 	opts := make([]CollectionOption, 0, len(m.fields)+1)
-	if m.colType == CollectionTypeGeo {
-		opts = append(opts, Geo())
-	} else {
-		opts = append(opts, Text())
-	}
+	opts = append(opts, Text())
 	for _, f := range m.fields {
 		opts = append(opts, WithField(f.Name, f.Type))
 	}

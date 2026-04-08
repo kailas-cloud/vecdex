@@ -14,6 +14,4 @@ var (
 	ErrRateLimited            = domain.ErrRateLimited
 	ErrEmbeddingQuotaExceeded = domain.ErrEmbeddingQuotaExceeded
 	ErrEmbeddingProviderError = domain.ErrEmbeddingProviderError
-	ErrGeoQueryInvalid        = domain.ErrGeoQueryInvalid
-	ErrCollectionTypeMismatch = domain.ErrCollectionTypeMismatch
 )
