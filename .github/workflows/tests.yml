@@ -41,6 +41,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    env:
+      CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -59,8 +61,7 @@ jobs:
           gocover-cobertura < coverage.out > coverage.xml
 
       - name: Upload coverage to Codacy
-        env:
-          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
+        if: ${{ env.CODACY_PROJECT_TOKEN != '' }}
         run: bash <(curl -Ls https://coverage.codacy.com/get.sh) report -r coverage.xml
 
       - name: Check coverage thresholds
