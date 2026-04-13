@@ -6,8 +6,8 @@ require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/oapi-codegen/runtime v1.4.0
 	github.com/prometheus/client_golang v1.23.2
-	github.com/redis/rueidis v1.0.73
-	github.com/redis/rueidis/mock v1.0.71
+	github.com/redis/rueidis v1.0.74
+	github.com/redis/rueidis/mock v1.0.74
 	github.com/sashabaranov/go-openai v1.41.2
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.1
