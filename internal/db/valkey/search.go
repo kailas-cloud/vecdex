@@ -70,7 +70,7 @@ func (s *Store) SearchBM25(ctx context.Context, q *db.TextQuery) (*db.SearchResu
 	filterStr := buildFilter(q.Filters)
 
 	escaped := escapeQuery(q.Query)
-	textPart := fmt.Sprintf("@__content:(%s)", escaped)
+	textPart := escaped
 
 	var queryStr string
 	if filterStr != "" {
@@ -87,7 +87,6 @@ func (s *Store) SearchBM25(ctx context.Context, q *db.TextQuery) (*db.SearchResu
 	}
 
 	args = append(args,
-		"WITHSCORES",
 		"LIMIT", "0", strconv.Itoa(q.TopK),
 		"DIALECT", "2",
 	)
@@ -264,36 +263,39 @@ func parseBM25Result(raw []rueidis.RedisMessage) (*db.SearchResult, error) {
 		return &db.SearchResult{}, nil
 	}
 
-	entries := make([]db.SearchEntry, 0, total)
-	// 3-stride: [total, key1, score1, fields1, key2, score2, fields2, ...]
-	for i := 1; i+2 < len(raw); i += 3 {
+	entries := make([]db.SearchEntry, 0, max(0, (len(raw)-1)/2))
+	// Valkey Search 1.2 returns non-vector FT.SEARCH results without WITHSCORES:
+	// [total, key1, fields1, key2, fields2, ...]
+	for i, rank := 1, 0; i+1 < len(raw); i, rank = i+2, rank+1 {
 		key, err := raw[i].ToString()
 		if err != nil {
 			continue
 		}
 
-		scoreStr, err := raw[i+1].ToString()
-		if err != nil {
-			continue
-		}
-		score, err := strconv.ParseFloat(scoreStr, 64)
-		if err != nil {
-			continue
-		}
-
-		fields, err := raw[i+2].ToArray()
+		fields, err := raw[i+1].ToArray()
 		if err != nil {
 			continue
 		}
 
 		entries = append(entries, db.SearchEntry{
 			Key:    key,
-			Score:  score,
+			Score:  rankScore(rank, int(total)),
 			Fields: parseFieldPairs(fields),
 		})
 	}
 
 	return &db.SearchResult{Total: int(total), Entries: entries}, nil
+}
+
+func rankScore(rank, total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	score := float64(total-rank) / float64(total)
+	if score <= 0 {
+		return 1.0 / float64(rank+1)
+	}
+	return score
 }
 
 func parseListResult(raw []rueidis.RedisMessage) (*db.SearchResult, error) {

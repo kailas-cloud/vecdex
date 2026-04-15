@@ -36,6 +36,27 @@ func TestCreate_HappyPath(t *testing.T) {
 	}
 }
 
+func TestCreate_HappyPath_WithTextSearch(t *testing.T) {
+	repo, ms := newTestRepo(t)
+	ctx := context.Background()
+	col := testCollection(t)
+
+	ms.supportsTextSearch = true
+	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
+	ms.hsetFn = func(_ context.Context, _ string, _ map[string]string) error { return nil }
+	ms.createIndexFn = func(_ context.Context, def *db.IndexDefinition) error {
+		if !hasIndexField(def.Fields, "__content", db.IndexFieldText) {
+			t.Fatalf("expected __content TEXT field in index definition: %+v", def.Fields)
+		}
+		return nil
+	}
+
+	err := repo.Create(ctx, col)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCreate_AlreadyExists(t *testing.T) {
 	repo, ms := newTestRepo(t)
 	ctx := context.Background()
@@ -229,4 +250,13 @@ func TestDelete_NotFound(t *testing.T) {
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
+}
+
+func hasIndexField(fields []db.IndexField, name string, typ db.IndexFieldType) bool {
+	for _, f := range fields {
+		if f.Name == name && f.Type == typ {
+			return true
+		}
+	}
+	return false
 }

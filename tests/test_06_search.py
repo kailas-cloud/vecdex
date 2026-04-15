@@ -8,7 +8,7 @@ from conftest import (
     search_with_retry,
     assert_embedding_headers,
     assert_no_embedding_headers,
-    xfail_on_valkey,
+    xfail_on_valkey_text_search,
 )
 
 
@@ -43,7 +43,7 @@ class TestSearchSemantic:
 
 
 @pytest.mark.p0
-@xfail_on_valkey
+@xfail_on_valkey_text_search
 class TestSearchKeyword:
     """BM25 keyword search mode."""
 
@@ -66,7 +66,7 @@ class TestSearchKeyword:
 
 
 @pytest.mark.p0
-@xfail_on_valkey
+@xfail_on_valkey_text_search
 class TestSearchHybrid:
     """Hybrid (default) search mode."""
 
@@ -192,7 +192,7 @@ class TestSearchSemanticP1:
 
 
 @pytest.mark.p1
-@xfail_on_valkey
+@xfail_on_valkey_text_search
 class TestSearchKeywordP1:
     """P1 keyword search edge cases."""
 
@@ -216,7 +216,7 @@ class TestSearchKeywordP1:
 
 
 @pytest.mark.p0
-@xfail_on_valkey
+@xfail_on_valkey_text_search
 class TestSearchHybridScoresAndHeaders:
     """P0 hybrid search: scores and embedding headers."""
 
@@ -249,7 +249,7 @@ class TestSearchHybridScoresAndHeaders:
 
 
 @pytest.mark.p0
-@xfail_on_valkey
+@xfail_on_valkey_text_search
 class TestSearchKeywordHeaders:
     """P0 keyword search: embedding headers absent."""
 
@@ -343,7 +343,7 @@ class TestSearchMinScore:
 
 
 @pytest.mark.p1
-@xfail_on_valkey
+@xfail_on_valkey_text_search
 class TestSearchHybridP1:
     """P1 hybrid search edge cases."""
 

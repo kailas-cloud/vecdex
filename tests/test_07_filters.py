@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from conftest import search_with_retry, xfail_on_valkey
+from conftest import search_with_retry, xfail_on_valkey_text_search
 
 
 @pytest.mark.p0
@@ -166,7 +166,7 @@ class TestFilterP1:
             assert item.get("tags", {}).get("category") == "programming"
             assert item.get("numerics", {}).get("priority", 0) >= 9
 
-    @xfail_on_valkey
+    @xfail_on_valkey_text_search
     def test_filter_with_keyword_mode(self, client, populated_collection):
         """Filters should work with keyword search too."""
         coll = populated_collection["name"]
@@ -409,7 +409,7 @@ class TestFilterValidation:
 class TestFilterWithModes:
     """P0 filters with different search modes."""
 
-    @xfail_on_valkey
+    @xfail_on_valkey_text_search
     def test_filters_with_hybrid_mode(self, client, populated_collection):
         """6.7.1: Filters + hybrid mode."""
         coll = populated_collection["name"]
@@ -443,7 +443,6 @@ class TestFilterWithModes:
 class TestFilterSpecialTags:
     """P0/P1 tag values with special characters."""
 
-    @xfail_on_valkey
     def test_tag_with_spaces(self, client, collection_factory):
         """6.9.1: Tag with spaces — stored and filterable."""
         coll = collection_factory(fields=[{"name": "label", "type": "tag"}])
