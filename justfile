@@ -24,11 +24,11 @@ valkey-down:
 
 # Check Valkey connection
 valkey-ping:
-    redis-cli -h localhost -p 6379 ping
+    valkey-cli -h localhost -p 6379 ping
 
 # List loaded Valkey modules
 valkey-modules:
-    redis-cli -h localhost -p 6379 MODULE LIST
+    valkey-cli -h localhost -p 6379 MODULE LIST
 
 # Clean test cache and containers
 clean:

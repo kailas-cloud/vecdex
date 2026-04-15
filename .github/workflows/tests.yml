@@ -83,26 +83,23 @@ jobs:
 
   e2e-pytest:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        backend: [valkey, redis]
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Run pytest E2E (${{ matrix.backend }})
+      - name: Run pytest E2E (valkey)
         working-directory: ./tests
         run: |
-          docker compose --profile ${{ matrix.backend }} up \
+          docker compose --profile valkey up \
             --build --abort-on-container-exit \
-            --exit-code-from pytest-${{ matrix.backend }}
+            --exit-code-from pytest-valkey
 
       - name: Show logs on failure
         if: failure()
         working-directory: ./tests
-        run: docker compose --profile ${{ matrix.backend }} logs
+        run: docker compose --profile valkey logs
 
       - name: Cleanup
         if: always()
         working-directory: ./tests
-        run: docker compose --profile ${{ matrix.backend }} down -v
+        run: docker compose --profile valkey down -v
