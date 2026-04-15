@@ -480,7 +480,7 @@ func TestClient_Health(t *testing.T) {
 			return healthuc.Report{
 				Status: healthuc.Healthy,
 				Checks: map[string]healthuc.CheckResult{
-					"database": healthuc.CheckOK,
+					"valkey": healthuc.CheckOK,
 				},
 			}
 		},
@@ -492,8 +492,8 @@ func TestClient_Health(t *testing.T) {
 	if status.Status != "ok" {
 		t.Errorf("Status = %q, want ok", status.Status)
 	}
-	if status.Checks["database"] != "ok" {
-		t.Errorf("Checks[database] = %q, want ok", status.Checks["database"])
+	if status.Checks["valkey"] != "ok" {
+		t.Errorf("Checks[valkey] = %q, want ok", status.Checks["valkey"])
 	}
 }
 
@@ -503,7 +503,7 @@ func TestClient_Health_Degraded(t *testing.T) {
 			return healthuc.Report{
 				Status: healthuc.Degraded,
 				Checks: map[string]healthuc.CheckResult{
-					"database":  healthuc.CheckOK,
+					"valkey":    healthuc.CheckOK,
 					"embedding": healthuc.CheckError,
 				},
 			}

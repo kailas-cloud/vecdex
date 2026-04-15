@@ -5,7 +5,7 @@ import "testing"
 func TestValidate_InvalidBudgetAction(t *testing.T) {
 	cfg := Config{
 		HTTP: HTTPConfig{Port: 8080},
-		Database: DatabaseConfig{
+		Valkey: ValkeyConfig{
 			Addrs: []string{"localhost:6379"},
 		},
 		Embedding: EmbeddingConfig{
@@ -40,7 +40,7 @@ func TestValidate_ValidBudgetActions(t *testing.T) {
 		t.Run("action="+action, func(t *testing.T) {
 			cfg := Config{
 				HTTP: HTTPConfig{Port: 8080},
-				Database: DatabaseConfig{
+				Valkey: ValkeyConfig{
 					Addrs: []string{"localhost:6379"},
 				},
 				Embedding: EmbeddingConfig{
@@ -66,7 +66,7 @@ func TestValidate_ValidBudgetActions(t *testing.T) {
 func TestValidate_InvalidPort(t *testing.T) {
 	cfg := Config{
 		HTTP: HTTPConfig{Port: 0},
-		Database: DatabaseConfig{
+		Valkey: ValkeyConfig{
 			Addrs: []string{"localhost:6379"},
 		},
 	}
@@ -80,7 +80,7 @@ func TestValidate_InvalidPort(t *testing.T) {
 func TestValidate_MissingValkeyAddrs(t *testing.T) {
 	cfg := Config{
 		HTTP: HTTPConfig{Port: 8080},
-		Database: DatabaseConfig{
+		Valkey: ValkeyConfig{
 			Addrs: []string{},
 		},
 	}
@@ -104,8 +104,8 @@ func TestApplyDefaults(t *testing.T) {
 	if cfg.HTTP.ShutdownSec != 10 {
 		t.Errorf("expected ShutdownSec=10, got %d", cfg.HTTP.ShutdownSec)
 	}
-	if cfg.Database.ReadinessTimeout != 10 {
-		t.Errorf("expected ReadinessTimeout=10, got %d", cfg.Database.ReadinessTimeout)
+	if cfg.Valkey.ReadinessTimeout != 10 {
+		t.Errorf("expected ReadinessTimeout=10, got %d", cfg.Valkey.ReadinessTimeout)
 	}
 	if cfg.Index.HNSWM != 32 {
 		t.Errorf("expected HNSWM=32, got %d", cfg.Index.HNSWM)
@@ -129,10 +129,10 @@ func TestApplyDefaults(t *testing.T) {
 
 func TestApplyDefaults_NoOverride(t *testing.T) {
 	cfg := Config{
-		HTTP:     HTTPConfig{ReadTimeoutSec: 30, WriteTimeoutSec: 60, ShutdownSec: 5},
-		Database: DatabaseConfig{ReadinessTimeout: 15},
-		Index:    IndexConfig{HNSWM: 16, HNSWEFConstruct: 200, DefaultPageSize: 50, MaxPageSize: 500, MaxBatchSize: 50},
-		Storage:  StorageConfig{KeyPrefix: "custom:"},
+		HTTP:    HTTPConfig{ReadTimeoutSec: 30, WriteTimeoutSec: 60, ShutdownSec: 5},
+		Valkey:  ValkeyConfig{ReadinessTimeout: 15},
+		Index:   IndexConfig{HNSWM: 16, HNSWEFConstruct: 200, DefaultPageSize: 50, MaxPageSize: 500, MaxBatchSize: 50},
+		Storage: StorageConfig{KeyPrefix: "custom:"},
 	}
 	cfg.ApplyDefaults()
 

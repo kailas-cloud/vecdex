@@ -2,8 +2,8 @@ package health
 
 import "context"
 
-// DBPinger checks database availability.
-type DBPinger interface {
+// ValkeyPinger checks Valkey availability.
+type ValkeyPinger interface {
 	Ping(ctx context.Context) error
 }
 

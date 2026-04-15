@@ -17,14 +17,6 @@ func TestNew_NoAddress(t *testing.T) {
 	}
 }
 
-func TestNew_UnknownDriver(t *testing.T) {
-	cfg := &clientConfig{driver: "unknown", addrs: []string{"localhost:1234"}}
-	_, err := createStore(cfg)
-	if err == nil {
-		t.Fatal("expected error for unknown driver")
-	}
-}
-
 func TestNoopEmbedder(t *testing.T) {
 	noop := &noopEmbedder{}
 	_, err := noop.Embed(context.Background(), "test")
@@ -80,9 +72,6 @@ func TestClientOptions(t *testing.T) {
 	cfg := &clientConfig{}
 
 	WithValkey("localhost:6379", "secret").apply(cfg)
-	if cfg.driver != "valkey" {
-		t.Errorf("driver = %q, want valkey", cfg.driver)
-	}
 	if cfg.addrs[0] != "localhost:6379" {
 		t.Errorf("addr = %q, want localhost:6379", cfg.addrs[0])
 	}
@@ -91,38 +80,32 @@ func TestClientOptions(t *testing.T) {
 	}
 
 	cfg2 := &clientConfig{}
-	WithRedis("localhost:6380", "pass").apply(cfg2)
-	if cfg2.driver != "redis" {
-		t.Errorf("driver = %q, want redis", cfg2.driver)
+	WithVectorDimensions(768).apply(cfg2)
+	if cfg2.vectorDimensions != 768 {
+		t.Errorf("vectorDimensions = %d, want 768", cfg2.vectorDimensions)
+	}
+
+	WithHNSW(16, 200).apply(cfg2)
+	if cfg2.hnswM != 16 || cfg2.hnswEFConstruct != 200 {
+		t.Errorf("hnsw = (%d, %d), want (16, 200)", cfg2.hnswM, cfg2.hnswEFConstruct)
+	}
+
+	WithMaxBatchSize(5000).apply(cfg2)
+	if cfg2.maxBatchSize != 5000 {
+		t.Errorf("maxBatchSize = %d, want 5000", cfg2.maxBatchSize)
 	}
 
 	cfg3 := &clientConfig{}
-	WithVectorDimensions(768).apply(cfg3)
-	if cfg3.vectorDimensions != 768 {
-		t.Errorf("vectorDimensions = %d, want 768", cfg3.vectorDimensions)
-	}
-
-	WithHNSW(16, 200).apply(cfg3)
-	if cfg3.hnswM != 16 || cfg3.hnswEFConstruct != 200 {
-		t.Errorf("hnsw = (%d, %d), want (16, 200)", cfg3.hnswM, cfg3.hnswEFConstruct)
-	}
-
-	WithMaxBatchSize(5000).apply(cfg3)
-	if cfg3.maxBatchSize != 5000 {
-		t.Errorf("maxBatchSize = %d, want 5000", cfg3.maxBatchSize)
-	}
-
-	cfg4 := &clientConfig{}
 	logger := slog.Default()
-	WithLogger(logger).apply(cfg4)
-	if cfg4.logger != logger {
+	WithLogger(logger).apply(cfg3)
+	if cfg3.logger != logger {
 		t.Error("expected logger to be set")
 	}
 
-	cfg5 := &clientConfig{}
+	cfg4 := &clientConfig{}
 	reg := prometheus.NewRegistry()
-	WithPrometheus(reg).apply(cfg5)
-	if cfg5.metricsReg != reg {
+	WithPrometheus(reg).apply(cfg4)
+	if cfg4.metricsReg != reg {
 		t.Error("expected metricsReg to be set")
 	}
 }

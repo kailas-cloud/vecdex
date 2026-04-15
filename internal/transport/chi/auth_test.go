@@ -1,6 +1,7 @@
 package chi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ func TestAuthMiddleware_EmptyKeys_PassThrough(t *testing.T) {
 	mw := BearerAuthMiddleware(nil)
 	handler := mw(okHandler())
 
-	req := httptest.NewRequest("GET", "/collections", http.NoBody)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/collections", http.NoBody)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -32,7 +33,7 @@ func TestAuthMiddleware_EmptyStringKeys_PassThrough(t *testing.T) {
 	mw := BearerAuthMiddleware([]string{"", ""})
 	handler := mw(okHandler())
 
-	req := httptest.NewRequest("GET", "/collections", http.NoBody)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/collections", http.NoBody)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -45,7 +46,7 @@ func TestAuthMiddleware_MissingHeader_401(t *testing.T) {
 	mw := BearerAuthMiddleware([]string{"secret"})
 	handler := mw(okHandler())
 
-	req := httptest.NewRequest("GET", "/collections", http.NoBody)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/collections", http.NoBody)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -66,7 +67,7 @@ func TestAuthMiddleware_BasicScheme_401(t *testing.T) {
 	mw := BearerAuthMiddleware([]string{"secret"})
 	handler := mw(okHandler())
 
-	req := httptest.NewRequest("GET", "/collections", http.NoBody)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/collections", http.NoBody)
 	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -80,7 +81,7 @@ func TestAuthMiddleware_InvalidToken_401(t *testing.T) {
 	mw := BearerAuthMiddleware([]string{"secret"})
 	handler := mw(okHandler())
 
-	req := httptest.NewRequest("GET", "/collections", http.NoBody)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/collections", http.NoBody)
 	req.Header.Set("Authorization", "Bearer wrong-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -94,7 +95,7 @@ func TestAuthMiddleware_ValidToken_200(t *testing.T) {
 	mw := BearerAuthMiddleware([]string{"secret"})
 	handler := mw(okHandler())
 
-	req := httptest.NewRequest("GET", "/collections", http.NoBody)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/collections", http.NoBody)
 	req.Header.Set("Authorization", "Bearer secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -109,7 +110,7 @@ func TestAuthMiddleware_MultipleKeys(t *testing.T) {
 	handler := mw(okHandler())
 
 	for _, key := range []string{"key1", "key2"} {
-		req := httptest.NewRequest("GET", "/collections", http.NoBody)
+		req := httptest.NewRequestWithContext(context.Background(), "GET", "/collections", http.NoBody)
 		req.Header.Set("Authorization", "Bearer "+key)
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
@@ -125,7 +126,7 @@ func TestAuthMiddleware_ExemptPaths(t *testing.T) {
 	handler := mw(okHandler())
 
 	for _, path := range []string{"/health", "/metrics"} {
-		req := httptest.NewRequest("GET", path, http.NoBody)
+		req := httptest.NewRequestWithContext(context.Background(), "GET", path, http.NoBody)
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
 

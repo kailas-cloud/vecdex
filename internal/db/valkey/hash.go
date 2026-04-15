@@ -72,7 +72,11 @@ func (s *Store) HGetAllMulti(ctx context.Context, keys []string) ([]map[string]s
 	for i, res := range results {
 		m, err := res.AsStrMap()
 		if err != nil {
-			return nil, fmt.Errorf("HGetAllMulti key %s: %w", keys[i], err)
+			key := "<unknown>"
+			if i < len(keys) {
+				key = keys[i]
+			}
+			return nil, fmt.Errorf("HGetAllMulti key %s: %w", key, err)
 		}
 		out[i] = m
 	}

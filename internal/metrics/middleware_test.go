@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ func TestMetricsMiddleware_RecordsDurationAndCount(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	req := httptest.NewRequest("GET", "/api/test", http.NoBody)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/test", http.NoBody)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
@@ -63,7 +64,7 @@ func TestMetricsMiddleware_DifferentStatusCodes(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {
-			req := httptest.NewRequest("GET", tc.path, http.NoBody)
+			req := httptest.NewRequestWithContext(context.Background(), "GET", tc.path, http.NoBody)
 			rr := httptest.NewRecorder()
 			r.ServeHTTP(rr, req)
 
@@ -93,7 +94,7 @@ func TestMetricsMiddleware_DifferentMethods(t *testing.T) {
 
 	for _, method := range methods {
 		t.Run(method, func(t *testing.T) {
-			req := httptest.NewRequest(method, "/resource", http.NoBody)
+			req := httptest.NewRequestWithContext(context.Background(), method, "/resource", http.NoBody)
 			rr := httptest.NewRecorder()
 			r.ServeHTTP(rr, req)
 
@@ -131,7 +132,7 @@ func TestMetricsHandler_ViaPromhttp(t *testing.T) {
 		_, _ = w.Write([]byte("# metrics placeholder"))
 	})
 
-	req := httptest.NewRequest("GET", "/metrics", http.NoBody)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/metrics", http.NoBody)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 

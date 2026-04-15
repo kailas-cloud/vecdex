@@ -14,7 +14,7 @@ import (
 // Config holds the vecdex API configuration.
 type Config struct {
 	HTTP      HTTPConfig      `yaml:"http"`
-	Database  DatabaseConfig  `yaml:"database"`
+	Valkey    ValkeyConfig    `yaml:"valkey"`
 	Embedding EmbeddingConfig `yaml:"embedding"`
 	Auth      AuthConfig      `yaml:"auth"`
 	Index     IndexConfig     `yaml:"index"`
@@ -40,9 +40,8 @@ type HTTPConfig struct {
 	ShutdownSec     int `yaml:"shutdown_timeout_sec"`
 }
 
-// DatabaseConfig holds database connection settings.
-type DatabaseConfig struct {
-	Driver           string   `yaml:"driver"` // valkey, redis (default: valkey)
+// ValkeyConfig holds Valkey connection settings.
+type ValkeyConfig struct {
 	Addrs            []string `yaml:"addrs"`
 	Password         string   `yaml:"password"`
 	ReadinessTimeout int      `yaml:"readiness_timeout_sec"`
@@ -146,11 +145,8 @@ func (c *Config) ApplyDefaults() {
 	if c.HTTP.ShutdownSec <= 0 {
 		c.HTTP.ShutdownSec = 10
 	}
-	if c.Database.Driver == "" {
-		c.Database.Driver = "valkey"
-	}
-	if c.Database.ReadinessTimeout <= 0 {
-		c.Database.ReadinessTimeout = 10
+	if c.Valkey.ReadinessTimeout <= 0 {
+		c.Valkey.ReadinessTimeout = 10
 	}
 	if c.Index.HNSWM <= 0 {
 		c.Index.HNSWM = 32
@@ -177,8 +173,8 @@ func (c *Config) Validate() error {
 	if c.HTTP.Port <= 0 || c.HTTP.Port > 65535 {
 		return fmt.Errorf("http.port must be between 1 and 65535, got %d", c.HTTP.Port)
 	}
-	if len(c.Database.Addrs) == 0 {
-		return fmt.Errorf("database.addrs is required")
+	if len(c.Valkey.Addrs) == 0 {
+		return fmt.Errorf("valkey.addrs is required")
 	}
 	for name, p := range c.Embedding.Providers {
 		switch p.Budget.Action {

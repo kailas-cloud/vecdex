@@ -9,7 +9,7 @@ import (
 type StorageType string
 
 const (
-	// StorageHash stores documents as Redis hashes.
+	// StorageHash stores documents as hashes.
 	StorageHash StorageType = "HASH"
 	// StorageJSON stores documents as JSON.
 	StorageJSON StorageType = "JSON"

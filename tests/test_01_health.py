@@ -21,10 +21,10 @@ class TestHealth:
         assert "checks" in data
         assert isinstance(data["checks"], dict)
 
-    def test_health_database_check_present(self, health_client):
+    def test_health_valkey_check_present(self, health_client):
         data = health_client.get("/health").json()
-        assert "database" in data["checks"]
-        assert data["checks"]["database"] in ("ok", "error")
+        assert "valkey" in data["checks"]
+        assert data["checks"]["valkey"] in ("ok", "error")
 
     def test_health_embedding_check_present(self, health_client):
         data = health_client.get("/health").json()

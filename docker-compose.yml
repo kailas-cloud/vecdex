@@ -11,18 +11,6 @@ services:
       timeout: 3s
       retries: 5
 
-  redis:
-    image: redis:8.4.1-alpine3.22
-    profiles: [redis]
-    ports:
-      - "6379:6379"
-    command: ["--protected-mode", "no"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   mock-embedder:
     build:
       context: tests/mock_embedder
@@ -46,20 +34,20 @@ services:
     environment:
       - ENV=local
 
-  # Test runner для CI-like окружения (default: redis for full feature testing)
+  # Test runner для CI-like окружения (Valkey-only stack)
   test:
     image: golang:1.25-alpine
     working_dir: /workspace
     volumes:
       - .:/workspace
     depends_on:
-      redis:
+      valkey:
         condition: service_healthy
       mock-embedder:
         condition: service_healthy
     environment:
       - ENV=docker
-      - CACHE_ADDR=redis:6379
+      - VALKEY_ADDR=valkey:6379
       - CGO_ENABLED=0
     command: >
       sh -c "

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Removed Redis backend support from runtime configuration, SDK options, Docker Compose, and E2E helpers.
+- vecdex now targets only Valkey 9 with Valkey Search 1.2+.
+
 ## [1.0.0] - 2025-02-16
 
 ### Added
