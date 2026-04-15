@@ -253,8 +253,9 @@ func TestDelete_NotFound(t *testing.T) {
 }
 
 func hasIndexField(fields []db.IndexField, name string, typ db.IndexFieldType) bool {
-	for _, f := range fields {
-		if f.Name == name && f.Type == typ {
+	for index := range fields {
+		field := &fields[index]
+		if field.Name == name && field.Type == typ {
 			return true
 		}
 	}
