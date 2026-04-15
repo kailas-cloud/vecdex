@@ -2,7 +2,7 @@
 
 import pytest
 
-from conftest import unique_name, xfail_on_valkey
+from conftest import unique_name
 
 
 @pytest.mark.p0
@@ -269,8 +269,6 @@ class TestCreateCollectionP2:
 @pytest.mark.p1
 class TestCreateCollectionFieldsP1:
     """P1 collection field validation edge cases."""
-
-    @xfail_on_valkey
     def test_max_64_fields_accepted(self, client):
         """3.1.18: 64 fields (max) → 201."""
         name = unique_name()

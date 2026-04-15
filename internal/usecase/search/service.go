@@ -183,7 +183,7 @@ func (s *Service) searchSemantic(
 	return results, nil
 }
 
-// searchKeyword runs BM25 search (requires TEXT field, Redis 8.4+ only).
+// searchKeyword runs BM25 search when the backend exposes a TEXT field.
 func (s *Service) searchKeyword(
 	ctx context.Context, collectionName string, req *request.Request,
 ) ([]result.Result, error) {
@@ -200,7 +200,7 @@ func (s *Service) searchKeyword(
 	return results, nil
 }
 
-// searchHybrid runs KNN + BM25 in parallel, then fuses via RRF (requires TEXT field).
+// searchHybrid runs KNN + BM25 in parallel, then fuses via RRF.
 func (s *Service) searchHybrid(
 	ctx context.Context, collectionName string, req *request.Request,
 ) ([]result.Result, error) {

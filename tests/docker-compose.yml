@@ -1,6 +1,6 @@
 services:
   valkey:
-    image: valkey/valkey-bundle:9
+    image: valkey/valkey-bundle:unstable
     profiles: [valkey]
     command: ["--protected-mode", "no"]
     healthcheck:

@@ -4,8 +4,7 @@ import pytest
 
 from conftest import (
     assert_embedding_headers,
-    assert_no_embedding_headers,
-    xfail_on_valkey,
+    assert_no_embedding_headers
 )
 
 
@@ -181,8 +180,6 @@ class TestEmbeddingHeadersOnOperations:
         )
         assert resp.status_code == 200
         assert_embedding_headers(resp)
-
-    @xfail_on_valkey
     def test_search_keyword_no_embedding_headers(self, client, populated_collection):
         """8.2.5: Search keyword → no embedding headers."""
         coll = populated_collection["name"]

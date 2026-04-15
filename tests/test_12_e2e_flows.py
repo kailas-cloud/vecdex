@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from conftest import unique_name, search_with_retry, xfail_on_valkey
+from conftest import unique_name, search_with_retry
 
 
 @pytest.mark.p0
@@ -483,7 +483,6 @@ class TestPatchSearchFlow:
 class TestBatchPaginationFlow:
     """P0: Batch + pagination combined flow."""
 
-    @pytest.mark.xfail(reason="Needs write locking for large batches — partial failures under load")
     def test_batch_50_paginate_all_delete_all(self, client, collection_factory):
         """12.4.1: Batch 50 docs → cursor paginate all → batch delete all → list → 0."""
         coll = collection_factory()
@@ -543,7 +542,6 @@ class TestDocumentCountFlow:
 
 
 @pytest.mark.p1
-@xfail_on_valkey
 class TestSearchModeComparisonP1:
     """P1: Same query in all three modes."""
 
@@ -681,7 +679,6 @@ class TestPreKNNFilterFlow:
 class TestTagWithSpacesSearchFlow:
     """P0: Tag with spaces stored and searchable."""
 
-    @xfail_on_valkey
     def test_tag_with_spaces_search_filter_finds_it(self, client, collection_factory):
         """12.12.1: Tag with spaces → search filter finds it."""
         coll = collection_factory(

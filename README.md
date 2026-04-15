@@ -135,15 +135,15 @@ for _, r := range resp.Results {
 
 | Mode | How it works | Embedding cost | Backend support |
 |------|-------------|----------------|-----------------|
-| `hybrid` (default) | Vector KNN + BM25 fused via Reciprocal Rank Fusion | 1 call | Redis 8 |
+| `hybrid` (default) | Vector KNN + BM25 fused via Reciprocal Rank Fusion | 1 call | Redis 8, Valkey Search 1.2+ |
 | `semantic` | Pure cosine-similarity KNN | 1 call | Redis 8, Valkey 9 |
-| `keyword` | BM25 full-text search | 0 calls | Redis 8 |
+| `keyword` | BM25 full-text search | 0 calls | Redis 8, Valkey Search 1.2+ |
 
 ## Backend support
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| **Valkey 9+** (valkey-search) | Supported | Semantic search. Keyword/hybrid when valkey-search adds BM25 |
+| **Valkey 9+** (valkey-search) | Supported | Semantic, keyword, and hybrid search with Valkey Search 1.2+ |
 | **Redis 8+** (Redis Search) | Supported | Full hybrid search (semantic + keyword + RRF) |
 | AWS ElastiCache | Planned | |
 | PostgreSQL + pgvector | Planned | |
@@ -295,10 +295,9 @@ The pytest E2E suite runs in Docker Compose with a mock embedding server — no 
 ## Roadmap
 
 - [ ] `vecdex-cli` — command-line client
-- [ ] Claude Code agent skills integration
 - [ ] Performance & latency benchmarks
 - [ ] Demo use cases (RAG, code search, etc.)
-- [ ] Valkey full-text search (when valkey-search adds BM25)
+- [x] Valkey full-text search (Valkey Search 1.2+)
 - [ ] AWS ElastiCache backend
 - [ ] PostgreSQL + pgvector backend
 - [ ] Multi-tenancy / namespaces

@@ -9,7 +9,6 @@ import (
 
 // buildIndex creates an IndexDefinition from domain collection fields.
 // textSearchEnabled adds a TEXT field for $.__content (BM25 keyword search).
-// Requires Redis 8.4+ — valkey-search 1.0.x does not support TEXT.
 func buildIndex(
 	name string, fields []field.Field, vectorDim int,
 	textSearchEnabled bool, hnsw HNSWConfig,

@@ -432,12 +432,12 @@ func TestIndexExists_False(t *testing.T) {
 	}
 }
 
-// --- Valkey-specific: SupportsTextSearch returns false ---
+// --- Valkey-specific: SupportsTextSearch returns true ---
 
-func TestSupportsTextSearch_False(t *testing.T) {
+func TestSupportsTextSearch_True(t *testing.T) {
 	s := &Store{}
-	if s.SupportsTextSearch(context.Background()) {
-		t.Error("Valkey store should NOT support text search")
+	if !s.SupportsTextSearch(context.Background()) {
+		t.Error("Valkey store should support text search")
 	}
 }
 
@@ -511,7 +511,6 @@ func TestSearchBM25_Success(t *testing.T) {
 		Return(mock.Result(mock.RedisArray(
 			mock.RedisInt64(1),
 			mock.RedisString("doc:1"),
-			mock.RedisString("0.7"),
 			mock.RedisArray(
 				mock.RedisString("__content"),
 				mock.RedisString("text"),
@@ -529,6 +528,12 @@ func TestSearchBM25_Success(t *testing.T) {
 	}
 	if result.Total != 1 {
 		t.Fatalf("expected total 1, got %d", result.Total)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result.Entries))
+	}
+	if result.Entries[0].Score != 1 {
+		t.Fatalf("expected normalized rank score 1, got %f", result.Entries[0].Score)
 	}
 }
 

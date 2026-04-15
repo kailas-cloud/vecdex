@@ -49,9 +49,9 @@ func (s *Store) IndexExists(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-// SupportsTextSearch returns false: valkey-search 1.0.x lacks TEXT field and BM25 support.
+// SupportsTextSearch returns true: Valkey Search 1.2 adds TEXT fields and BM25 queries.
 func (s *Store) SupportsTextSearch(_ context.Context) bool {
-	return false
+	return true
 }
 
 func buildCreateArgs(idx *db.IndexDefinition) ([]string, error) {
