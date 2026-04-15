@@ -83,7 +83,11 @@ jobs:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
+<<<<<<< HEAD
           version: v0.69.3
+=======
+          version: v0.69.2
+>>>>>>> 8d889f1 (agents md)
           image-ref: ghcr.io/kailas-cloud/vecdex:${{ steps.tag.outputs.version }}
           format: sarif
           output: trivy-results.sarif
