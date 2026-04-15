@@ -295,7 +295,6 @@ The pytest E2E suite runs in Docker Compose with a mock embedding server — no 
 ## Roadmap
 
 - [ ] `vecdex-cli` — command-line client
-- [ ] Claude Code agent skills integration
 - [ ] Performance & latency benchmarks
 - [ ] Demo use cases (RAG, code search, etc.)
 - [x] Valkey full-text search (Valkey Search 1.2+)

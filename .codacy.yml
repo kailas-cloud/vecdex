@@ -7,5 +7,4 @@ exclude_paths:
   - "internal/transport/generated/**"
   - "**/mock_*"
   - "**/*_test.go"
-  - "CLAUDE.md"
   - "*.md"
