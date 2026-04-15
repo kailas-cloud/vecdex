@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from conftest import search_with_retry, xfail_on_valkey_text_search
+from conftest import search_with_retry
 
 
 @pytest.mark.p0
@@ -165,8 +165,6 @@ class TestFilterP1:
         for item in data["items"]:
             assert item.get("tags", {}).get("category") == "programming"
             assert item.get("numerics", {}).get("priority", 0) >= 9
-
-    @xfail_on_valkey_text_search
     def test_filter_with_keyword_mode(self, client, populated_collection):
         """Filters should work with keyword search too."""
         coll = populated_collection["name"]
@@ -408,8 +406,6 @@ class TestFilterValidation:
 @pytest.mark.p0
 class TestFilterWithModes:
     """P0 filters with different search modes."""
-
-    @xfail_on_valkey_text_search
     def test_filters_with_hybrid_mode(self, client, populated_collection):
         """6.7.1: Filters + hybrid mode."""
         coll = populated_collection["name"]

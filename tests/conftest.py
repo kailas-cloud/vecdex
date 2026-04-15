@@ -12,12 +12,6 @@ VECDEX_BASE_URL = os.environ.get("VECDEX_BASE_URL", "http://localhost:8080")
 VECDEX_API_KEY = os.environ.get("VECDEX_API_KEY", "test-api-key")
 DB_DRIVER = os.environ.get("DB_DRIVER", "redis")
 
-xfail_on_valkey_text_search = pytest.mark.xfail(
-    False,
-    reason="Valkey TEXT search support is expected; marker kept only for temporary compatibility.",
-    strict=True,
-)
-
 
 def unique_name() -> str:
     """Generate a unique collection name for test isolation."""

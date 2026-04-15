@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from conftest import unique_name, search_with_retry, xfail_on_valkey_text_search
+from conftest import unique_name, search_with_retry
 
 
 @pytest.mark.p0
@@ -542,7 +542,6 @@ class TestDocumentCountFlow:
 
 
 @pytest.mark.p1
-@xfail_on_valkey_text_search
 class TestSearchModeComparisonP1:
     """P1: Same query in all three modes."""
 
