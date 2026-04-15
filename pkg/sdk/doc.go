@@ -1,5 +1,5 @@
 // Package vecdex provides a Go client for the vecdex vector index service
-// backed by Valkey or Redis with search modules.
+// backed by Valkey with valkey-search.
 //
 // Vecdex manages text collections with automatic embeddings and
 // semantic, keyword, or hybrid search.
@@ -13,7 +13,7 @@
 //	    vecdex.WithField("author", vecdex.FieldTag),
 //	)
 //	client.Documents("articles").BatchUpsert(ctx, docs)
-//	resp, _ := client.Search("articles").Query(ctx, "redis vector search", &vecdex.SearchOptions{
+//	resp, _ := client.Search("articles").Query(ctx, "valkey vector search", &vecdex.SearchOptions{
 //	    Mode:  vecdex.ModeHybrid,
 //	    Limit: 10,
 //	})

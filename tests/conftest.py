@@ -10,7 +10,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 
 VECDEX_BASE_URL = os.environ.get("VECDEX_BASE_URL", "http://localhost:8080")
 VECDEX_API_KEY = os.environ.get("VECDEX_API_KEY", "test-api-key")
-DB_DRIVER = os.environ.get("DB_DRIVER", "redis")
+DB_DRIVER = os.environ.get("DB_DRIVER", "valkey")
 
 
 def unique_name() -> str:
@@ -113,7 +113,7 @@ def populated_collection(client: httpx.Client, collection_factory):
         },
         {
             "id": "doc-4",
-            "content": "Redis is an in-memory data store for caching",
+            "content": "Valkey is an in-memory data store for caching",
             "tags": {"category": "database"},
             "numerics": {"priority": 7},
         },

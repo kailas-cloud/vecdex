@@ -17,7 +17,6 @@ type optionFunc func(*clientConfig)
 func (f optionFunc) apply(c *clientConfig) { f(c) }
 
 type clientConfig struct {
-	driver     string // "valkey" or "redis"
 	addrs      []string
 	password   string
 	standalone bool
@@ -36,23 +35,13 @@ type clientConfig struct {
 // WithValkey configures the client to connect to a Valkey instance.
 func WithValkey(addr, password string) Option {
 	return optionFunc(func(c *clientConfig) {
-		c.driver = "valkey"
-		c.addrs = []string{addr}
-		c.password = password
-	})
-}
-
-// WithRedis configures the client to connect to a Redis instance.
-func WithRedis(addr, password string) Option {
-	return optionFunc(func(c *clientConfig) {
-		c.driver = "redis"
 		c.addrs = []string{addr}
 		c.password = password
 	})
 }
 
 // WithStandalone disables cluster topology discovery.
-// Use for standalone Valkey/Redis instances (not managed by cluster operator).
+// Use for standalone Valkey instances (not managed by cluster operator).
 func WithStandalone() Option {
 	return optionFunc(func(c *clientConfig) {
 		c.standalone = true

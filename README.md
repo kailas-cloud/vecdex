@@ -2,7 +2,7 @@
   <img src="docs/vecdex-banner.png" alt="vecdex" width="100%"/>
 </p>
 
-<h3 align="center">Lightweight vector search engine on top of Valkey & Redis</h3>
+<h3 align="center">Lightweight vector search engine on top of Valkey</h3>
 
 <p align="center">
   <a href="https://goreportcard.com/report/github.com/kailas-cloud/vecdex"><img src="https://goreportcard.com/badge/github.com/kailas-cloud/vecdex" alt="Go Report Card"></a>
@@ -18,12 +18,11 @@
 
 Most vector databases are **heavy, cloud-locked, or expensive**. vecdex takes a different approach:
 
-- **Zero new infrastructure** — runs on Valkey or Redis you already have
+- **Zero new infrastructure** — runs on Valkey you already have
 - **Automatic embeddings** — send text, get vectors (Nebius AI, OpenAI-compatible providers)
 - **Three search modes** — hybrid (RRF), semantic (KNN), keyword (BM25) via one endpoint
-- **Swap the backend** — Valkey or Redis 8, same API, same results
 - **Budget controls** — daily/monthly token limits with automatic tracking
-- **300+ E2E tests** — battle-tested across both backends
+- **300+ E2E tests** — battle-tested on the Valkey stack
 
 ## Examples
 
@@ -87,7 +86,7 @@ For full control without struct tags:
 
 ```go
 client, _ := vecdex.New(ctx,
-    vecdex.WithRedis("localhost:6379", ""),
+    vecdex.WithValkey("localhost:6379", ""),
     vecdex.WithEmbedder(myEmbedder),
 )
 defer client.Close()
@@ -101,7 +100,7 @@ client.Collections().Create(ctx, "articles",
 // Upsert a document — embedding happens automatically
 client.Documents("articles").Upsert(ctx, vecdex.Document{
     ID:       "article-1",
-    Content:  "Vector search with HNSW indexes in Redis",
+    Content:  "Vector search with HNSW indexes in Valkey",
     Tags:     map[string]string{"author": "alice"},
     Numerics: map[string]float64{"year": 2025},
 })
@@ -123,7 +122,7 @@ for _, r := range resp.Results {
 |---|---|---|---|---|---|
 | Self-hosted | Yes | No | Yes | Yes | Yes |
 | Managed cloud | No | Yes | Yes | Yes | Yes |
-| Underlying storage | Valkey / Redis | Proprietary | Custom | Custom | PostgreSQL |
+| Underlying storage | Valkey | Proprietary | Custom | Custom | PostgreSQL |
 | Auto-embedding | Yes | No | No | Yes | No |
 | Hybrid search (RRF) | Yes | Yes | Yes | Yes | No |
 | Token budget tracking | Yes | No | No | No | No |
@@ -135,16 +134,15 @@ for _, r := range resp.Results {
 
 | Mode | How it works | Embedding cost | Backend support |
 |------|-------------|----------------|-----------------|
-| `hybrid` (default) | Vector KNN + BM25 fused via Reciprocal Rank Fusion | 1 call | Redis 8, Valkey Search 1.2+ |
-| `semantic` | Pure cosine-similarity KNN | 1 call | Redis 8, Valkey 9 |
-| `keyword` | BM25 full-text search | 0 calls | Redis 8, Valkey Search 1.2+ |
+| `hybrid` (default) | Vector KNN + BM25 fused via Reciprocal Rank Fusion | 1 call | Valkey 9 + Valkey Search 1.2+ |
+| `semantic` | Pure cosine-similarity KNN | 1 call | Valkey 9 |
+| `keyword` | BM25 full-text search | 0 calls | Valkey Search 1.2+ |
 
 ## Backend support
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| **Valkey 9+** (valkey-search) | Supported | Semantic, keyword, and hybrid search with Valkey Search 1.2+ |
-| **Redis 8+** (Redis Search) | Supported | Full hybrid search (semantic + keyword + RRF) |
+| **Valkey 9 + Valkey Search 1.2+** | Supported | The only supported runtime target |
 | AWS ElastiCache | Planned | |
 | PostgreSQL + pgvector | Planned | |
 
@@ -179,12 +177,11 @@ for _, r := range resp.Results {
 ├─────────────────────────────────────────────────────┤
 │                Repositories                           │
 │  Consumer interfaces (ISP) over Store facade          │
-├──────────────────────┬──────────────────────────────┤
-│    Redis backend     │     Valkey backend            │
-│  (rueidis, RESP2)    │   (rueidis, RESP2)            │
-└──────────────────────┴──────────────────────────────┘
-          │                        │
-    Redis 8 + Search         Valkey 9 + valkey-search
+├─────────────────────────────────────────────────────┤
+│              Valkey backend (rueidis, RESP2)         │
+└─────────────────────────────────────────────────────┘
+                         │
+              Valkey 9 + valkey-search 1.2
 ```
 
 Embedding pipeline (decorator chain):
@@ -205,7 +202,7 @@ go get github.com/kailas-cloud/vecdex
 
 | Type | Description |
 |------|-------------|
-| `vecdex.Client` | Connection to Valkey/Redis, entry point for all operations |
+| `vecdex.Client` | Connection to Valkey, entry point for all operations |
 | `vecdex.TypedIndex[T]` | Generic index with schema inferred from struct tags |
 | `vecdex.SearchBuilder[T]` | Fluent search: `.Query()`, `.Mode()`, `.Where()`, `.Limit()`, `.Do()` |
 | `vecdex.Hit[T]` | Search result with `.Item` and `.Score` |
@@ -274,8 +271,8 @@ vecdex uses YAML config files from `config/` selected by the `ENV` environment v
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ENV` | Config file to load (`local`, `dev`, `docker`, `prod`) | `local` |
-| `CACHE_ADDR` | Valkey/Redis address | `localhost:6379` |
-| `DB_PASSWORD` | Database password | — |
+| `VALKEY_ADDR` | Valkey address | `localhost:6379` |
+| `VALKEY_PASSWORD` | Valkey password | — |
 | `HTTP_PORT` | HTTP server port | `8080` |
 | `NEBIUS_API_KEY` | Nebius AI embedding API key | — |
 | `VECDEX_API_KEY` | API authentication key | — |
@@ -284,9 +281,8 @@ vecdex uses YAML config files from `config/` selected by the `ENV` environment v
 
 ```bash
 just test-unit              # Unit tests (no Valkey needed)
-just test-pytest-valkey     # E2E — Valkey backend (300+ pytest tests)
-just test-pytest-redis      # E2E — Redis backend
-just test-pytest            # E2E — both backends sequentially
+just test-pytest-valkey     # E2E — supported Valkey stack (300+ pytest tests)
+just test-pytest            # Alias to the Valkey E2E suite
 just pre-commit             # build + lint + unit tests
 ```
 

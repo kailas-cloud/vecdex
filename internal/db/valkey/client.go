@@ -74,7 +74,7 @@ func (s *Store) WaitForReady(ctx context.Context, timeout time.Duration) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timeout waiting for database: %w", ctx.Err())
+			return fmt.Errorf("timeout waiting for valkey: %w", ctx.Err())
 		case <-ticker.C:
 			if err := s.Ping(ctx); err == nil {
 				return nil

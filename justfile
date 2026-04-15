@@ -66,23 +66,17 @@ docs:
     @echo "Opening http://localhost:9090/docs.html"
     @cd api && python3 -m http.server 9090
 
-# Run pytest E2E suite against Valkey backend
+# Run pytest E2E suite against the supported Valkey backend
 test-pytest-valkey:
     cd tests && docker compose --profile valkey up --build --abort-on-container-exit --exit-code-from pytest-valkey
     cd tests && docker compose --profile valkey down -v
 
-# Run pytest E2E suite against Redis backend
-test-pytest-redis:
-    cd tests && docker compose --profile redis up --build --abort-on-container-exit --exit-code-from pytest-redis
-    cd tests && docker compose --profile redis down -v
-
-# Run pytest E2E suite against both backends sequentially
-test-pytest: test-pytest-valkey test-pytest-redis
+# Run pytest E2E suite
+test-pytest: test-pytest-valkey
 
 # Clean pytest containers and volumes
 clean-pytest:
     cd tests && docker compose --profile valkey down -v
-    cd tests && docker compose --profile redis down -v
 
 # Dry-run GoReleaser (snapshot build, no publish)
 release-dry:

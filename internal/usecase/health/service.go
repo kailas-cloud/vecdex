@@ -32,23 +32,23 @@ type Report struct {
 
 // Service coordinates health checks.
 type Service struct {
-	db        DBPinger
+	valkey    ValkeyPinger
 	embedding EmbeddingChecker
 }
 
 // New creates a Service. embedding can be nil.
-func New(db DBPinger, embedding EmbeddingChecker) *Service {
-	return &Service{db: db, embedding: embedding}
+func New(valkey ValkeyPinger, embedding EmbeddingChecker) *Service {
+	return &Service{valkey: valkey, embedding: embedding}
 }
 
 // Check runs health checks against all components.
 func (s *Service) Check(ctx context.Context) Report {
 	checks := make(map[string]CheckResult)
 
-	if err := s.db.Ping(ctx); err != nil {
-		checks["database"] = CheckError
+	if err := s.valkey.Ping(ctx); err != nil {
+		checks["valkey"] = CheckError
 	} else {
-		checks["database"] = CheckOK
+		checks["valkey"] = CheckOK
 	}
 
 	if s.embedding != nil {

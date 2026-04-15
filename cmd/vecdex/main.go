@@ -16,7 +16,6 @@ import (
 
 	"github.com/kailas-cloud/vecdex/internal/config"
 	"github.com/kailas-cloud/vecdex/internal/db"
-	dbRedis "github.com/kailas-cloud/vecdex/internal/db/redis"
 	dbValkey "github.com/kailas-cloud/vecdex/internal/db/valkey"
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	logpkg "github.com/kailas-cloud/vecdex/internal/logger"
@@ -59,37 +58,24 @@ func main() {
 		zap.String("commit", version.Commit),
 		zap.String("env", env),
 		zap.Int("http_port", cfg.HTTP.Port),
-		zap.String("db_driver", cfg.Database.Driver),
-		zap.Strings("db_addrs", cfg.Database.Addrs),
+		zap.Strings("valkey_addrs", cfg.Valkey.Addrs),
 	)
 
-	// Create database store based on driver
 	var store db.Store
-	switch cfg.Database.Driver {
-	case "valkey":
-		store, err = dbValkey.NewStore(dbValkey.Config{
-			Addrs:    cfg.Database.Addrs,
-			Password: cfg.Database.Password,
-		})
-	case "redis":
-		store, err = dbRedis.NewStore(dbRedis.Config{
-			Addrs:    cfg.Database.Addrs,
-			Password: cfg.Database.Password,
-		})
-	default:
-		logger.Fatal("Unknown database driver", zap.String("driver", cfg.Database.Driver))
-	}
+	store, err = dbValkey.NewStore(dbValkey.Config{
+		Addrs:    cfg.Valkey.Addrs,
+		Password: cfg.Valkey.Password,
+	})
 	if err != nil {
-		logger.Fatal("Failed to create database store", zap.Error(err))
+		logger.Fatal("Failed to create Valkey store", zap.Error(err))
 	}
 	defer store.Close()
 
-	// Wait for database to be ready
 	ctx := context.Background()
-	if err := store.WaitForReady(ctx, time.Duration(cfg.Database.ReadinessTimeout)*time.Second); err != nil {
-		logger.Fatal("Database not ready", zap.Error(err))
+	if err := store.WaitForReady(ctx, time.Duration(cfg.Valkey.ReadinessTimeout)*time.Second); err != nil {
+		logger.Fatal("Valkey not ready", zap.Error(err))
 	}
-	logger.Info("Connected to database")
+	logger.Info("Connected to Valkey")
 
 	// Register embedding metrics explicitly (no init())
 	metrics.RegisterEmbeddingMetrics()

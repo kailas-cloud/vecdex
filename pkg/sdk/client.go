@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
-	dbRedis "github.com/kailas-cloud/vecdex/internal/db/redis"
 	dbValkey "github.com/kailas-cloud/vecdex/internal/db/valkey"
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
@@ -68,7 +67,7 @@ type Client struct {
 	obs       *observer
 }
 
-// New creates a vecdex Client and connects to the database.
+// New creates a vecdex Client and connects to Valkey.
 // The provided context is used for the initial readiness check.
 func New(ctx context.Context, opts ...Option) (*Client, error) {
 	cfg := &clientConfig{
@@ -79,7 +78,7 @@ func New(ctx context.Context, opts ...Option) (*Client, error) {
 	}
 
 	if len(cfg.addrs) == 0 {
-		return nil, errors.New("vecdex: database address required (use WithValkey or WithRedis)")
+		return nil, errors.New("vecdex: Valkey address required (use WithValkey)")
 	}
 
 	store, err := createStore(cfg)
@@ -89,7 +88,7 @@ func New(ctx context.Context, opts ...Option) (*Client, error) {
 
 	if err := store.WaitForReady(ctx, defaultReadinessTimeout); err != nil {
 		store.Close()
-		return nil, fmt.Errorf("vecdex: database not ready: %w", err)
+		return nil, fmt.Errorf("vecdex: Valkey not ready: %w", err)
 	}
 
 	obs, err := newObserver(cfg.logger, cfg.metricsReg)
@@ -101,29 +100,15 @@ func New(ctx context.Context, opts ...Option) (*Client, error) {
 }
 
 func createStore(cfg *clientConfig) (db.Store, error) {
-	switch cfg.driver {
-	case "valkey":
-		s, err := dbValkey.NewStore(dbValkey.Config{
-			Addrs:      cfg.addrs,
-			Password:   cfg.password,
-			Standalone: cfg.standalone,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("vecdex: create valkey store: %w", err)
-		}
-		return s, nil
-	case "redis":
-		s, err := dbRedis.NewStore(dbRedis.Config{
-			Addrs:    cfg.addrs,
-			Password: cfg.password,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("vecdex: create redis store: %w", err)
-		}
-		return s, nil
-	default:
-		return nil, fmt.Errorf("vecdex: unknown driver %q", cfg.driver)
+	s, err := dbValkey.NewStore(dbValkey.Config{
+		Addrs:      cfg.addrs,
+		Password:   cfg.password,
+		Standalone: cfg.standalone,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("vecdex: create Valkey store: %w", err)
 	}
+	return s, nil
 }
 
 func wireClient(store db.Store, cfg *clientConfig, obs *observer) (*Client, error) {
@@ -180,7 +165,7 @@ func (c *Client) Close() {
 	}
 }
 
-// Ping checks database connectivity.
+// Ping checks Valkey connectivity.
 func (c *Client) Ping(ctx context.Context) (err error) {
 	start := time.Now()
 	defer func() { c.obs.observe("ping", start, err) }()

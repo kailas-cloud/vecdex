@@ -38,20 +38,12 @@ Equivalent `just` targets:
 
 - The E2E suite runs through Docker Compose in `tests/docker-compose.yml`.
 - Docker daemon access is required; these tests will not run in a restricted sandbox without Docker socket access.
-- Valkey backend:
+- Supported backend: Valkey 9 + Valkey Search 1.2.
 
 ```bash
 cd tests
 docker compose --profile valkey up --build --abort-on-container-exit --exit-code-from pytest-valkey
 docker compose --profile valkey down -v
-```
-
-- Redis backend:
-
-```bash
-cd tests
-docker compose --profile redis up --build --abort-on-container-exit --exit-code-from pytest-redis
-docker compose --profile redis down -v
 ```
 
 - The latest HTML pytest report is written to `tests/reports/report.html`.

@@ -4,11 +4,10 @@ http:
   write_timeout_sec: 30
   shutdown_timeout_sec: 10
 
-database:
-  driver: ${DB_DRIVER:-valkey}
+valkey:
   addrs:
-    - ${CACHE_ADDR:-valkey:6379}
-  password: ""
+    - ${VALKEY_ADDR:-valkey:6379}
+  password: ${VALKEY_PASSWORD:-}
   readiness_timeout_sec: 10
 
 index:

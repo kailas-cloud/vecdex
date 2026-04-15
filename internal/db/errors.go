@@ -10,7 +10,7 @@ var (
 	ErrIndexExists   = errors.New("db: index already exists")
 )
 
-// Op constants map to Valkey/Redis command names for error context.
+// Op constants map to wire command names for error context.
 const (
 	OpCreateIndex = "FT.CREATE"
 	OpDropIndex   = "FT.DROPINDEX"
