@@ -277,10 +277,10 @@ func buildEmbedder(
 			ExecutionProvider: provCfg.ExecutionProvider,
 			Provider:          provName,
 			Logger:            logger,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("create onnx embedder: %w", err)
-			}
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create onnx embedder: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("unsupported embedding backend %q", provCfg.Backend)
 	}

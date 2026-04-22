@@ -150,51 +150,80 @@ func vectorRowsFrom3D(
 	attentionMask []int64,
 	batchSize, seqLen, hiddenSize int,
 ) ([][]float32, error) {
+	if err := validate3DShape(lastHidden, attentionMask, batchSize, seqLen, hiddenSize); err != nil {
+		return nil, err
+	}
+	vectors := make([][]float32, batchSize)
+	for batch := range batchSize {
+		vector, err := poolSample(lastHidden, attentionMask, batch, seqLen, hiddenSize)
+		if err != nil {
+			return nil, err
+		}
+		vectors[batch] = vector
+	}
+	return vectors, nil
+}
+
+func validate3DShape(
+	lastHidden []float32,
+	attentionMask []int64,
+	batchSize, seqLen, hiddenSize int,
+) error {
 	if batchSize <= 0 || seqLen <= 0 || hiddenSize <= 0 {
-		return nil, fmt.Errorf("invalid output shape: [%d %d %d]", batchSize, seqLen, hiddenSize)
+		return fmt.Errorf("invalid output shape: [%d %d %d]", batchSize, seqLen, hiddenSize)
 	}
 	if len(lastHidden) != batchSize*seqLen*hiddenSize {
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"last_hidden_state size mismatch: got %d, want %d",
 			len(lastHidden), batchSize*seqLen*hiddenSize,
 		)
 	}
 	if len(attentionMask) != batchSize*seqLen {
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"attention_mask size mismatch: got %d, want %d",
 			len(attentionMask), batchSize*seqLen,
 		)
 	}
+	return nil
+}
 
-	vectors := make([][]float32, batchSize)
-	for batch := range batchSize {
-		sum := make([]float64, hiddenSize)
-		var tokenCount float64
-
-		for token := range seqLen {
-			mask := attentionMask[batch*seqLen+token]
-			if mask == 0 {
-				continue
-			}
-			tokenCount += float64(mask)
-			offset := (batch*seqLen + token) * hiddenSize
-			for dim := range hiddenSize {
-				sum[dim] += float64(lastHidden[offset+dim])
-			}
-		}
-
-		if tokenCount == 0 {
-			return nil, fmt.Errorf("sample %d has zero non-padding tokens", batch)
-		}
-
-		vector := make([]float32, hiddenSize)
-		for dim := range hiddenSize {
-			vector[dim] = float32(sum[dim] / tokenCount)
-		}
-		normalizeVector(vector)
-		vectors[batch] = vector
+func poolSample(
+	lastHidden []float32,
+	attentionMask []int64,
+	batch, seqLen, hiddenSize int,
+) ([]float32, error) {
+	sum, tokenCount := accumulateSample(lastHidden, attentionMask, batch, seqLen, hiddenSize)
+	if tokenCount == 0 {
+		return nil, fmt.Errorf("sample %d has zero non-padding tokens", batch)
 	}
-	return vectors, nil
+
+	vector := make([]float32, hiddenSize)
+	for dim := range hiddenSize {
+		vector[dim] = float32(sum[dim] / tokenCount)
+	}
+	normalizeVector(vector)
+	return vector, nil
+}
+
+func accumulateSample(
+	lastHidden []float32,
+	attentionMask []int64,
+	batch, seqLen, hiddenSize int,
+) (sum []float64, tokenCount float64) {
+	sum = make([]float64, hiddenSize)
+
+	for token := range seqLen {
+		mask := attentionMask[batch*seqLen+token]
+		if mask == 0 {
+			continue
+		}
+		tokenCount += float64(mask)
+		offset := (batch*seqLen + token) * hiddenSize
+		for dim := range hiddenSize {
+			sum[dim] += float64(lastHidden[offset+dim])
+		}
+	}
+	return sum, tokenCount
 }
 
 func vectorRowsFrom2D(data []float32, batchSize, hiddenSize int) ([][]float32, error) {

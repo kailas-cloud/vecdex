@@ -21,7 +21,7 @@ import (
 
 var (
 	ortInitOnce sync.Once
-	ortInitErr  error
+	errOrtInit  error
 )
 
 // Embedder runs local ONNX embedding inference on CPU.
@@ -50,66 +50,32 @@ type Config struct {
 	Logger            *zap.Logger
 }
 
+type preparedResources struct {
+	paths              modelPaths
+	tokenizer          *hftokenizer.Tokenizer
+	inputNames         []string
+	outputNames        []string
+	expectsTokenTypeID bool
+}
+
+type modelIO struct {
+	inputNames         []string
+	outputNames        []string
+	expectsTokenTypeID bool
+}
+
 // NewEmbedder creates a local ONNX embedding provider.
 func NewEmbedder(cfg *Config) (*Embedder, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("onnx config is required")
 	}
-	paths, err := resolveModelPaths(cfg.ModelDir)
+	resources, err := prepareModelResources(cfg)
 	if err != nil {
 		return nil, err
 	}
-	encoderCfg, err := loadEncoderConfig(paths.configPath)
+	session, err := newSession(resources.paths.modelPath, resources.inputNames, resources.outputNames)
 	if err != nil {
 		return nil, err
-	}
-	if cfg.Dimensions > 0 && encoderCfg.HiddenSize > 0 && cfg.Dimensions != encoderCfg.HiddenSize {
-		return nil, fmt.Errorf(
-			"configured vector dimensions %d do not match model hidden_size %d",
-			cfg.Dimensions, encoderCfg.HiddenSize,
-		)
-	}
-	if err := initializeRuntime(); err != nil {
-		return nil, err
-	}
-	if cfg.ExecutionProvider != "" && cfg.ExecutionProvider != "cpu" {
-		return nil, fmt.Errorf("unsupported onnx execution provider %q", cfg.ExecutionProvider)
-	}
-
-	tokenizer, err := loadTokenizer(paths.tokenizerPath, cfg.MaxLength)
-	if err != nil {
-		return nil, err
-	}
-
-	inputInfo, outputInfo, err := ort.GetInputOutputInfo(paths.modelPath)
-	if err != nil {
-		return nil, fmt.Errorf("inspect onnx model IO: %w", err)
-	}
-	inputNames := make([]string, 0, len(inputInfo))
-	outputNames := make([]string, 0, len(outputInfo))
-	expectsTokenTypeID := false
-	for _, info := range inputInfo {
-		inputNames = append(inputNames, info.Name)
-		if info.Name == "token_type_ids" {
-			expectsTokenTypeID = true
-		}
-	}
-	for _, info := range outputInfo {
-		outputNames = append(outputNames, info.Name)
-	}
-
-	options, err := ort.NewSessionOptions()
-	if err != nil {
-		return nil, fmt.Errorf("create onnx session options: %w", err)
-	}
-	defer func() { _ = options.Destroy() }()
-
-	options.SetIntraOpNumThreads(1)
-	options.SetInterOpNumThreads(1)
-
-	session, err := ort.NewDynamicAdvancedSession(paths.modelPath, inputNames, outputNames, options)
-	if err != nil {
-		return nil, fmt.Errorf("create onnx session: %w", err)
 	}
 
 	logger := cfg.Logger
@@ -119,15 +85,15 @@ func NewEmbedder(cfg *Config) (*Embedder, error) {
 
 	return &Embedder{
 		session:            session,
-		tokenizer:          tokenizer,
-		modelPath:          paths.modelPath,
+		tokenizer:          resources.tokenizer,
+		modelPath:          resources.paths.modelPath,
 		maxLength:          cfg.MaxLength,
 		provider:           cfg.Provider,
 		model:              cfg.Model,
 		logger:             logger,
-		inputNames:         inputNames,
-		outputNames:        outputNames,
-		expectsTokenTypeID: expectsTokenTypeID,
+		inputNames:         resources.inputNames,
+		outputNames:        resources.outputNames,
+		expectsTokenTypeID: resources.expectsTokenTypeID,
 	}, nil
 }
 
@@ -152,88 +118,69 @@ func (e *Embedder) BatchEmbed(ctx context.Context, texts []string) (domain.Batch
 	if len(texts) == 0 {
 		return domain.BatchEmbeddingResult{}, nil
 	}
-
-	start := time.Now()
-
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	encoded, err := encodeTexts(e.tokenizer, texts)
+	encoded, embeddings, duration, err := e.runBatch(texts)
 	if err != nil {
-		e.recordError("tokenizer_error")
 		return domain.BatchEmbeddingResult{}, err
 	}
-	if encoded.batchSize == 0 {
-		return domain.BatchEmbeddingResult{}, nil
+	if err := ctx.Err(); err != nil {
+		return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed canceled: %w", err)
 	}
-
-	shape := ort.NewShape(int64(encoded.batchSize), int64(encoded.sequenceLen))
-	inputIDs, err := ort.NewTensor(shape, encoded.inputIDs)
-	if err != nil {
-		e.recordError("input_tensor_error")
-		return domain.BatchEmbeddingResult{}, fmt.Errorf("create input_ids tensor: %w", err)
-	}
-	defer func() { _ = inputIDs.Destroy() }()
-
-	attentionMask, err := ort.NewTensor(shape, encoded.attentionMask)
-	if err != nil {
-		e.recordError("input_tensor_error")
-		return domain.BatchEmbeddingResult{}, fmt.Errorf("create attention_mask tensor: %w", err)
-	}
-	defer func() { _ = attentionMask.Destroy() }()
-
-	var tokenTypeIDs *ort.Tensor[int64]
-	if e.expectsTokenTypeID {
-		tokenTypeIDs, err = ort.NewTensor(shape, encoded.tokenTypeIDs)
-		if err != nil {
-			e.recordError("input_tensor_error")
-			return domain.BatchEmbeddingResult{}, fmt.Errorf("create token_type_ids tensor: %w", err)
-		}
-		defer func() { _ = tokenTypeIDs.Destroy() }()
-	}
-
-	inputValues := make([]ort.Value, 0, len(e.inputNames))
-	for _, name := range e.inputNames {
-		switch name {
-		case "input_ids":
-			inputValues = append(inputValues, inputIDs)
-		case "attention_mask":
-			inputValues = append(inputValues, attentionMask)
-		case "token_type_ids":
-			inputValues = append(inputValues, tokenTypeIDs)
-		default:
-			e.recordError("unsupported_input")
-			return domain.BatchEmbeddingResult{}, fmt.Errorf("unsupported onnx input %q", name)
-		}
-	}
-
-	outputValues := make([]ort.Value, len(e.outputNames))
-	if err := e.session.Run(inputValues, outputValues); err != nil {
-		e.recordError("runtime_error")
-		return domain.BatchEmbeddingResult{}, fmt.Errorf("run onnx session: %w", err)
-	}
-	defer destroyValues(outputValues)
-
-	embeddings, err := extractEmbeddings(outputValues, encoded.attentionMask)
-	if err != nil {
-		e.recordError("output_decode_error")
-		return domain.BatchEmbeddingResult{}, err
-	}
-
-	duration := time.Since(start)
 	e.recordSuccess(duration, encoded.totalTokens)
-
-	select {
-	case <-ctx.Done():
-		return domain.BatchEmbeddingResult{}, ctx.Err()
-	default:
-	}
-
 	return domain.BatchEmbeddingResult{
 		Embeddings:   embeddings,
 		PromptTokens: encoded.totalTokens,
 		TotalTokens:  encoded.totalTokens,
 	}, nil
+}
+
+func (e *Embedder) runBatch(texts []string) (encodedBatch, [][]float32, time.Duration, error) {
+	start := time.Now()
+
+	encoded, err := encodeTexts(e.tokenizer, texts)
+	if err != nil {
+		e.recordError("tokenizer_error")
+		return encodedBatch{}, nil, 0, err
+	}
+	if encoded.batchSize == 0 {
+		return encodedBatch{}, nil, 0, nil
+	}
+
+	outputValues, cleanup, err := e.runSession(&encoded)
+	if err != nil {
+		return encodedBatch{}, nil, 0, err
+	}
+	defer cleanup()
+
+	embeddings, err := extractEmbeddings(outputValues, encoded.attentionMask)
+	if err != nil {
+		e.recordError("output_decode_error")
+		return encodedBatch{}, nil, 0, err
+	}
+	return encoded, embeddings, time.Since(start), nil
+}
+
+func (e *Embedder) runSession(encoded *encodedBatch) ([]ort.Value, func(), error) {
+	inputValues, cleanupInputs, err := e.newInputValues(encoded)
+	if err != nil {
+		e.recordError("input_tensor_error")
+		return nil, nil, err
+	}
+
+	outputValues := make([]ort.Value, len(e.outputNames))
+	if err := e.session.Run(inputValues, outputValues); err != nil {
+		cleanupInputs()
+		e.recordError("runtime_error")
+		return nil, nil, fmt.Errorf("run onnx session: %w", err)
+	}
+
+	cleanup := func() {
+		destroyValues(outputValues)
+		cleanupInputs()
+	}
+	return outputValues, cleanup, nil
 }
 
 // HealthCheck verifies local model availability and a short inference smoke test.
@@ -262,12 +209,165 @@ func initializeRuntime() error {
 		if sharedLib := resolveSharedLibraryPath(); sharedLib != "" {
 			ort.SetSharedLibraryPath(sharedLib)
 		}
-		ortInitErr = ort.InitializeEnvironment()
+		errOrtInit = ort.InitializeEnvironment()
 	})
-	if ortInitErr != nil {
-		return fmt.Errorf("initialize onnx runtime: %w", ortInitErr)
+	if errOrtInit != nil {
+		return fmt.Errorf("initialize onnx runtime: %w", errOrtInit)
 	}
 	return nil
+}
+
+func prepareModelResources(cfg *Config) (preparedResources, error) {
+	if cfg.ExecutionProvider != "" && cfg.ExecutionProvider != "cpu" {
+		return preparedResources{}, fmt.Errorf(
+			"unsupported onnx execution provider %q",
+			cfg.ExecutionProvider,
+		)
+	}
+	paths, err := resolveModelPaths(cfg.ModelDir)
+	if err != nil {
+		return preparedResources{}, err
+	}
+	if err := validateDimensions(cfg, paths.configPath); err != nil {
+		return preparedResources{}, err
+	}
+	if err := initializeRuntime(); err != nil {
+		return preparedResources{}, err
+	}
+	tokenizer, err := loadTokenizer(paths.tokenizerPath, cfg.MaxLength)
+	if err != nil {
+		return preparedResources{}, err
+	}
+	io, err := inspectModelIO(paths.modelPath)
+	if err != nil {
+		return preparedResources{}, err
+	}
+	return preparedResources{
+		paths:              paths,
+		tokenizer:          tokenizer,
+		inputNames:         io.inputNames,
+		outputNames:        io.outputNames,
+		expectsTokenTypeID: io.expectsTokenTypeID,
+	}, nil
+}
+
+func validateDimensions(cfg *Config, configPath string) error {
+	encoderCfg, err := loadEncoderConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.Dimensions > 0 && encoderCfg.HiddenSize > 0 && cfg.Dimensions != encoderCfg.HiddenSize {
+		return fmt.Errorf(
+			"configured vector dimensions %d do not match model hidden_size %d",
+			cfg.Dimensions, encoderCfg.HiddenSize,
+		)
+	}
+	return nil
+}
+
+func inspectModelIO(modelPath string) (result modelIO, err error) {
+	inputInfo, outputInfo, err := ort.GetInputOutputInfo(modelPath)
+	if err != nil {
+		return modelIO{}, fmt.Errorf("inspect onnx model IO: %w", err)
+	}
+	result.inputNames = make([]string, 0, len(inputInfo))
+	result.outputNames = make([]string, 0, len(outputInfo))
+	for _, info := range inputInfo {
+		result.inputNames = append(result.inputNames, info.Name)
+		if info.Name == "token_type_ids" {
+			result.expectsTokenTypeID = true
+		}
+	}
+	for _, info := range outputInfo {
+		result.outputNames = append(result.outputNames, info.Name)
+	}
+	return result, nil
+}
+
+func newSession(modelPath string, inputNames, outputNames []string) (*ort.DynamicAdvancedSession, error) {
+	options, err := ort.NewSessionOptions()
+	if err != nil {
+		return nil, fmt.Errorf("create onnx session options: %w", err)
+	}
+	defer func() { _ = options.Destroy() }()
+
+	if err := options.SetIntraOpNumThreads(1); err != nil {
+		return nil, fmt.Errorf("set intra-op threads: %w", err)
+	}
+	if err := options.SetInterOpNumThreads(1); err != nil {
+		return nil, fmt.Errorf("set inter-op threads: %w", err)
+	}
+
+	session, err := ort.NewDynamicAdvancedSession(modelPath, inputNames, outputNames, options)
+	if err != nil {
+		return nil, fmt.Errorf("create onnx session: %w", err)
+	}
+	return session, nil
+}
+
+func (e *Embedder) newInputValues(encoded *encodedBatch) ([]ort.Value, func(), error) {
+	shape := ort.NewShape(int64(encoded.batchSize), int64(encoded.sequenceLen))
+	inputIDs, err := ort.NewTensor(shape, encoded.inputIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create input_ids tensor: %w", err)
+	}
+
+	attentionMask, err := ort.NewTensor(shape, encoded.attentionMask)
+	if err != nil {
+		_ = inputIDs.Destroy()
+		return nil, nil, fmt.Errorf("create attention_mask tensor: %w", err)
+	}
+
+	var tokenTypeIDs *ort.Tensor[int64]
+	if e.expectsTokenTypeID {
+		tokenTypeIDs, err = ort.NewTensor(shape, encoded.tokenTypeIDs)
+		if err != nil {
+			_ = attentionMask.Destroy()
+			_ = inputIDs.Destroy()
+			return nil, nil, fmt.Errorf("create token_type_ids tensor: %w", err)
+		}
+	}
+
+	inputValues, err := e.buildInputValues(inputIDs, attentionMask, tokenTypeIDs)
+	if err != nil {
+		if tokenTypeIDs != nil {
+			_ = tokenTypeIDs.Destroy()
+		}
+		_ = attentionMask.Destroy()
+		_ = inputIDs.Destroy()
+		return nil, nil, err
+	}
+
+	cleanup := func() {
+		if tokenTypeIDs != nil {
+			_ = tokenTypeIDs.Destroy()
+		}
+		_ = attentionMask.Destroy()
+		_ = inputIDs.Destroy()
+	}
+	return inputValues, cleanup, nil
+}
+
+func (e *Embedder) buildInputValues(
+	inputIDs *ort.Tensor[int64],
+	attentionMask *ort.Tensor[int64],
+	tokenTypeIDs *ort.Tensor[int64],
+) ([]ort.Value, error) {
+	inputValues := make([]ort.Value, 0, len(e.inputNames))
+	for _, name := range e.inputNames {
+		switch name {
+		case "input_ids":
+			inputValues = append(inputValues, inputIDs)
+		case "attention_mask":
+			inputValues = append(inputValues, attentionMask)
+		case "token_type_ids":
+			inputValues = append(inputValues, tokenTypeIDs)
+		default:
+			e.recordError("unsupported_input")
+			return nil, fmt.Errorf("unsupported onnx input %q", name)
+		}
+	}
+	return inputValues, nil
 }
 
 func resolveSharedLibraryPath() string {
