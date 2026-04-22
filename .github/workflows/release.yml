@@ -74,6 +74,9 @@ jobs:
         id: tag
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
       - name: Login to GHCR
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
@@ -82,7 +85,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull release image
-        run: docker pull ghcr.io/kailas-cloud/vecdex:${{ steps.tag.outputs.version }}-${{ matrix.arch }}
+        run: docker pull --platform linux/${{ matrix.arch }} ghcr.io/kailas-cloud/vecdex:${{ steps.tag.outputs.version }}-${{ matrix.arch }}
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
