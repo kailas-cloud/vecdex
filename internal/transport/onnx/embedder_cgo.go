@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	hftokenizer "github.com/sugarme/tokenizer"
 	ort "github.com/yalue/onnxruntime_go"
 	"go.uber.org/zap"
 
@@ -27,7 +26,7 @@ var (
 // Embedder runs local ONNX embedding inference on CPU.
 type Embedder struct {
 	session            *ort.DynamicAdvancedSession
-	tokenizer          *hftokenizer.Tokenizer
+	tokenizer          textTokenizer
 	modelPath          string
 	maxLength          int
 	provider           string
@@ -52,7 +51,7 @@ type Config struct {
 
 type preparedResources struct {
 	paths              modelPaths
-	tokenizer          *hftokenizer.Tokenizer
+	tokenizer          textTokenizer
 	inputNames         []string
 	outputNames        []string
 	expectsTokenTypeID bool

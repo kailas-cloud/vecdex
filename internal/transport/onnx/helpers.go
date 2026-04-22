@@ -90,7 +90,7 @@ func loadTokenizer(tokenizerPath string, maxLength int) (*hftokenizer.Tokenizer,
 	return tk, nil
 }
 
-func encodeTexts(tk *hftokenizer.Tokenizer, texts []string) (encodedBatch, error) {
+func encodeTexts(tk textTokenizer, texts []string) (encodedBatch, error) {
 	if len(texts) == 0 {
 		return encodedBatch{}, nil
 	}

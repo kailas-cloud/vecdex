@@ -3,12 +3,68 @@ package onnx
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	hftokenizer "github.com/sugarme/tokenizer"
 )
+
+const testTokenizerJSON = `{
+  "version":"1.0",
+  "added_tokens":[
+    {"id":0,"special":true,"content":"[PAD]","single_word":false,"lstrip":false,"rstrip":false,"normalized":false},
+    {"id":1,"special":true,"content":"[UNK]","single_word":false,"lstrip":false,"rstrip":false,"normalized":false},
+    {"id":2,"special":true,"content":"[CLS]","single_word":false,"lstrip":false,"rstrip":false,"normalized":false},
+    {"id":3,"special":true,"content":"[SEP]","single_word":false,"lstrip":false,"rstrip":false,"normalized":false},
+    {"id":4,"special":true,"content":"[MASK]","single_word":false,"lstrip":false,"rstrip":false,"normalized":false}
+  ],
+  "normalizer":{
+    "type":"BertNormalizer",
+    "clean_text":true,
+    "handle_chinese_chars":true,
+    "strip_accents":null,
+    "lowercase":true
+  },
+  "pre_tokenizer":{"type":"BertPreTokenizer"},
+  "post_processor":{
+    "type":"TemplateProcessing",
+    "single":[
+      {"SpecialToken":{"id":"[CLS]","type_id":0}},
+      {"Sequence":{"id":"A","type_id":0}},
+      {"SpecialToken":{"id":"[SEP]","type_id":0}}
+    ],
+    "pair":[
+      {"SpecialToken":{"id":"[CLS]","type_id":0}},
+      {"Sequence":{"id":"A","type_id":0}},
+      {"SpecialToken":{"id":"[SEP]","type_id":0}},
+      {"Sequence":{"id":"B","type_id":1}},
+      {"SpecialToken":{"id":"[SEP]","type_id":1}}
+    ],
+    "special_tokens":{
+      "[CLS]":{"id":"[CLS]","ids":[2],"tokens":["[CLS]"]},
+      "[SEP]":{"id":"[SEP]","ids":[3],"tokens":["[SEP]"]}
+    }
+  },
+  "decoder":{"type":"WordPiece","prefix":"##","cleanup":true},
+  "model":{
+    "type":"WordPiece",
+    "unk_token":"[UNK]",
+    "continuing_subword_prefix":"##",
+    "max_input_chars_per_word":100,
+    "vocab":{
+      "[PAD]":0,
+      "[UNK]":1,
+      "[CLS]":2,
+      "[SEP]":3,
+      "[MASK]":4,
+      "hello":5,
+      "world":6,
+      "small":7,
+      "local":8,
+      "model":9
+    }
+  }
+}`
 
 func TestFlattenEncodings(t *testing.T) {
 	encodings := []hftokenizer.Encoding{
@@ -103,7 +159,7 @@ func TestLoadEncoderConfig(t *testing.T) {
 }
 
 func TestResolveModelPaths(t *testing.T) {
-	modelDir := testModelDir(t)
+	modelDir := writeTestModelDir(t)
 
 	paths, err := resolveModelPaths(modelDir)
 	if err != nil {
@@ -128,7 +184,7 @@ func TestResolveModelPathsMissingFile(t *testing.T) {
 }
 
 func TestLoadTokenizerAndEncodeTexts(t *testing.T) {
-	modelDir := testModelDir(t)
+	modelDir := writeTestModelDir(t)
 	tokenizerPath := filepath.Join(modelDir, tokenizerFile)
 
 	tk, err := loadTokenizer(tokenizerPath, 8)
@@ -200,13 +256,21 @@ func TestResolveSharedLibraryPath(t *testing.T) {
 	}
 }
 
-func testModelDir(t *testing.T) string {
+func writeTestModelDir(t *testing.T) string {
 	t.Helper()
 
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
+	modelDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(modelDir, "onnx"), 0o755); err != nil {
+		t.Fatalf("mkdir onnx dir: %v", err)
 	}
-	root := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", ".."))
-	return filepath.Join(root, "models", "all-MiniLM-L6-v2")
+	if err := os.WriteFile(filepath.Join(modelDir, configFile), []byte(`{"hidden_size":384}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, tokenizerFile), []byte(testTokenizerJSON), 0o600); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modelDir, "onnx", modelFileName), []byte("stub"), 0o600); err != nil {
+		t.Fatalf("write model: %v", err)
+	}
+	return modelDir
 }
