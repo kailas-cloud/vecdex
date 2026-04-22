@@ -140,6 +140,11 @@ func GetEnv() string {
 
 // ApplyDefaults fills empty fields with default values.
 func (c *Config) ApplyDefaults() {
+	c.applyScalarDefaults()
+	c.applyProviderDefaults()
+}
+
+func (c *Config) applyScalarDefaults() {
 	if c.HTTP.ReadTimeoutSec <= 0 {
 		c.HTTP.ReadTimeoutSec = 10
 	}
@@ -170,7 +175,11 @@ func (c *Config) ApplyDefaults() {
 	if c.Storage.KeyPrefix == "" {
 		c.Storage.KeyPrefix = "vecdex:"
 	}
-	for name, provider := range c.Embedding.Providers {
+}
+
+func (c *Config) applyProviderDefaults() {
+	for name := range c.Embedding.Providers {
+		provider := c.Embedding.Providers[name]
 		if provider.Backend == "" {
 			provider.Backend = "openai"
 		}
@@ -194,7 +203,8 @@ func (c *Config) Validate() error {
 	if len(c.Valkey.Addrs) == 0 {
 		return fmt.Errorf("valkey.addrs is required")
 	}
-	for name, p := range c.Embedding.Providers {
+	for name := range c.Embedding.Providers {
+		p := c.Embedding.Providers[name]
 		switch p.Backend {
 		case "", "openai", "onnx":
 			// ok

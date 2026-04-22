@@ -22,22 +22,22 @@ type Config struct {
 	Provider          string
 }
 
-// NewEmbedder returns an explicit unsupported error when vecdex is built without CGO.
+// NewEmbedder returns an explicit unsupported error when vecdex is built without CGO support.
 func NewEmbedder(_ *Config) (*Embedder, error) {
-	return nil, fmt.Errorf("onnx embedding backend requires CGO_ENABLED=1")
+	return nil, fmt.Errorf("onnx embedding backend requires CGO support")
 }
 
 // Embed implements domain.Embedder for the stub.
 func (e *Embedder) Embed(_ context.Context, _ string) (domain.EmbeddingResult, error) {
-	return domain.EmbeddingResult{}, fmt.Errorf("onnx embedding backend requires CGO_ENABLED=1")
+	return domain.EmbeddingResult{}, fmt.Errorf("onnx embedding backend requires CGO support")
 }
 
 // BatchEmbed implements domain.BatchEmbedder for the stub.
 func (e *Embedder) BatchEmbed(_ context.Context, _ []string) (domain.BatchEmbeddingResult, error) {
-	return domain.BatchEmbeddingResult{}, fmt.Errorf("onnx embedding backend requires CGO_ENABLED=1")
+	return domain.BatchEmbeddingResult{}, fmt.Errorf("onnx embedding backend requires CGO support")
 }
 
 // HealthCheck implements domain.HealthChecker for the stub.
 func (e *Embedder) HealthCheck(_ context.Context) error {
-	return fmt.Errorf("onnx embedding backend requires CGO_ENABLED=1")
+	return fmt.Errorf("onnx embedding backend requires CGO support")
 }

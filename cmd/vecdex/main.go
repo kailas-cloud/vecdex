@@ -116,14 +116,14 @@ func main() {
 	}
 
 	docEmbedder, err := buildEmbedder(
-		provName, provCfg, vecCfg, vecCfg.DocumentInstruction,
+		provName, &provCfg, vecCfg, vecCfg.DocumentInstruction,
 		store, budgetChecker, logger,
 	)
 	if err != nil {
 		logger.Fatal("Failed to create document embedder", zap.Error(err))
 	}
 	queryEmbedder, err := buildEmbedder(
-		provName, provCfg, vecCfg, vecCfg.QueryInstruction,
+		provName, &provCfg, vecCfg, vecCfg.QueryInstruction,
 		store, budgetChecker, logger,
 	)
 	if err != nil {
@@ -246,7 +246,7 @@ func (h *embeddingHealthChecker) HealthCheck(ctx context.Context) error {
 // buildEmbedder assembles the decorator chain: OpenAI -> Cached -> Instrumented -> Instruction
 func buildEmbedder(
 	provName string,
-	provCfg config.ProviderConfig,
+	provCfg *config.ProviderConfig,
 	vecCfg config.VectorizerConfig,
 	instruction string,
 	store db.Store,
@@ -277,16 +277,16 @@ func buildEmbedder(
 			ExecutionProvider: provCfg.ExecutionProvider,
 			Provider:          provName,
 			Logger:            logger,
-		})
-		if err != nil {
-			return nil, err
-		}
+			})
+			if err != nil {
+				return nil, fmt.Errorf("create onnx embedder: %w", err)
+			}
 	default:
 		return nil, fmt.Errorf("unsupported embedding backend %q", provCfg.Backend)
 	}
 
 	// Cached
-	var embedder domain.Embedder = base
+	embedder := base
 	if store != nil {
 		embedder = embcache.New(base, store, metrics.EmbeddingCacheTotal, logger)
 	}

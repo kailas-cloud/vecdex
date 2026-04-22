@@ -3,7 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /fsqr-loader ./examples/fsqr/loader
+RUN go build -o /fsqr-loader ./examples/fsqr/loader
 
 FROM alpine:3.21
 LABEL org.opencontainers.image.source=https://github.com/kailas-cloud/vecdex

@@ -37,7 +37,12 @@ func TestFlattenEncodings(t *testing.T) {
 		t.Fatalf("totalTokens = %d, want 6", batch.totalTokens)
 	}
 	if len(batch.inputIDs) != 8 || len(batch.attentionMask) != 8 || len(batch.tokenTypeIDs) != 8 {
-		t.Fatalf("unexpected flattened tensor sizes: ids=%d mask=%d type=%d", len(batch.inputIDs), len(batch.attentionMask), len(batch.tokenTypeIDs))
+		t.Fatalf(
+			"unexpected flattened tensor sizes: ids=%d mask=%d type=%d",
+			len(batch.inputIDs),
+			len(batch.attentionMask),
+			len(batch.tokenTypeIDs),
+		)
 	}
 }
 

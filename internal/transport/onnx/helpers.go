@@ -11,6 +11,7 @@ import (
 	"github.com/sugarme/tokenizer/pretrained"
 )
 
+//nolint:gosec // Model asset filenames are not credentials.
 const (
 	defaultPadToken = "[PAD]"
 	modelFileName   = "model.onnx"
@@ -123,7 +124,8 @@ func flattenEncodings(encodings []hftokenizer.Encoding) (encodedBatch, error) {
 		sequenceLen:   seqLen,
 	}
 
-	for i, encoding := range encodings {
+	for i := range encodings {
+		encoding := &encodings[i]
 		if len(encoding.Ids) != seqLen || len(encoding.AttentionMask) != seqLen {
 			return encodedBatch{}, fmt.Errorf("encoding %d has inconsistent sequence length", i)
 		}
@@ -143,7 +145,11 @@ func flattenEncodings(encodings []hftokenizer.Encoding) (encodedBatch, error) {
 	return batch, nil
 }
 
-func vectorRowsFrom3D(lastHidden []float32, attentionMask []int64, batchSize, seqLen, hiddenSize int) ([][]float32, error) {
+func vectorRowsFrom3D(
+	lastHidden []float32,
+	attentionMask []int64,
+	batchSize, seqLen, hiddenSize int,
+) ([][]float32, error) {
 	if batchSize <= 0 || seqLen <= 0 || hiddenSize <= 0 {
 		return nil, fmt.Errorf("invalid output shape: [%d %d %d]", batchSize, seqLen, hiddenSize)
 	}
