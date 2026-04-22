@@ -2,11 +2,14 @@ FROM debian:bookworm-slim AS onnxruntime
 
 ARG TARGETARCH
 ARG ONNXRUNTIME_VERSION=1.24.4
+ARG CA_CERTIFICATES_VERSION=20230311*
+ARG CURL_VERSION=7.88.1-10+deb12u*
+ARG TAR_VERSION=1.34+dfsg-1.2+deb12u*
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    tar \
+    ca-certificates=${CA_CERTIFICATES_VERSION} \
+    curl=${CURL_VERSION} \
+    tar=${TAR_VERSION} \
  && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
@@ -55,9 +58,12 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
+ARG CA_CERTIFICATES_VERSION=20230311*
+ARG WGET_VERSION=1.21.3-1+deb12u*
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    wget \
+    ca-certificates=${CA_CERTIFICATES_VERSION} \
+    wget=${WGET_VERSION} \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=onnxruntime /opt/onnxruntime /opt/onnxruntime
