@@ -63,6 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=onnxruntime /opt/onnxruntime /opt/onnxruntime
 COPY --from=build /vecdex /app/vecdex
 COPY config/ /app/config/
+COPY models/ /app/models/
 
 ENV ONNXRUNTIME_DIR=/opt/onnxruntime/current
 ENV LD_LIBRARY_PATH="${ONNXRUNTIME_DIR}/lib"

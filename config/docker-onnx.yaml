@@ -1,0 +1,40 @@
+http:
+  port: 8080
+  read_timeout_sec: 10
+  write_timeout_sec: 30
+  shutdown_timeout_sec: 10
+
+valkey:
+  addrs:
+    - ${VALKEY_ADDR:-valkey:6379}
+  password: ${VALKEY_PASSWORD:-}
+  readiness_timeout_sec: 10
+
+index:
+  hnsw_m: 32
+  hnsw_ef_construction: 400
+  default_page_size: 20
+  max_page_size: 100
+  max_batch_size: 5000
+
+storage:
+  key_prefix: "vecdex:"
+
+auth:
+  api_keys:
+    - test-api-key
+
+embedding:
+  providers:
+    local_onnx:
+      backend: onnx
+      model_dir: /app/models/all-MiniLM-L6-v2
+      max_length: 256
+      execution_provider: cpu
+  vectorizers:
+    json:
+      provider: local_onnx
+      model: sentence-transformers/all-MiniLM-L6-v2
+      dimensions: 384
+      document_instruction: ""
+      query_instruction: ""

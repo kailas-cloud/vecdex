@@ -7,7 +7,8 @@ import pytest
 from conftest import (
     search_with_retry,
     assert_embedding_headers,
-    assert_no_embedding_headers
+    assert_no_embedding_headers,
+    VECDEX_VECTOR_DIM,
 )
 
 
@@ -167,7 +168,7 @@ class TestSearchSemanticP1:
         assert ids1 == ids2
 
     def test_vectors_have_correct_dimensions(self, client, populated_collection):
-        """Vectors should have 1024 dimensions (per docker.yaml config)."""
+        """Vectors should match the configured embedding dimensions."""
         coll = populated_collection["name"]
         resp = search_with_retry(
             client,
@@ -177,7 +178,7 @@ class TestSearchSemanticP1:
             include_vectors=True,
         )
         for item in resp.json()["items"]:
-            assert len(item["vector"]) == 1024
+            assert len(item["vector"]) == VECDEX_VECTOR_DIM
 
     def test_without_include_vectors_no_vector_field(self, client, populated_collection):
         coll = populated_collection["name"]

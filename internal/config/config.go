@@ -77,9 +77,13 @@ type BudgetConfig struct {
 
 // ProviderConfig holds embedding provider settings.
 type ProviderConfig struct {
-	APIKey  string       `yaml:"api_key"`
-	BaseURL string       `yaml:"base_url"`
-	Budget  BudgetConfig `yaml:"budget"`
+	Backend           string       `yaml:"backend"`
+	APIKey            string       `yaml:"api_key"`
+	BaseURL           string       `yaml:"base_url"`
+	ModelDir          string       `yaml:"model_dir"`
+	MaxLength         int          `yaml:"max_length"`
+	ExecutionProvider string       `yaml:"execution_provider"`
+	Budget            BudgetConfig `yaml:"budget"`
 }
 
 // VectorizerConfig holds vectorizer settings.
@@ -166,6 +170,20 @@ func (c *Config) ApplyDefaults() {
 	if c.Storage.KeyPrefix == "" {
 		c.Storage.KeyPrefix = "vecdex:"
 	}
+	for name, provider := range c.Embedding.Providers {
+		if provider.Backend == "" {
+			provider.Backend = "openai"
+		}
+		if provider.Backend == "onnx" {
+			if provider.MaxLength <= 0 {
+				provider.MaxLength = 256
+			}
+			if provider.ExecutionProvider == "" {
+				provider.ExecutionProvider = "cpu"
+			}
+		}
+		c.Embedding.Providers[name] = provider
+	}
 }
 
 // Validate checks the configuration for correctness.
@@ -177,6 +195,35 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("valkey.addrs is required")
 	}
 	for name, p := range c.Embedding.Providers {
+		switch p.Backend {
+		case "", "openai", "onnx":
+			// ok
+		default:
+			return fmt.Errorf(
+				"embedding.providers.%s.backend must be \"openai\" or \"onnx\", got %q",
+				name, p.Backend,
+			)
+		}
+		if p.Backend == "onnx" {
+			if p.ModelDir == "" {
+				return fmt.Errorf("embedding.providers.%s.model_dir is required for onnx backend", name)
+			}
+			switch p.ExecutionProvider {
+			case "", "cpu":
+				// ok
+			default:
+				return fmt.Errorf(
+					"embedding.providers.%s.execution_provider must be \"cpu\", got %q",
+					name, p.ExecutionProvider,
+				)
+			}
+			if p.MaxLength <= 0 {
+				return fmt.Errorf(
+					"embedding.providers.%s.max_length must be greater than 0 for onnx backend, got %d",
+					name, p.MaxLength,
+				)
+			}
+		}
 		switch p.Budget.Action {
 		case "", "warn", "reject":
 			// ok
