@@ -24,6 +24,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        CGO_ENABLED: ${VECDEX_CGO_ENABLED:-0}
+        ONNXRUNTIME_VERSION: ${ONNXRUNTIME_VERSION:-1.24.4}
     environment:
       - ENV=docker
       - VALKEY_ADDR=valkey:6379

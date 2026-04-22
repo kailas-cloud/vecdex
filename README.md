@@ -247,6 +247,8 @@ docker compose up vecdex
 # API is running at http://localhost:8080
 ```
 
+The Docker image preinstalls CPU ONNX Runtime from the official Linux release tarballs for `linux/amd64` and `linux/arm64` and exposes `ONNXRUNTIME_DIR`/`LD_LIBRARY_PATH` inside the container. For future Go inference wiring, switch the build to CGO with `VECDEX_CGO_ENABLED=1 docker compose build vecdex`.
+
 ### From source
 
 ```bash
@@ -287,6 +289,8 @@ just pre-commit             # build + lint + unit tests
 ```
 
 The pytest E2E suite runs in Docker Compose with a mock embedding server — no API keys required for CI.
+The `vecdex` Docker image used in the stack already carries ONNX Runtime for both Intel/AMD64 Linux and Apple Silicon Docker hosts (`linux/arm64`).
+The root `test` helper service now reuses the same Go + ONNX Runtime Docker base instead of a separate Alpine image, so future CGO-backed inference tests can run in the same environment shape.
 
 ## Roadmap
 

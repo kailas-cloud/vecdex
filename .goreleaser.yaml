@@ -23,14 +23,25 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 dockers_v2:
-  - dockerfile: Dockerfile.goreleaser
+  - id: ghcr-amd64
+    dockerfile: Dockerfile.goreleaser
     images:
       - "ghcr.io/kailas-cloud/vecdex"
     tags:
-      - "{{ .Version }}"
-      - "latest"
+      - "{{ .Version }}-amd64"
+      - "latest-amd64"
     platforms:
       - linux/amd64
+    extra_files:
+      - config/
+  - id: ghcr-arm64
+    dockerfile: Dockerfile.goreleaser
+    images:
+      - "ghcr.io/kailas-cloud/vecdex"
+    tags:
+      - "{{ .Version }}-arm64"
+      - "latest-arm64"
+    platforms:
       - linux/arm64
     extra_files:
       - config/
