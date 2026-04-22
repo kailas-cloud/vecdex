@@ -15,7 +15,7 @@ func NewLogger(env string, levelOverride ...string) (*zap.Logger, error) {
 	switch env {
 	case "prod":
 		cfg = zap.NewProductionConfig()
-	case "local", "dev", "docker":
+	case "local", "dev", "docker", "docker-onnx":
 		cfg = zap.NewDevelopmentConfig()
 	default:
 		return nil, fmt.Errorf("unknown environment %q for logger", env)

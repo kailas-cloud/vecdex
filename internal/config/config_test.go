@@ -33,6 +33,82 @@ func TestValidate_InvalidBudgetAction(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidEmbeddingBackend(t *testing.T) {
+	cfg := Config{
+		HTTP: HTTPConfig{Port: 8080},
+		Valkey: ValkeyConfig{
+			Addrs: []string{"localhost:6379"},
+		},
+		Embedding: EmbeddingConfig{
+			Providers: map[string]ProviderConfig{
+				"local": {
+					Backend: "invalid",
+				},
+			},
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid backend")
+	}
+
+	expected := `embedding.providers.local.backend must be "openai" or "onnx", got "invalid"`
+	if err.Error() != expected {
+		t.Fatalf("unexpected error:\ngot:  %q\nwant: %q", err.Error(), expected)
+	}
+}
+
+func TestValidate_ONNXRequiresModelDir(t *testing.T) {
+	cfg := Config{
+		HTTP: HTTPConfig{Port: 8080},
+		Valkey: ValkeyConfig{
+			Addrs: []string{"localhost:6379"},
+		},
+		Embedding: EmbeddingConfig{
+			Providers: map[string]ProviderConfig{
+				"local": {
+					Backend:   "onnx",
+					MaxLength: 256,
+				},
+			},
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing model_dir")
+	}
+}
+
+func TestApplyDefaults_ONNXProvider(t *testing.T) {
+	cfg := Config{
+		Embedding: EmbeddingConfig{
+			Providers: map[string]ProviderConfig{
+				"local": {
+					Backend: "onnx",
+				},
+				"remote": {},
+			},
+		},
+	}
+
+	cfg.ApplyDefaults()
+
+	local := cfg.Embedding.Providers["local"]
+	if local.MaxLength != 256 {
+		t.Fatalf("expected onnx max_length=256, got %d", local.MaxLength)
+	}
+	if local.ExecutionProvider != "cpu" {
+		t.Fatalf("expected onnx execution_provider=cpu, got %q", local.ExecutionProvider)
+	}
+
+	remote := cfg.Embedding.Providers["remote"]
+	if remote.Backend != "openai" {
+		t.Fatalf("expected default backend=openai, got %q", remote.Backend)
+	}
+}
+
 func TestValidate_ValidBudgetActions(t *testing.T) {
 	validActions := []string{"", "warn", "reject"}
 

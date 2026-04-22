@@ -1,7 +1,7 @@
 services:
   valkey:
     image: valkey/valkey-bundle:unstable
-    profiles: [valkey]
+    profiles: [valkey, valkey-onnx]
     command: ["--protected-mode", "no"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
@@ -10,6 +10,7 @@ services:
       retries: 10
 
   mock-embedder:
+    profiles: [valkey]
     build:
       context: ./mock_embedder
       dockerfile: Dockerfile
@@ -25,7 +26,6 @@ services:
       context: ..
       dockerfile: Dockerfile
       args:
-        CGO_ENABLED: ${VECDEX_CGO_ENABLED:-0}
         ONNXRUNTIME_VERSION: ${ONNXRUNTIME_VERSION:-1.24.4}
     environment:
       - ENV=docker
@@ -36,7 +36,7 @@ services:
       mock-embedder:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 3s
       timeout: 2s
       retries: 15
@@ -52,6 +52,41 @@ services:
       - VECDEX_API_KEY=test-api-key
     depends_on:
       vecdex-valkey:
+        condition: service_healthy
+    volumes:
+      - ./reports:/reports
+
+  vecdex-valkey-onnx:
+    profiles: [valkey-onnx]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        ONNXRUNTIME_VERSION: ${ONNXRUNTIME_VERSION:-1.24.4}
+    environment:
+      - ENV=docker-onnx
+      - VALKEY_ADDR=valkey:6379
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  pytest-valkey-onnx:
+    profiles: [valkey-onnx]
+    build:
+      context: .
+      dockerfile: Dockerfile.pytest
+    environment:
+      - VECDEX_BASE_URL=http://vecdex-valkey-onnx:8080
+      - VECDEX_API_KEY=test-api-key
+      - VECDEX_VECTOR_DIM=384
+    depends_on:
+      vecdex-valkey-onnx:
         condition: service_healthy
     volumes:
       - ./reports:/reports

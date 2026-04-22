@@ -77,9 +77,13 @@ type BudgetConfig struct {
 
 // ProviderConfig holds embedding provider settings.
 type ProviderConfig struct {
-	APIKey  string       `yaml:"api_key"`
-	BaseURL string       `yaml:"base_url"`
-	Budget  BudgetConfig `yaml:"budget"`
+	Backend           string       `yaml:"backend"`
+	APIKey            string       `yaml:"api_key"`
+	BaseURL           string       `yaml:"base_url"`
+	ModelDir          string       `yaml:"model_dir"`
+	MaxLength         int          `yaml:"max_length"`
+	ExecutionProvider string       `yaml:"execution_provider"`
+	Budget            BudgetConfig `yaml:"budget"`
 }
 
 // VectorizerConfig holds vectorizer settings.
@@ -136,6 +140,11 @@ func GetEnv() string {
 
 // ApplyDefaults fills empty fields with default values.
 func (c *Config) ApplyDefaults() {
+	c.applyScalarDefaults()
+	c.applyProviderDefaults()
+}
+
+func (c *Config) applyScalarDefaults() {
 	if c.HTTP.ReadTimeoutSec <= 0 {
 		c.HTTP.ReadTimeoutSec = 10
 	}
@@ -168,6 +177,24 @@ func (c *Config) ApplyDefaults() {
 	}
 }
 
+func (c *Config) applyProviderDefaults() {
+	for name := range c.Embedding.Providers {
+		provider := c.Embedding.Providers[name]
+		if provider.Backend == "" {
+			provider.Backend = "openai"
+		}
+		if provider.Backend == "onnx" {
+			if provider.MaxLength <= 0 {
+				provider.MaxLength = 256
+			}
+			if provider.ExecutionProvider == "" {
+				provider.ExecutionProvider = "cpu"
+			}
+		}
+		c.Embedding.Providers[name] = provider
+	}
+}
+
 // Validate checks the configuration for correctness.
 func (c *Config) Validate() error {
 	if c.HTTP.Port <= 0 || c.HTTP.Port > 65535 {
@@ -176,7 +203,37 @@ func (c *Config) Validate() error {
 	if len(c.Valkey.Addrs) == 0 {
 		return fmt.Errorf("valkey.addrs is required")
 	}
-	for name, p := range c.Embedding.Providers {
+	for name := range c.Embedding.Providers {
+		p := c.Embedding.Providers[name]
+		switch p.Backend {
+		case "", "openai", "onnx":
+			// ok
+		default:
+			return fmt.Errorf(
+				"embedding.providers.%s.backend must be \"openai\" or \"onnx\", got %q",
+				name, p.Backend,
+			)
+		}
+		if p.Backend == "onnx" {
+			if p.ModelDir == "" {
+				return fmt.Errorf("embedding.providers.%s.model_dir is required for onnx backend", name)
+			}
+			switch p.ExecutionProvider {
+			case "", "cpu":
+				// ok
+			default:
+				return fmt.Errorf(
+					"embedding.providers.%s.execution_provider must be \"cpu\", got %q",
+					name, p.ExecutionProvider,
+				)
+			}
+			if p.MaxLength <= 0 {
+				return fmt.Errorf(
+					"embedding.providers.%s.max_length must be greater than 0 for onnx backend, got %d",
+					name, p.MaxLength,
+				)
+			}
+		}
 		switch p.Budget.Action {
 		case "", "warn", "reject":
 			// ok

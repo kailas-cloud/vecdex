@@ -27,6 +27,7 @@ import (
 	searchrepo "github.com/kailas-cloud/vecdex/internal/repository/search"
 	chiTransport "github.com/kailas-cloud/vecdex/internal/transport/chi"
 	gen "github.com/kailas-cloud/vecdex/internal/transport/generated"
+	onnxEmb "github.com/kailas-cloud/vecdex/internal/transport/onnx"
 	openaiEmb "github.com/kailas-cloud/vecdex/internal/transport/openai"
 	batchuc "github.com/kailas-cloud/vecdex/internal/usecase/batch"
 	collectionuc "github.com/kailas-cloud/vecdex/internal/usecase/collection"
@@ -114,14 +115,20 @@ func main() {
 		budgetChecker = budget
 	}
 
-	docEmbedder := buildEmbedder(
-		provName, provCfg, vecCfg, vecCfg.DocumentInstruction,
+	docEmbedder, err := buildEmbedder(
+		provName, &provCfg, vecCfg, vecCfg.DocumentInstruction,
 		store, budgetChecker, logger,
 	)
-	queryEmbedder := buildEmbedder(
-		provName, provCfg, vecCfg, vecCfg.QueryInstruction,
+	if err != nil {
+		logger.Fatal("Failed to create document embedder", zap.Error(err))
+	}
+	queryEmbedder, err := buildEmbedder(
+		provName, &provCfg, vecCfg, vecCfg.QueryInstruction,
 		store, budgetChecker, logger,
 	)
+	if err != nil {
+		logger.Fatal("Failed to create query embedder", zap.Error(err))
+	}
 	logger.Info("Embedders created",
 		zap.String("provider", provName),
 		zap.String("model", vecCfg.Model),
@@ -239,25 +246,47 @@ func (h *embeddingHealthChecker) HealthCheck(ctx context.Context) error {
 // buildEmbedder assembles the decorator chain: OpenAI -> Cached -> Instrumented -> Instruction
 func buildEmbedder(
 	provName string,
-	provCfg config.ProviderConfig,
+	provCfg *config.ProviderConfig,
 	vecCfg config.VectorizerConfig,
 	instruction string,
 	store db.Store,
 	budget embeddinguc.BudgetChecker,
 	logger *zap.Logger,
-) domain.Embedder {
-	// Base provider (with transport metrics built-in)
-	base := openaiEmb.NewEmbedder(&openaiEmb.Config{
-		APIKey:     provCfg.APIKey,
-		BaseURL:    provCfg.BaseURL,
-		Model:      vecCfg.Model,
-		Dimensions: vecCfg.Dimensions,
-		Provider:   provName,
-		Logger:     logger,
-	})
+) (domain.Embedder, error) {
+	var (
+		base domain.Embedder
+		err  error
+	)
+
+	switch provCfg.Backend {
+	case "", "openai":
+		base = openaiEmb.NewEmbedder(&openaiEmb.Config{
+			APIKey:     provCfg.APIKey,
+			BaseURL:    provCfg.BaseURL,
+			Model:      vecCfg.Model,
+			Dimensions: vecCfg.Dimensions,
+			Provider:   provName,
+			Logger:     logger,
+		})
+	case "onnx":
+		base, err = onnxEmb.NewEmbedder(&onnxEmb.Config{
+			ModelDir:          provCfg.ModelDir,
+			Model:             vecCfg.Model,
+			Dimensions:        vecCfg.Dimensions,
+			MaxLength:         provCfg.MaxLength,
+			ExecutionProvider: provCfg.ExecutionProvider,
+			Provider:          provName,
+			Logger:            logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create onnx embedder: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported embedding backend %q", provCfg.Backend)
+	}
 
 	// Cached
-	var embedder domain.Embedder = base
+	embedder := base
 	if store != nil {
 		embedder = embcache.New(base, store, metrics.EmbeddingCacheTotal, logger)
 	}
@@ -269,10 +298,10 @@ func buildEmbedder(
 
 	// Instruction prefix (outermost — cache key includes instruction)
 	if instruction != "" {
-		return domain.NewInstructionEmbedder(embedder, instruction)
+		return domain.NewInstructionEmbedder(embedder, instruction), nil
 	}
 
-	return embedder
+	return embedder, nil
 }
 
 // jsonRecoverer is a recovery middleware that returns JSON instead of a plain text stacktrace.

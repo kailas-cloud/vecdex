@@ -47,6 +47,11 @@ build:
     go fmt ./...
     go vet ./...
 
+# Refresh minimal local ONNX assets for all-MiniLM-L6-v2 in ./models
+download-model-all-minilm:
+    mkdir -p models/all-MiniLM-L6-v2
+    hf download sentence-transformers/all-MiniLM-L6-v2 onnx/model.onnx tokenizer.json config.json --local-dir models/all-MiniLM-L6-v2
+
 # Run linter
 lint:
     golangci-lint run ./...
@@ -71,12 +76,18 @@ test-pytest-valkey:
     cd tests && docker compose --profile valkey up --build --abort-on-container-exit --exit-code-from pytest-valkey
     cd tests && docker compose --profile valkey down -v
 
+# Run pytest E2E suite against local ONNX embedding model
+test-pytest-valkey-onnx:
+    cd tests && docker compose --profile valkey-onnx up --build --abort-on-container-exit --exit-code-from pytest-valkey-onnx
+    cd tests && docker compose --profile valkey-onnx down -v
+
 # Run pytest E2E suite
 test-pytest: test-pytest-valkey
 
 # Clean pytest containers and volumes
 clean-pytest:
     cd tests && docker compose --profile valkey down -v
+    cd tests && docker compose --profile valkey-onnx down -v
 
 # Dry-run GoReleaser (snapshot build, no publish)
 release-dry:

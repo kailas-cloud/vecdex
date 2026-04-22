@@ -11,6 +11,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 VECDEX_BASE_URL = os.environ.get("VECDEX_BASE_URL", "http://localhost:8080")
 VECDEX_API_KEY = os.environ.get("VECDEX_API_KEY", "test-api-key")
 DB_DRIVER = os.environ.get("DB_DRIVER", "valkey")
+VECDEX_VECTOR_DIM = int(os.environ.get("VECDEX_VECTOR_DIM", "1024"))
 
 
 def unique_name() -> str:

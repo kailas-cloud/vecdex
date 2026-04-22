@@ -6,6 +6,7 @@ import pytest
 
 from conftest import (
     assert_no_embedding_headers,
+    VECDEX_VECTOR_DIM,
 )
 
 
@@ -148,7 +149,7 @@ class TestSimilarParams:
         for item in resp.json()["items"]:
             assert "vector" in item
             assert isinstance(item["vector"], list)
-            assert len(item["vector"]) == 1024
+            assert len(item["vector"]) == VECDEX_VECTOR_DIM
 
     def test_without_include_vectors_no_vector_field(self, client, populated_collection):
         coll = populated_collection["name"]

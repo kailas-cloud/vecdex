@@ -32,11 +32,10 @@ RUN set -eux; \
 
 FROM golang:1.25 AS go-base
 
-ARG CGO_ENABLED=0
-
 COPY --from=onnxruntime /opt/onnxruntime /opt/onnxruntime
 
 ENV ONNXRUNTIME_DIR=/opt/onnxruntime/current
+ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-I${ONNXRUNTIME_DIR}/include"
 ENV CGO_LDFLAGS="-L${ONNXRUNTIME_DIR}/lib -lonnxruntime"
 ENV LD_LIBRARY_PATH="${ONNXRUNTIME_DIR}/lib"
@@ -49,7 +48,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=${CGO_ENABLED} go build -o /vecdex ./cmd/vecdex
+RUN go build -buildvcs=false -o /vecdex ./cmd/vecdex
 
 FROM debian:bookworm-slim
 
@@ -63,6 +62,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=onnxruntime /opt/onnxruntime /opt/onnxruntime
 COPY --from=build /vecdex /app/vecdex
 COPY config/ /app/config/
+COPY models/ /app/models/
 
 ENV ONNXRUNTIME_DIR=/opt/onnxruntime/current
 ENV LD_LIBRARY_PATH="${ONNXRUNTIME_DIR}/lib"

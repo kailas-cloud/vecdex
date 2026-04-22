@@ -27,7 +27,6 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        CGO_ENABLED: ${VECDEX_CGO_ENABLED:-0}
         ONNXRUNTIME_VERSION: ${ONNXRUNTIME_VERSION:-1.24.4}
     ports:
       - "8080:8080"
@@ -44,7 +43,6 @@ services:
       dockerfile: Dockerfile
       target: go-base
       args:
-        CGO_ENABLED: ${VECDEX_CGO_ENABLED:-0}
         ONNXRUNTIME_VERSION: ${ONNXRUNTIME_VERSION:-1.24.4}
     working_dir: /workspace
     volumes:
@@ -57,7 +55,6 @@ services:
     environment:
       - ENV=docker
       - VALKEY_ADDR=valkey:6379
-      - CGO_ENABLED=${VECDEX_CGO_ENABLED:-0}
     command: >
       sh -c "
         go mod download &&
