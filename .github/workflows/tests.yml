@@ -7,6 +7,11 @@ on:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
+      - 'Dockerfile'
+      - 'config/**'
+      - 'models/**'
+      - 'tests/**'
+      - '.gitattributes'
       - '.github/workflows/tests.yml'
       - '.testcoverage.yml'
   pull_request:
@@ -15,6 +20,11 @@ on:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
+      - 'Dockerfile'
+      - 'config/**'
+      - 'models/**'
+      - 'tests/**'
+      - '.gitattributes'
       - '.github/workflows/tests.yml'
       - '.testcoverage.yml'
 
@@ -103,3 +113,28 @@ jobs:
         if: always()
         working-directory: ./tests
         run: docker compose --profile valkey down -v
+
+  e2e-pytest-onnx:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code with Git LFS assets
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          lfs: true
+
+      - name: Run pytest E2E (valkey-onnx)
+        working-directory: ./tests
+        run: |
+          docker compose --profile valkey-onnx up \
+            --build --abort-on-container-exit \
+            --exit-code-from pytest-valkey-onnx
+
+      - name: Show logs on failure
+        if: failure()
+        working-directory: ./tests
+        run: docker compose --profile valkey-onnx logs
+
+      - name: Cleanup
+        if: always()
+        working-directory: ./tests
+        run: docker compose --profile valkey-onnx down -v

@@ -47,7 +47,7 @@ build:
     go fmt ./...
     go vet ./...
 
-# Download minimal local ONNX assets for all-MiniLM-L6-v2 to ./models
+# Refresh minimal local ONNX assets for all-MiniLM-L6-v2 in ./models
 download-model-all-minilm:
     mkdir -p models/all-MiniLM-L6-v2
     hf download sentence-transformers/all-MiniLM-L6-v2 onnx/model.onnx tokenizer.json config.json --local-dir models/all-MiniLM-L6-v2

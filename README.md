@@ -247,8 +247,7 @@ docker compose up vecdex
 # API is running at http://localhost:8080
 ```
 
-The Docker image preinstalls CPU ONNX Runtime from the official Linux release tarballs for `linux/amd64` and `linux/arm64` and exposes `ONNXRUNTIME_DIR`/`LD_LIBRARY_PATH` inside the container. For future Go inference wiring, switch the build to CGO with `VECDEX_CGO_ENABLED=1 docker compose build vecdex`.
-For local ONNX runs, download the minimal host-side model assets first and the image will copy them into `/app/models/all-MiniLM-L6-v2`.
+The Docker image preinstalls CPU ONNX Runtime from the official Linux release tarballs for `linux/amd64` and `linux/arm64` and exposes `ONNXRUNTIME_DIR`/`LD_LIBRARY_PATH` inside the container. For local ONNX runs, the image copies the Git LFS-tracked model assets from `./models` into `/app/models/all-MiniLM-L6-v2`.
 
 ### From source
 
@@ -284,7 +283,6 @@ vecdex uses YAML config files from `config/` selected by the `ENV` environment v
 
 ```bash
 just test-unit              # Unit tests (no Valkey needed)
-just download-model-all-minilm  # Host-side HF download into ./models
 just test-pytest-valkey     # E2E — supported Valkey stack (300+ pytest tests)
 VECDEX_CGO_ENABLED=1 just test-pytest-valkey-onnx  # E2E — local ONNX model
 just test-pytest            # Alias to the Valkey E2E suite
@@ -294,7 +292,9 @@ just pre-commit             # build + lint + unit tests
 The pytest E2E suite runs in Docker Compose with a mock embedding server — no API keys required for CI.
 The `vecdex` Docker image used in the stack already carries ONNX Runtime for both Intel/AMD64 Linux and Apple Silicon Docker hosts (`linux/arm64`).
 The root `test` helper service now reuses the same Go + ONNX Runtime Docker base instead of a separate Alpine image, so future CGO-backed inference tests can run in the same environment shape.
-For the local model path, first run `just download-model-all-minilm`, which performs a host-side `hf download` of only `onnx/model.onnx`, `tokenizer.json`, and `config.json` into `./models/all-MiniLM-L6-v2`. Then use the dedicated `tests/docker-compose.yml` `valkey-onnx` profile. It builds the server with `CGO_ENABLED=1`, copies `./models` into the image, switches `ENV=docker-onnx`, and runs pytest against the in-container model directory `/app/models/all-MiniLM-L6-v2`.
+The local ONNX path uses the dedicated `tests/docker-compose.yml` `valkey-onnx` profile. It builds the server with `CGO_ENABLED=1`, copies the repository `./models` directory into the image, switches `ENV=docker-onnx`, and runs pytest against the in-container model directory `/app/models/all-MiniLM-L6-v2`.
+The model artifacts are expected to be stored in Git LFS. After clone, fetch them with `git lfs pull` if your checkout did not already do that.
+Before committing model updates, install Git LFS locally and run `git lfs install`; otherwise raw binaries can end up in normal git history instead of LFS objects.
 
 ## Roadmap
 
