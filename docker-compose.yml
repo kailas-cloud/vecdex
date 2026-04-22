@@ -26,6 +26,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        CGO_ENABLED: ${VECDEX_CGO_ENABLED:-0}
+        ONNXRUNTIME_VERSION: ${ONNXRUNTIME_VERSION:-1.24.4}
     ports:
       - "8080:8080"
     env_file:
@@ -36,7 +39,13 @@ services:
 
   # Test runner для CI-like окружения (Valkey-only stack)
   test:
-    image: golang:1.25-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: go-base
+      args:
+        CGO_ENABLED: ${VECDEX_CGO_ENABLED:-0}
+        ONNXRUNTIME_VERSION: ${ONNXRUNTIME_VERSION:-1.24.4}
     working_dir: /workspace
     volumes:
       - .:/workspace
@@ -48,10 +57,9 @@ services:
     environment:
       - ENV=docker
       - VALKEY_ADDR=valkey:6379
-      - CGO_ENABLED=0
+      - CGO_ENABLED=${VECDEX_CGO_ENABLED:-0}
     command: >
       sh -c "
-        apk add --no-cache git &&
         go mod download &&
         go test ./... -v
       "
