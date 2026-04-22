@@ -48,7 +48,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -o /vecdex ./cmd/vecdex
+RUN go build -buildvcs=false -o /vecdex ./cmd/vecdex
 
 FROM debian:bookworm-slim
 
