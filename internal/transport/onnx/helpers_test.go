@@ -3,6 +3,8 @@ package onnx
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	hftokenizer "github.com/sugarme/tokenizer"
@@ -98,4 +100,113 @@ func TestLoadEncoderConfig(t *testing.T) {
 	if cfg.HiddenSize != 384 {
 		t.Fatalf("HiddenSize = %d, want 384", cfg.HiddenSize)
 	}
+}
+
+func TestResolveModelPaths(t *testing.T) {
+	modelDir := testModelDir(t)
+
+	paths, err := resolveModelPaths(modelDir)
+	if err != nil {
+		t.Fatalf("resolveModelPaths() error = %v", err)
+	}
+	if !strings.HasSuffix(paths.modelPath, filepath.Join("onnx", modelFileName)) {
+		t.Fatalf("unexpected modelPath: %s", paths.modelPath)
+	}
+	if !strings.HasSuffix(paths.tokenizerPath, tokenizerFile) {
+		t.Fatalf("unexpected tokenizerPath: %s", paths.tokenizerPath)
+	}
+	if !strings.HasSuffix(paths.configPath, configFile) {
+		t.Fatalf("unexpected configPath: %s", paths.configPath)
+	}
+}
+
+func TestResolveModelPathsMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := resolveModelPaths(dir); err == nil {
+		t.Fatal("resolveModelPaths() expected error for missing assets")
+	}
+}
+
+func TestLoadTokenizerAndEncodeTexts(t *testing.T) {
+	modelDir := testModelDir(t)
+	tokenizerPath := filepath.Join(modelDir, tokenizerFile)
+
+	tk, err := loadTokenizer(tokenizerPath, 8)
+	if err != nil {
+		t.Fatalf("loadTokenizer() error = %v", err)
+	}
+
+	batch, err := encodeTexts(tk, []string{"hello world", "small local model"})
+	if err != nil {
+		t.Fatalf("encodeTexts() error = %v", err)
+	}
+	if batch.batchSize != 2 {
+		t.Fatalf("batchSize = %d, want 2", batch.batchSize)
+	}
+	if batch.sequenceLen != 8 {
+		t.Fatalf("sequenceLen = %d, want 8", batch.sequenceLen)
+	}
+	if batch.totalTokens <= 0 {
+		t.Fatalf("totalTokens = %d, want > 0", batch.totalTokens)
+	}
+}
+
+func TestVectorRowsFrom2D(t *testing.T) {
+	vectors, err := vectorRowsFrom2D([]float32{
+		3, 4,
+		5, 12,
+	}, 2, 2)
+	if err != nil {
+		t.Fatalf("vectorRowsFrom2D() error = %v", err)
+	}
+	if len(vectors) != 2 {
+		t.Fatalf("len(vectors) = %d, want 2", len(vectors))
+	}
+	for i, vector := range vectors {
+		var norm float32
+		for _, value := range vector {
+			norm += value * value
+		}
+		if norm < 0.99 || norm > 1.01 {
+			t.Fatalf("vector %d not normalized: %f", i, norm)
+		}
+	}
+}
+
+func TestValidate3DShapeErrors(t *testing.T) {
+	if err := validate3DShape(nil, nil, 0, 2, 3); err == nil {
+		t.Fatal("validate3DShape() expected invalid shape error")
+	}
+	if err := validate3DShape(make([]float32, 3), make([]int64, 2), 1, 2, 3); err == nil {
+		t.Fatal("validate3DShape() expected lastHidden size mismatch")
+	}
+	if err := validate3DShape(make([]float32, 6), make([]int64, 1), 1, 2, 3); err == nil {
+		t.Fatal("validate3DShape() expected attentionMask size mismatch")
+	}
+}
+
+func TestResolveSharedLibraryPath(t *testing.T) {
+	t.Setenv("ONNXRUNTIME_SHARED_LIBRARY", "/tmp/libonnxruntime.custom")
+	t.Setenv("ONNXRUNTIME_DIR", "/tmp/ignored")
+	if got := resolveSharedLibraryPath(); got != "/tmp/libonnxruntime.custom" {
+		t.Fatalf("resolveSharedLibraryPath() = %q, want explicit shared library", got)
+	}
+
+	t.Setenv("ONNXRUNTIME_SHARED_LIBRARY", "")
+	t.Setenv("ONNXRUNTIME_DIR", "/tmp/onnxruntime")
+	got := resolveSharedLibraryPath()
+	if !strings.Contains(got, filepath.Join("lib", "libonnxruntime")) {
+		t.Fatalf("resolveSharedLibraryPath() = %q, want ONNXRUNTIME_DIR-based path", got)
+	}
+}
+
+func testModelDir(t *testing.T) string {
+	t.Helper()
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", ".."))
+	return filepath.Join(root, "models", "all-MiniLM-L6-v2")
 }
