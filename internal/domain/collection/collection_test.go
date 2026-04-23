@@ -135,6 +135,19 @@ func TestNew_DuplicateFieldNames(t *testing.T) {
 	}
 }
 
+func TestNew_ReservedSystemFieldNames(t *testing.T) {
+	tests := []string{SystemParentDocID, SystemChunkIndex}
+	for _, name := range tests {
+		_, err := New("col", TypeText, []field.Field{field.Reconstruct(name, field.Tag)}, 1024)
+		if err == nil {
+			t.Fatalf("expected error for reserved field %q", name)
+		}
+		if !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("error = %q, want reserved", err)
+		}
+	}
+}
+
 func TestNew_MaxFields(t *testing.T) {
 	fields := make([]field.Field, 64)
 	for i := range fields {
@@ -180,6 +193,12 @@ func TestHasField(t *testing.T) {
 	if col.HasField("missing", field.Tag) {
 		t.Error("HasField(missing, tag) = true, want false")
 	}
+	if !col.HasField(SystemParentDocID, field.Tag) {
+		t.Error("HasField(system parent_doc_id, tag) = false, want true")
+	}
+	if !col.HasField(SystemChunkIndex, field.Numeric) {
+		t.Error("HasField(system chunk_index, numeric) = false, want true")
+	}
 }
 
 func TestFieldByName(t *testing.T) {
@@ -197,5 +216,13 @@ func TestFieldByName(t *testing.T) {
 	_, ok = col.FieldByName("missing")
 	if ok {
 		t.Error("FieldByName(missing) found, want not found")
+	}
+
+	found, ok = col.FieldByName(SystemParentDocID)
+	if !ok {
+		t.Fatal("FieldByName(system parent_doc_id) not found")
+	}
+	if found.Name() != SystemParentDocID || found.FieldType() != field.Tag {
+		t.Errorf("system found = (%q, %q)", found.Name(), found.FieldType())
 	}
 }

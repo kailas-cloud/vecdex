@@ -185,6 +185,32 @@ func TestUpsert_PartialFailure(t *testing.T) {
 	}
 }
 
+func TestUpsert_SystemFieldsAllowedWithoutSchema(t *testing.T) {
+	col := makeCollection(t, nil)
+	docs := &mockDocUpserter{}
+	del := &mockDocDeleter{}
+	colls := &mockCollReader{col: col}
+	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
+
+	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
+	item, err := domdoc.New("a", "content", map[string]string{
+		domcol.SystemParentDocID: "a",
+	}, map[string]float64{
+		domcol.SystemChunkIndex: 1,
+	})
+	if err != nil {
+		t.Fatalf("domdoc.New: %v", err)
+	}
+
+	results := svc.Upsert(context.Background(), "test-col", []domdoc.Document{item})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Status() != dombatch.StatusOK {
+		t.Fatalf("expected ok, got %v", results[0].Err())
+	}
+}
+
 func TestUpsert_ExceedsMax(t *testing.T) {
 	col := makeCollection(t, nil)
 	docs := &mockDocUpserter{}

@@ -25,7 +25,7 @@ var (
 
 // Embedder runs local ONNX embedding inference on CPU.
 type Embedder struct {
-	session            *ort.DynamicAdvancedSession
+	sessions           chan *ort.DynamicAdvancedSession
 	tokenizer          textTokenizer
 	modelPath          string
 	maxLength          int
@@ -35,7 +35,6 @@ type Embedder struct {
 	inputNames         []string
 	outputNames        []string
 	expectsTokenTypeID bool
-	mu                 sync.Mutex
 }
 
 // Config holds the ONNX embedding provider settings.
@@ -72,7 +71,13 @@ func NewEmbedder(cfg *Config) (*Embedder, error) {
 	if err != nil {
 		return nil, err
 	}
-	session, err := newSession(resources.paths.modelPath, resources.inputNames, resources.outputNames)
+	poolSize := defaultSessionPoolSize()
+	sessions, err := newSessionPool(
+		resources.paths.modelPath,
+		resources.inputNames,
+		resources.outputNames,
+		poolSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +88,7 @@ func NewEmbedder(cfg *Config) (*Embedder, error) {
 	}
 
 	return &Embedder{
-		session:            session,
+		sessions:           sessions,
 		tokenizer:          resources.tokenizer,
 		modelPath:          resources.paths.modelPath,
 		maxLength:          cfg.MaxLength,
@@ -117,10 +122,8 @@ func (e *Embedder) BatchEmbed(ctx context.Context, texts []string) (domain.Batch
 	if len(texts) == 0 {
 		return domain.BatchEmbeddingResult{}, nil
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
 
-	encoded, embeddings, duration, err := e.runBatch(texts)
+	encoded, embeddings, duration, err := e.runBatch(ctx, texts)
 	if err != nil {
 		return domain.BatchEmbeddingResult{}, err
 	}
@@ -135,7 +138,7 @@ func (e *Embedder) BatchEmbed(ctx context.Context, texts []string) (domain.Batch
 	}, nil
 }
 
-func (e *Embedder) runBatch(texts []string) (encodedBatch, [][]float32, time.Duration, error) {
+func (e *Embedder) runBatch(ctx context.Context, texts []string) (encodedBatch, [][]float32, time.Duration, error) {
 	start := time.Now()
 
 	encoded, err := encodeTexts(e.tokenizer, texts)
@@ -147,7 +150,7 @@ func (e *Embedder) runBatch(texts []string) (encodedBatch, [][]float32, time.Dur
 		return encodedBatch{}, nil, 0, nil
 	}
 
-	outputValues, cleanup, err := e.runSession(&encoded)
+	outputValues, cleanup, err := e.runSession(ctx, &encoded)
 	if err != nil {
 		return encodedBatch{}, nil, 0, err
 	}
@@ -161,21 +164,30 @@ func (e *Embedder) runBatch(texts []string) (encodedBatch, [][]float32, time.Dur
 	return encoded, embeddings, time.Since(start), nil
 }
 
-func (e *Embedder) runSession(encoded *encodedBatch) ([]ort.Value, func(), error) {
+func (e *Embedder) runSession(ctx context.Context, encoded *encodedBatch) ([]ort.Value, func(), error) {
 	inputValues, cleanupInputs, err := e.newInputValues(encoded)
 	if err != nil {
 		e.recordError("input_tensor_error")
 		return nil, nil, err
 	}
 
+	session, releaseSession, err := e.acquireSession(ctx)
+	if err != nil {
+		cleanupInputs()
+		e.recordError("runtime_error")
+		return nil, nil, err
+	}
+
 	outputValues := make([]ort.Value, len(e.outputNames))
-	if err := e.session.Run(inputValues, outputValues); err != nil {
+	if err := session.Run(inputValues, outputValues); err != nil {
+		releaseSession()
 		cleanupInputs()
 		e.recordError("runtime_error")
 		return nil, nil, fmt.Errorf("run onnx session: %w", err)
 	}
 
 	cleanup := func() {
+		releaseSession()
 		destroyValues(outputValues)
 		cleanupInputs()
 	}
@@ -283,6 +295,29 @@ func inspectModelIO(modelPath string) (result modelIO, err error) {
 	return result, nil
 }
 
+func newSessionPool(
+	modelPath string,
+	inputNames []string,
+	outputNames []string,
+	size int,
+) (chan *ort.DynamicAdvancedSession, error) {
+	if size <= 0 {
+		size = 1
+	}
+	pool := make(chan *ort.DynamicAdvancedSession, size)
+	for range size {
+		session, err := newSession(modelPath, inputNames, outputNames)
+		if err != nil {
+			for len(pool) > 0 {
+				_ = (<-pool).Destroy()
+			}
+			return nil, err
+		}
+		pool <- session
+	}
+	return pool, nil
+}
+
 func newSession(modelPath string, inputNames, outputNames []string) (*ort.DynamicAdvancedSession, error) {
 	options, err := ort.NewSessionOptions()
 	if err != nil {
@@ -302,6 +337,37 @@ func newSession(modelPath string, inputNames, outputNames []string) (*ort.Dynami
 		return nil, fmt.Errorf("create onnx session: %w", err)
 	}
 	return session, nil
+}
+
+func (e *Embedder) acquireSession(ctx context.Context) (*ort.DynamicAdvancedSession, func(), error) {
+	select {
+	case session := <-e.sessions:
+		released := false
+		release := func() {
+			if released {
+				return
+			}
+			released = true
+			e.sessions <- session
+		}
+		return session, release, nil
+	case <-ctx.Done():
+		return nil, nil, fmt.Errorf("acquire onnx session: %w", ctx.Err())
+	}
+}
+
+func defaultSessionPoolSize() int {
+	size := runtime.GOMAXPROCS(0)
+	if size < 1 {
+		size = 1
+	}
+	if size < 10 {
+		size = 10
+	}
+	if size > 16 {
+		size = 16
+	}
+	return size
 }
 
 func (e *Embedder) newInputValues(encoded *encodedBatch) ([]ort.Value, func(), error) {

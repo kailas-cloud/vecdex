@@ -7,6 +7,7 @@ import (
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 )
 
 // --- Create ---
@@ -47,6 +48,12 @@ func TestCreate_HappyPath_WithTextSearch(t *testing.T) {
 	ms.createIndexFn = func(_ context.Context, def *db.IndexDefinition) error {
 		if !hasIndexField(def.Fields, "__content", db.IndexFieldText) {
 			t.Fatalf("expected __content TEXT field in index definition: %+v", def.Fields)
+		}
+		if !hasIndexField(def.Fields, domcol.SystemParentDocID, db.IndexFieldTag) {
+			t.Fatalf("expected %s TAG field in index definition: %+v", domcol.SystemParentDocID, def.Fields)
+		}
+		if !hasIndexField(def.Fields, "__n:"+domcol.SystemChunkIndex, db.IndexFieldNumeric) {
+			t.Fatalf("expected %s NUMERIC field in index definition: %+v", domcol.SystemChunkIndex, def.Fields)
 		}
 		return nil
 	}

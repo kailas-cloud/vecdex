@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
@@ -197,8 +198,11 @@ func (s *Service) validatePatchFields(
 func validateSchemaFields(
 	tagKeys, numericKeys []string, fields []field.Field,
 ) error {
-	fieldTypes := make(map[string]field.Type)
+	fieldTypes := make(map[string]field.Type, len(fields)+len(domcol.SystemFields()))
 	for _, f := range fields {
+		fieldTypes[f.Name()] = f.FieldType()
+	}
+	for _, f := range domcol.SystemFields() {
 		fieldTypes[f.Name()] = f.FieldType()
 	}
 

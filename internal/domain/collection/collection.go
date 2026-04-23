@@ -16,7 +16,16 @@ type Type string
 const (
 	// TypeText is the default collection type with embedding-based vector search.
 	TypeText Type = "text"
+	// SystemParentDocID is an implicit tag field available in every collection.
+	SystemParentDocID = "parent_doc_id"
+	// SystemChunkIndex is an implicit numeric field available in every collection.
+	SystemChunkIndex = "chunk_index"
 )
+
+var systemFields = []field.Field{
+	field.Reconstruct(SystemParentDocID, field.Tag),
+	field.Reconstruct(SystemChunkIndex, field.Numeric),
+}
 
 // IsValid checks if the collection type is supported.
 func (t Type) IsValid() bool {
@@ -52,6 +61,9 @@ func validateFields(fields []field.Field) error {
 	}
 	seen := make(map[string]bool, len(fields))
 	for _, f := range fields {
+		if IsSystemField(f.Name()) {
+			return fmt.Errorf("field name %q is reserved for system use", f.Name())
+		}
 		if seen[f.Name()] {
 			return fmt.Errorf("duplicate field name: %s", f.Name())
 		}
@@ -127,6 +139,9 @@ func (c Collection) Revision() int { return c.revision }
 
 // HasField checks if a field with the given name and type exists.
 func (c Collection) HasField(name string, ft field.Type) bool {
+	if sys, ok := SystemFieldByName(name); ok {
+		return sys.FieldType() == ft
+	}
 	for _, f := range c.fields {
 		if f.Name() == name && f.FieldType() == ft {
 			return true
@@ -137,10 +152,36 @@ func (c Collection) HasField(name string, ft field.Type) bool {
 
 // FieldByName looks up a field by name.
 func (c Collection) FieldByName(name string) (field.Field, bool) {
+	if sys, ok := SystemFieldByName(name); ok {
+		return sys, true
+	}
 	for _, f := range c.fields {
 		if f.Name() == name {
 			return f, true
 		}
 	}
 	return field.Field{}, false
+}
+
+// SystemFields returns the implicit indexed fields available in every collection.
+func SystemFields() []field.Field {
+	out := make([]field.Field, len(systemFields))
+	copy(out, systemFields)
+	return out
+}
+
+// SystemFieldByName returns an implicit system field by name.
+func SystemFieldByName(name string) (field.Field, bool) {
+	for _, f := range systemFields {
+		if f.Name() == name {
+			return f, true
+		}
+	}
+	return field.Field{}, false
+}
+
+// IsSystemField reports whether name is reserved for implicit collection fields.
+func IsSystemField(name string) bool {
+	_, ok := SystemFieldByName(name)
+	return ok
 }

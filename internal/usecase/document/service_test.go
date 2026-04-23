@@ -175,6 +175,28 @@ func TestUpsert_UnknownTagAllowed(t *testing.T) {
 	}
 }
 
+func TestUpsert_SystemFieldsAllowedWithoutSchema(t *testing.T) {
+	col := makeCollection(t, nil)
+	repo := &mockDocRepo{}
+	colls := &mockCollReader{col: col}
+	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
+
+	svc := New(repo, colls, embed, embed)
+	doc, err := domdoc.New("doc-1", "content", map[string]string{
+		domcol.SystemParentDocID: "doc-1",
+	}, map[string]float64{
+		domcol.SystemChunkIndex: 1,
+	})
+	if err != nil {
+		t.Fatalf("domdoc.New: %v", err)
+	}
+
+	_, err = svc.Upsert(context.Background(), "test-col", &doc)
+	if err != nil {
+		t.Fatalf("unexpected error for system fields: %v", err)
+	}
+}
+
 func TestUpsert_TypeMismatch(t *testing.T) {
 	col := makeCollection(t, []field.Field{makeField(t, "rating", field.Numeric)})
 	repo := &mockDocRepo{}

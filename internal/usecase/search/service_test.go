@@ -351,6 +351,30 @@ func TestSearch_FilterValidation_ValidRange(t *testing.T) {
 	}
 }
 
+func TestSearch_FilterValidation_SystemFields(t *testing.T) {
+	repo := &mockRepo{
+		knnResults:   []result.Result{result.New("a", 0.9, "text", nil, nil, nil)},
+		textSearchOK: true,
+	}
+	embed := &mockEmbedder{vec: []float32{0.1}}
+	svc := New(repo, mockCollsWithFields(), embed)
+
+	matchCond, _ := filter.NewMatch(domcol.SystemParentDocID, "doc-1")
+	v := 1.0
+	rng, _ := filter.NewRangeFilter(nil, &v, nil, nil)
+	rangeCond, _ := filter.NewRange(domcol.SystemChunkIndex, rng)
+	expr, _ := filter.NewExpression([]filter.Condition{matchCond, rangeCond}, nil, nil)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+
+	results, _, err := svc.Search(context.Background(), "test-col", &r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+}
+
 func TestSearch_CollectionNotFound(t *testing.T) {
 	repo := &mockRepo{textSearchOK: true}
 	embed := &mockEmbedder{vec: []float32{0.1}}
