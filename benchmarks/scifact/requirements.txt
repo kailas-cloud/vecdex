@@ -1,0 +1,4 @@
+datasets>=2.20,<4
+httpx>=0.27,<1
+matplotlib>=3.9,<4
+tokenizers>=0.15,<1
