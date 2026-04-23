@@ -7,6 +7,7 @@ Date: 2026-04-23
 Measure how chunking settings affect SciFact retrieval quality and benchmark cost against the live vecdex Valkey+ONNX stack.
 
 Artifacts:
+
 - `/Users/chistopat/GolandProjects/vecdex/benchmarks/scifact/output/group-a`
 - `/Users/chistopat/GolandProjects/vecdex/benchmarks/scifact/output/group-b`
 - `/Users/chistopat/GolandProjects/vecdex/benchmarks/scifact/output/comparison`
@@ -20,10 +21,12 @@ Artifacts:
 ## Experiment 1: A/B Chunk Groups
 
 Compared:
+
 - Group A: `128/16`
 - Group B: `256/32`
 
 Results:
+
 | Group | Mode | nDCG@10 | MRR@10 | Recall@10 |
 | --- | --- | ---: | ---: | ---: |
 | A `128/16` | semantic | 0.6575 | 0.6259 | 0.7755 |
@@ -32,23 +35,27 @@ Results:
 | B `256/32` | hybrid | 0.6532 | 0.6141 | 0.7919 |
 
 Short readout:
+
 - `128/16` was better on ranking quality
 - `256/32` was better on recall
 - `256/32` was much cheaper operationally than `128/16`
 
 Observed delta from `A` to `B`:
+
 - ranking got slightly worse:
   about `-0.0056` nDCG@10 and `-0.0135` MRR@10 in semantic mode
 - recall got slightly better:
   about `+0.0164` Recall@10
 
 Conclusion:
+
 - Smaller chunks improved ranking a bit, but `128/16` was too expensive for the gain.
 - `256/32` became the practical candidate for follow-up testing.
 
 ## Experiment 2: Fixed Chunk Size 256, Overlap Sweep
 
 Compared:
+
 - `256/0`
 - `256/8`
 - `256/16`
@@ -81,6 +88,7 @@ Speed summary:
 | 256/64 | 198.07 | 10432.57 | 1.65 | 212.00 |
 
 Key findings:
+
 - Best overall quality: `256/32`
 - Best ingest throughput: `256/32`
 - Best total runtime: `256/32`
@@ -89,6 +97,7 @@ Key findings:
 - `hybrid` only slightly beat `semantic` in every group; the gap stayed small
 
 Conclusion:
+
 - Overlap alone does not create a large retrieval improvement.
 - The best practical setting from this sweep is `256/32`.
 - The gain versus `256/0` is real but small, so chunk overlap is not the main bottleneck anymore.
@@ -98,13 +107,16 @@ Conclusion:
 Chunking changes gave incremental improvement, not a step change.
 
 What improved:
+
 - `256/32` raised ranking quality versus `256/0`
 
 What did not happen:
+
 - No overlap setting produced a dramatic jump in relevance metrics
 - `hybrid` did not materially separate from `semantic`
 
 Likely next steps for larger gains:
+
 - add a reranker on top of retrieval candidates
 - improve document aggregation across chunks
 - test a stronger embedding model

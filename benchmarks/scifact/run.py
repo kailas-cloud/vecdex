@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportMissingImports=false
 """Run a chunked SciFact retrieval benchmark against a live vecdex instance."""
 
 from __future__ import annotations
@@ -1209,8 +1210,12 @@ def format_report_query_block(row: dict[str, Any]) -> list[str]:
 
     return [
         f"- Query `{row['query_id']}`: {row['query_text']}",
-        f"  nDCG@10={float(row['ndcg@10']):.4f}, MRR@10={float(row['mrr@10']):.4f}, "
-        f"Recall@10={float(row['recall@10']):.4f}, Recall@20={float(row['recall@20']):.4f}",
+        (
+            f"  nDCG@10={float(row['ndcg@10']):.4f}, "
+            f"MRR@10={float(row['mrr@10']):.4f}, "
+            f"Recall@10={float(row['recall@10']):.4f}, "
+            f"Recall@20={float(row['recall@20']):.4f}"
+        ),
         f"  Relevant docs: {', '.join(relevant_doc_ids[:10]) if relevant_doc_ids else '(none)'}",
         f"  Top docs: {', '.join(top_doc_ids[:10]) if top_doc_ids else '(none)'}",
     ]
@@ -1219,6 +1224,6 @@ def format_report_query_block(row: dict[str, Any]) -> list[str]:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
         print("[error] interrupted", file=sys.stderr)
-        raise SystemExit(130)
+        raise SystemExit(130) from exc

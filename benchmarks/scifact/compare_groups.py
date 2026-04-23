@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportMissingImports=false
 """Compare SciFact benchmark outputs across arbitrary chunking groups."""
 
 from __future__ import annotations
@@ -110,10 +111,21 @@ def write_summary(path: Path, results: list[GroupResult]) -> None:
 
 def write_report(path: Path, results: list[GroupResult]) -> None:
     lines = ["# SciFact Chunking Comparison", ""]
-    lines.append("## Config")
-    lines.append("")
-    lines.append("| Group | Chunk Size | Overlap | Chunks | Avg Chunks/Doc | Total Tokens |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+    lines.extend(build_config_section(results))
+    lines.extend(build_quality_section(results))
+    lines.extend(build_speed_section(results))
+    lines.extend(build_search_speed_section(results))
+    lines.extend(build_best_runs_section(results))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_config_section(results: list[GroupResult]) -> list[str]:
+    lines = [
+        "## Config",
+        "",
+        "| Group | Chunk Size | Overlap | Chunks | Avg Chunks/Doc | Total Tokens |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
     for result in results:
         config = result.summary["config"]
         corpus_stats = result.summary.get("corpus_stats", {})
@@ -124,12 +136,17 @@ def write_report(path: Path, results: list[GroupResult]) -> None:
             f"{float(corpus_stats.get('avg_chunks_per_doc', 0.0)):.2f} | "
             f"{int(ingest.get('total_tokens', 0))} |"
         )
+    lines.append("")
+    return lines
 
-    lines.append("")
-    lines.append("## Quality")
-    lines.append("")
-    lines.append("| Group | Mode | nDCG@10 | MRR@10 | Recall@10 | Recall@20 |")
-    lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
+
+def build_quality_section(results: list[GroupResult]) -> list[str]:
+    lines = [
+        "## Quality",
+        "",
+        "| Group | Mode | nDCG@10 | MRR@10 | Recall@10 | Recall@20 |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
+    ]
     for result in results:
         for mode in sorted(result.summary["metrics_by_mode"]):
             metrics = result.summary["metrics_by_mode"][mode]
@@ -140,12 +157,17 @@ def write_report(path: Path, results: list[GroupResult]) -> None:
                 f"{float(metrics['recall@10']):.4f} | "
                 f"{float(metrics['recall@20']):.4f} |"
             )
+    lines.append("")
+    return lines
 
-    lines.append("")
-    lines.append("## Speed")
-    lines.append("")
-    lines.append("| Group | Ingest sec | Chunks/sec | Tokens/sec | Eval sec | Eval qps | Total sec |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+
+def build_speed_section(results: list[GroupResult]) -> list[str]:
+    lines = [
+        "## Speed",
+        "",
+        "| Group | Ingest sec | Chunks/sec | Tokens/sec | Eval sec | Eval qps | Total sec |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
     for result in results:
         performance = result.summary.get("performance", {})
         ingest = performance.get("ingest", {})
@@ -159,12 +181,17 @@ def write_report(path: Path, results: list[GroupResult]) -> None:
             f"{float(evaluation.get('queries_per_sec', 0.0)):.2f} | "
             f"{float(performance.get('total_elapsed_sec', 0.0)):.2f} |"
         )
+    lines.append("")
+    return lines
 
-    lines.append("")
-    lines.append("## Search Speed By Mode")
-    lines.append("")
-    lines.append("| Group | Mode | Eval sec | Queries/sec |")
-    lines.append("| --- | --- | ---: | ---: |")
+
+def build_search_speed_section(results: list[GroupResult]) -> list[str]:
+    lines = [
+        "## Search Speed By Mode",
+        "",
+        "| Group | Mode | Eval sec | Queries/sec |",
+        "| --- | --- | ---: | ---: |",
+    ]
     for result in results:
         evaluation_by_mode = result.summary.get("performance", {}).get("evaluation", {}).get("by_mode", {})
         for mode in sorted(evaluation_by_mode):
@@ -174,40 +201,64 @@ def write_report(path: Path, results: list[GroupResult]) -> None:
                 f"{float(stats.get('elapsed_sec', 0.0)):.2f} | "
                 f"{float(stats.get('queries_per_sec', 0.0)):.2f} |"
             )
+    lines.append("")
+    return lines
 
-    lines.append("")
-    lines.append("## Best Runs")
-    lines.append("")
+
+def build_best_runs_section(results: list[GroupResult]) -> list[str]:
+    lines = ["## Best Runs", ""]
     for mode in collect_modes(results):
-        best_ndcg = max(results, key=lambda result: float(result.summary["metrics_by_mode"][mode]["ndcg@10"]))
-        best_recall = max(results, key=lambda result: float(result.summary["metrics_by_mode"][mode]["recall@10"]))
-        fastest_search = max(
-            results,
-            key=lambda result: float(
-                result.summary.get("performance", {}).get("evaluation", {}).get("by_mode", {}).get(mode, {}).get("queries_per_sec", 0.0)
-            ),
-        )
-        lines.append(
-            f"- {mode}: best nDCG@10={best_ndcg.label} "
-            f"({float(best_ndcg.summary['metrics_by_mode'][mode]['ndcg@10']):.4f}), "
-            f"best Recall@10={best_recall.label} "
-            f"({float(best_recall.summary['metrics_by_mode'][mode]['recall@10']):.4f}), "
-            f"fastest search={fastest_search.label} "
-            f"({float(fastest_search.summary.get('performance', {}).get('evaluation', {}).get('by_mode', {}).get(mode, {}).get('queries_per_sec', 0.0)):.2f} qps)"
-        )
+        best_ndcg = max(results, key=lambda result, mode_name=mode: ndcg_for_mode(result, mode_name))
+        best_recall = max(results, key=lambda result, mode_name=mode: recall_for_mode(result, mode_name))
+        fastest_search = max(results, key=lambda result, mode_name=mode: search_qps_for_mode(result, mode_name))
+        lines.append(format_best_run_line(mode, best_ndcg, best_recall, fastest_search))
 
-    fastest_ingest = max(results, key=lambda result: float(result.summary.get("performance", {}).get("ingest", {}).get("tokens_per_sec", 0.0)))
-    fastest_total = min(results, key=lambda result: float(result.summary.get("performance", {}).get("total_elapsed_sec", float("inf"))))
+    fastest_ingest = max(results, key=ingest_tokens_per_sec)
+    fastest_total = min(results, key=total_elapsed_sec)
     lines.append(
         f"- ingest throughput winner: {fastest_ingest.label} "
-        f"({float(fastest_ingest.summary.get('performance', {}).get('ingest', {}).get('tokens_per_sec', 0.0)):.2f} tokens/sec)"
+        f"({ingest_tokens_per_sec(fastest_ingest):.2f} tokens/sec)"
     )
     lines.append(
         f"- wall-clock winner: {fastest_total.label} "
-        f"({float(fastest_total.summary.get('performance', {}).get('total_elapsed_sec', 0.0)):.2f}s total)"
+        f"({total_elapsed_sec(fastest_total):.2f}s total)"
+    )
+    return lines
+
+
+def format_best_run_line(
+    mode: str,
+    best_ndcg: GroupResult,
+    best_recall: GroupResult,
+    fastest_search: GroupResult,
+) -> str:
+    return (
+        f"- {mode}: best nDCG@10={best_ndcg.label} ({ndcg_for_mode(best_ndcg, mode):.4f}), "
+        f"best Recall@10={best_recall.label} ({recall_for_mode(best_recall, mode):.4f}), "
+        f"fastest search={fastest_search.label} ({search_qps_for_mode(fastest_search, mode):.2f} qps)"
     )
 
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+def ndcg_for_mode(result: GroupResult, mode: str) -> float:
+    return float(result.summary["metrics_by_mode"][mode]["ndcg@10"])
+
+
+def recall_for_mode(result: GroupResult, mode: str) -> float:
+    return float(result.summary["metrics_by_mode"][mode]["recall@10"])
+
+
+def search_qps_for_mode(result: GroupResult, mode: str) -> float:
+    return float(
+        result.summary.get("performance", {}).get("evaluation", {}).get("by_mode", {}).get(mode, {}).get("queries_per_sec", 0.0)
+    )
+
+
+def ingest_tokens_per_sec(result: GroupResult) -> float:
+    return float(result.summary.get("performance", {}).get("ingest", {}).get("tokens_per_sec", 0.0))
+
+
+def total_elapsed_sec(result: GroupResult) -> float:
+    return float(result.summary.get("performance", {}).get("total_elapsed_sec", float("inf")))
 
 
 def write_plots(plots_dir: Path, results: list[GroupResult]) -> None:
