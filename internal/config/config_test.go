@@ -198,6 +198,18 @@ func TestApplyDefaults(t *testing.T) {
 	if cfg.Index.MaxBatchSize != 100 {
 		t.Errorf("expected MaxBatchSize=100, got %d", cfg.Index.MaxBatchSize)
 	}
+	if cfg.Search.SemanticCandidateFloor != 100 {
+		t.Errorf("expected SemanticCandidateFloor=100, got %d", cfg.Search.SemanticCandidateFloor)
+	}
+	if cfg.Search.SemanticCandidateMultiplier != 2.0 {
+		t.Errorf("expected SemanticCandidateMultiplier=2.0, got %v", cfg.Search.SemanticCandidateMultiplier)
+	}
+	if cfg.Search.BM25CandidateFloor != 100 {
+		t.Errorf("expected BM25CandidateFloor=100, got %d", cfg.Search.BM25CandidateFloor)
+	}
+	if cfg.Search.BM25CandidateMultiplier != 2.0 {
+		t.Errorf("expected BM25CandidateMultiplier=2.0, got %v", cfg.Search.BM25CandidateMultiplier)
+	}
 	if cfg.Storage.KeyPrefix != "vecdex:" {
 		t.Errorf("expected KeyPrefix='vecdex:', got %q", cfg.Storage.KeyPrefix)
 	}
@@ -205,9 +217,15 @@ func TestApplyDefaults(t *testing.T) {
 
 func TestApplyDefaults_NoOverride(t *testing.T) {
 	cfg := Config{
-		HTTP:    HTTPConfig{ReadTimeoutSec: 30, WriteTimeoutSec: 60, ShutdownSec: 5},
-		Valkey:  ValkeyConfig{ReadinessTimeout: 15},
-		Index:   IndexConfig{HNSWM: 16, HNSWEFConstruct: 200, DefaultPageSize: 50, MaxPageSize: 500, MaxBatchSize: 50},
+		HTTP:   HTTPConfig{ReadTimeoutSec: 30, WriteTimeoutSec: 60, ShutdownSec: 5},
+		Valkey: ValkeyConfig{ReadinessTimeout: 15},
+		Index:  IndexConfig{HNSWM: 16, HNSWEFConstruct: 200, DefaultPageSize: 50, MaxPageSize: 500, MaxBatchSize: 50},
+		Search: SearchConfig{
+			SemanticCandidateFloor:      60,
+			SemanticCandidateMultiplier: 3,
+			BM25CandidateFloor:          70,
+			BM25CandidateMultiplier:     4,
+		},
 		Storage: StorageConfig{KeyPrefix: "custom:"},
 	}
 	cfg.ApplyDefaults()
@@ -221,7 +239,53 @@ func TestApplyDefaults_NoOverride(t *testing.T) {
 	if cfg.Index.HNSWM != 16 {
 		t.Errorf("expected HNSWM=16, got %d", cfg.Index.HNSWM)
 	}
+	if cfg.Search.SemanticCandidateFloor != 60 {
+		t.Errorf("expected SemanticCandidateFloor=60, got %d", cfg.Search.SemanticCandidateFloor)
+	}
+	if cfg.Search.SemanticCandidateMultiplier != 3 {
+		t.Errorf("expected SemanticCandidateMultiplier=3, got %v", cfg.Search.SemanticCandidateMultiplier)
+	}
+	if cfg.Search.BM25CandidateFloor != 70 {
+		t.Errorf("expected BM25CandidateFloor=70, got %d", cfg.Search.BM25CandidateFloor)
+	}
+	if cfg.Search.BM25CandidateMultiplier != 4 {
+		t.Errorf("expected BM25CandidateMultiplier=4, got %v", cfg.Search.BM25CandidateMultiplier)
+	}
 	if cfg.Storage.KeyPrefix != "custom:" {
 		t.Errorf("expected KeyPrefix='custom:', got %q", cfg.Storage.KeyPrefix)
 	}
+}
+
+func TestValidate_InvalidSearchConfig(t *testing.T) {
+	t.Run("semantic floor", func(t *testing.T) {
+		cfg := Config{
+			HTTP:   HTTPConfig{Port: 8080},
+			Valkey: ValkeyConfig{Addrs: []string{"localhost:6379"}},
+			Search: SearchConfig{
+				SemanticCandidateFloor:      -1,
+				SemanticCandidateMultiplier: 2,
+				BM25CandidateFloor:          100,
+				BM25CandidateMultiplier:     2,
+			},
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected error for invalid semantic candidate floor")
+		}
+	})
+
+	t.Run("bm25 multiplier", func(t *testing.T) {
+		cfg := Config{
+			HTTP:   HTTPConfig{Port: 8080},
+			Valkey: ValkeyConfig{Addrs: []string{"localhost:6379"}},
+			Search: SearchConfig{
+				SemanticCandidateFloor:      100,
+				SemanticCandidateMultiplier: 2,
+				BM25CandidateFloor:          100,
+				BM25CandidateMultiplier:     0.5,
+			},
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Fatal("expected error for invalid bm25 candidate multiplier")
+		}
+	})
 }

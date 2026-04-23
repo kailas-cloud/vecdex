@@ -9,7 +9,7 @@ The harness:
 - recreates one vecdex collection with chunk metadata
 - indexes all chunks via REST batch upserts
 - evaluates `semantic` and `hybrid` search
-- collapses chunk hits back to source-document rankings
+- reads the ready document-level rankings returned by vecdex
 - writes `summary.json`, `per_query.csv`, `report.md`, and PNG plots under `plots/`
 
 ## Prerequisites
@@ -72,11 +72,7 @@ python benchmarks/scifact/run.py \
 - `--chunk-group` applies a named preset and overrides manual `--chunk-size` / `--overlap` values.
 - `--chunk-size` counts total tokens per chunk, including tokenizer-added special tokens.
 - Chunking uses the local [`tokenizer.json`](/Users/chistopat/GolandProjects/vecdex/models/all-MiniLM-L6-v2/tokenizer.json) so chunk length matches the ONNX model path used by `vecdex`.
-- Search is evaluated at document level:
-  - vecdex returns chunk hits
-  - hits are grouped by `parent_doc_id`
-  - each document keeps the best chunk score
-  - ties break by earlier chunk rank, then lower `chunk_index`
+- Search is evaluated at document level directly from vecdex API responses.
 
 ## Output artifacts
 
@@ -86,7 +82,7 @@ python benchmarks/scifact/run.py \
 - `plots/aggregate_metrics.png`: grouped bar chart for the aggregate metrics
 - `plots/ndcg_at_10_boxplot.png`: per-query nDCG@10 distribution by mode
 - `plots/mrr_at_10_boxplot.png`: per-query MRR@10 distribution by mode
-- `plots/unique_docs_histogram.png`: diagnostic histogram for chunk-hit diversity
+- `plots/result_count_histogram.png`: histogram of returned document counts per query
 
 ## Defaults
 

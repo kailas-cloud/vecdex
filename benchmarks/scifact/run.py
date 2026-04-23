@@ -59,23 +59,6 @@ class ChunkDocument:
     token_count: int
 
 
-@dataclass(frozen=True)
-class SearchHit:
-    chunk_id: str
-    source_doc_id: str
-    chunk_idx: int
-    score: float
-    rank: int
-
-
-@dataclass(frozen=True)
-class AggregatedDoc:
-    doc_id: str
-    score: float
-    best_rank: int
-    best_chunk_idx: int
-
-
 class VecdexClient:
     """Minimal REST client for the benchmark harness."""
 
@@ -744,9 +727,7 @@ def evaluate_mode(
             retries=retries,
             sleep_sec=sleep_sec,
         )
-        chunk_hits = parse_chunk_hits(payload)
-        doc_ranking = aggregate_chunk_hits(chunk_hits)
-        ranked_doc_ids = [doc.doc_id for doc in doc_ranking]
+        ranked_doc_ids = parse_ranked_doc_ids(payload)
         relevant = qrels.get(query_id, {})
         metrics = compute_metrics(ranked_doc_ids, relevant)
 
@@ -756,8 +737,7 @@ def evaluate_mode(
                 "query_id": query_id,
                 "query_text": query_text,
                 "num_relevant_docs": len(relevant),
-                "num_chunk_hits": len(chunk_hits),
-                "unique_docs_in_top_chunks": len({hit.source_doc_id for hit in chunk_hits}),
+                "num_results": len(ranked_doc_ids),
                 "ndcg@10": metrics["ndcg@10"],
                 "mrr@10": metrics["mrr@10"],
                 "recall@10": metrics["recall@10"],
@@ -802,56 +782,8 @@ def search_with_retry(
     raise RuntimeError(f"search failed after {retries} retries for mode={mode}") from last_error
 
 
-def parse_chunk_hits(payload: dict[str, Any]) -> list[SearchHit]:
-    hits: list[SearchHit] = []
-    for rank, item in enumerate(payload.get("items", []), start=1):
-        tags = item.get("tags") or {}
-        numerics = item.get("numerics") or {}
-        source_doc_id = tags.get(PARENT_DOC_ID_TAG)
-        if source_doc_id is None:
-            raise RuntimeError(f"search hit missing {PARENT_DOC_ID_TAG} tag: {item}")
-
-        raw_chunk_idx = numerics.get(CHUNK_INDEX_NUMERIC, 0)
-        chunk_idx = int(raw_chunk_idx)
-        hits.append(
-            SearchHit(
-                chunk_id=str(item.get("id", "")),
-                source_doc_id=str(source_doc_id),
-                chunk_idx=chunk_idx,
-                score=float(item.get("score", 0.0)),
-                rank=rank,
-            )
-        )
-    return hits
-
-
-def aggregate_chunk_hits(hits: list[SearchHit]) -> list[AggregatedDoc]:
-    best_by_doc: dict[str, AggregatedDoc] = {}
-    for hit in hits:
-        candidate = AggregatedDoc(
-            doc_id=hit.source_doc_id,
-            score=hit.score,
-            best_rank=hit.rank,
-            best_chunk_idx=hit.chunk_idx,
-        )
-        current = best_by_doc.get(hit.source_doc_id)
-        if current is None or is_better_aggregated_doc(candidate, current):
-            best_by_doc[hit.source_doc_id] = candidate
-
-    return sorted(
-        best_by_doc.values(),
-        key=lambda doc: (-doc.score, doc.best_rank, doc.best_chunk_idx, sortable_id(doc.doc_id)),
-    )
-
-
-def is_better_aggregated_doc(candidate: AggregatedDoc, current: AggregatedDoc) -> bool:
-    if candidate.score != current.score:
-        return candidate.score > current.score
-    if candidate.best_rank != current.best_rank:
-        return candidate.best_rank < current.best_rank
-    if candidate.best_chunk_idx != current.best_chunk_idx:
-        return candidate.best_chunk_idx < current.best_chunk_idx
-    return sortable_id(candidate.doc_id) < sortable_id(current.doc_id)
+def parse_ranked_doc_ids(payload: dict[str, Any]) -> list[str]:
+    return [str(item.get("id", "")) for item in payload.get("items", []) if item.get("id")]
 
 
 def compute_metrics(ranked_doc_ids: list[str], relevant: dict[str, int]) -> dict[str, float]:
@@ -907,8 +839,7 @@ def summarize_mode(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "mrr@10": 0.0,
             "recall@10": 0.0,
             "recall@20": 0.0,
-            "avg_unique_docs_in_top_chunks": 0.0,
-            "avg_chunk_hits": 0.0,
+            "avg_results": 0.0,
             "best_queries": [],
             "worst_queries": [],
         }
@@ -933,8 +864,7 @@ def summarize_mode(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mrr@10": avg("mrr@10"),
         "recall@10": avg("recall@10"),
         "recall@20": avg("recall@20"),
-        "avg_unique_docs_in_top_chunks": avg("unique_docs_in_top_chunks"),
-        "avg_chunk_hits": avg("num_chunk_hits"),
+        "avg_results": avg("num_results"),
         "best_queries": [
             format_query_summary(row)
             for row in reversed(ranked_rows[-5:])
@@ -984,8 +914,7 @@ def write_per_query_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "query_id",
         "query_text",
         "num_relevant_docs",
-        "num_chunk_hits",
-        "unique_docs_in_top_chunks",
+        "num_results",
         "ndcg@10",
         "mrr@10",
         "recall@10",
@@ -1014,7 +943,7 @@ def write_plots(plots_dir: Path, summary: dict[str, Any], rows: list[dict[str, A
     write_aggregate_metrics_plot(plots_dir, summary, plt)
     write_per_query_metric_boxplot(plots_dir, rows, plt, metric="ndcg@10", title="Per-query nDCG@10")
     write_per_query_metric_boxplot(plots_dir, rows, plt, metric="mrr@10", title="Per-query MRR@10")
-    write_unique_docs_histogram(plots_dir, rows, plt)
+    write_result_count_histogram(plots_dir, rows, plt)
 
 
 def write_aggregate_metrics_plot(plots_dir: Path, summary: dict[str, Any], plt: Any) -> None:
@@ -1088,23 +1017,23 @@ def write_per_query_metric_boxplot(
     plt.close(fig)
 
 
-def write_unique_docs_histogram(plots_dir: Path, rows: list[dict[str, Any]], plt: Any) -> None:
+def write_result_count_histogram(plots_dir: Path, rows: list[dict[str, Any]], plt: Any) -> None:
     rows_by_mode: dict[str, list[int]] = {}
     for row in rows:
-        rows_by_mode.setdefault(str(row["mode"]), []).append(int(row["unique_docs_in_top_chunks"]))
+        rows_by_mode.setdefault(str(row["mode"]), []).append(int(row["num_results"]))
 
     fig, ax = plt.subplots(figsize=(10, 6))
     bins = 20
     for mode, values in rows_by_mode.items():
         ax.hist(values, bins=bins, alpha=0.45, label=mode)
 
-    ax.set_title("Unique documents present in top chunk hits per query")
-    ax.set_xlabel("unique docs in top chunk hits")
+    ax.set_title("Documents returned per query")
+    ax.set_xlabel("documents returned")
     ax.set_ylabel("query count")
     ax.legend(title="mode")
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
-    fig.savefig(plots_dir / "unique_docs_histogram.png", dpi=180)
+    fig.savefig(plots_dir / "result_count_histogram.png", dpi=180)
     plt.close(fig)
 
 
@@ -1137,13 +1066,13 @@ def build_report(
     lines.append("")
     lines.append("## Metrics")
     lines.append("")
-    lines.append("| Mode | nDCG@10 | MRR@10 | Recall@10 | Recall@20 | Avg unique docs in top chunks | Avg chunk hits |")
-    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| Mode | nDCG@10 | MRR@10 | Recall@10 | Recall@20 | Avg returned docs |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
     for mode, metrics in summary["metrics_by_mode"].items():
         lines.append(
             f"| {mode} | {metrics['ndcg@10']:.4f} | {metrics['mrr@10']:.4f} | "
             f"{metrics['recall@10']:.4f} | {metrics['recall@20']:.4f} | "
-            f"{metrics['avg_unique_docs_in_top_chunks']:.2f} | {metrics['avg_chunk_hits']:.2f} |"
+            f"{metrics['avg_results']:.2f} |"
         )
 
     rows_by_mode: dict[str, list[dict[str, Any]]] = {}

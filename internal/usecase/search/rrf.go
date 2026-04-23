@@ -12,7 +12,8 @@ const rrfK = 60
 // fuseRRF merges KNN and BM25 results via Reciprocal Rank Fusion.
 // score(d) = sum of 1/(k + rank_i(d)) for each ranking where d appears.
 // When a document appears in both lists, the KNN result is kept (it may contain the vector).
-func fuseRRF(knn, bm25 []result.Result, topK int) []result.Result {
+// limit<=0 keeps the full merged list.
+func fuseRRF(knn, bm25 []result.Result, limit int) []result.Result {
 	type scored struct {
 		res   result.Result
 		score float64
@@ -51,8 +52,8 @@ func fuseRRF(knn, bm25 []result.Result, topK int) []result.Result {
 		return results[i].Score() > results[j].Score()
 	})
 
-	if len(results) > topK {
-		results = results[:topK]
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
 	}
 
 	return results

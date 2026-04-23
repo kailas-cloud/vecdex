@@ -153,6 +153,12 @@ func main() {
 	docSvc := documentuc.New(docRepo, collRepo, docEmbedder, queryEmbedder).
 		WithPagination(cfg.Index.DefaultPageSize, cfg.Index.MaxPageSize)
 	searchSvc := searchuc.New(searchRepo, collRepo, queryEmbedder).WithDocuments(docRepo)
+	searchSvc = searchSvc.WithConfig(searchuc.Config{
+		SemanticCandidateFloor:      cfg.Search.SemanticCandidateFloor,
+		SemanticCandidateMultiplier: cfg.Search.SemanticCandidateMultiplier,
+		BM25CandidateFloor:          cfg.Search.BM25CandidateFloor,
+		BM25CandidateMultiplier:     cfg.Search.BM25CandidateMultiplier,
+	})
 	// Type-assert: если docEmbedder поддерживает batch — передаём в batch service
 	var batchEmb batchuc.BulkEmbedder
 	if be, ok := docEmbedder.(domain.BatchEmbedder); ok {

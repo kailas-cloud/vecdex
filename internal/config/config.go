@@ -18,6 +18,7 @@ type Config struct {
 	Embedding EmbeddingConfig `yaml:"embedding"`
 	Auth      AuthConfig      `yaml:"auth"`
 	Index     IndexConfig     `yaml:"index"`
+	Search    SearchConfig    `yaml:"search"`
 	Storage   StorageConfig   `yaml:"storage"`
 	Logging   LoggingConfig   `yaml:"logging"`
 }
@@ -54,6 +55,14 @@ type IndexConfig struct {
 	DefaultPageSize int `yaml:"default_page_size"`
 	MaxPageSize     int `yaml:"max_page_size"`
 	MaxBatchSize    int `yaml:"max_batch_size"`
+}
+
+// SearchConfig holds retrieval window settings for chunk-based search.
+type SearchConfig struct {
+	SemanticCandidateFloor      int     `yaml:"semantic_candidate_floor"`
+	SemanticCandidateMultiplier float64 `yaml:"semantic_candidate_multiplier"`
+	BM25CandidateFloor          int     `yaml:"bm25_candidate_floor"`
+	BM25CandidateMultiplier     float64 `yaml:"bm25_candidate_multiplier"`
 }
 
 // StorageConfig holds storage settings.
@@ -172,6 +181,18 @@ func (c *Config) applyScalarDefaults() {
 	if c.Index.MaxBatchSize <= 0 {
 		c.Index.MaxBatchSize = 100
 	}
+	if c.Search.SemanticCandidateFloor <= 0 {
+		c.Search.SemanticCandidateFloor = 100
+	}
+	if c.Search.SemanticCandidateMultiplier <= 0 {
+		c.Search.SemanticCandidateMultiplier = 2.0
+	}
+	if c.Search.BM25CandidateFloor <= 0 {
+		c.Search.BM25CandidateFloor = 100
+	}
+	if c.Search.BM25CandidateMultiplier <= 0 {
+		c.Search.BM25CandidateMultiplier = 2.0
+	}
 	if c.Storage.KeyPrefix == "" {
 		c.Storage.KeyPrefix = "vecdex:"
 	}
@@ -197,52 +218,108 @@ func (c *Config) applyProviderDefaults() {
 
 // Validate checks the configuration for correctness.
 func (c *Config) Validate() error {
+	if err := c.validateHTTP(); err != nil {
+		return err
+	}
+	if err := c.validateValkey(); err != nil {
+		return err
+	}
+	if err := c.validateSearch(); err != nil {
+		return err
+	}
+	return c.validateEmbeddingProviders()
+}
+
+func (c *Config) validateHTTP() error {
 	if c.HTTP.Port <= 0 || c.HTTP.Port > 65535 {
 		return fmt.Errorf("http.port must be between 1 and 65535, got %d", c.HTTP.Port)
 	}
+	return nil
+}
+
+func (c *Config) validateValkey() error {
 	if len(c.Valkey.Addrs) == 0 {
 		return fmt.Errorf("valkey.addrs is required")
 	}
+	return nil
+}
+
+func (c *Config) validateSearch() error {
+	if c.Search.SemanticCandidateFloor < 0 {
+		return fmt.Errorf(
+			"search.semantic_candidate_floor must be greater than or equal to 0, got %d",
+			c.Search.SemanticCandidateFloor,
+		)
+	}
+	if c.Search.SemanticCandidateMultiplier != 0 && c.Search.SemanticCandidateMultiplier < 1 {
+		return fmt.Errorf(
+			"search.semantic_candidate_multiplier must be at least 1, got %g",
+			c.Search.SemanticCandidateMultiplier,
+		)
+	}
+	if c.Search.BM25CandidateFloor < 0 {
+		return fmt.Errorf(
+			"search.bm25_candidate_floor must be greater than or equal to 0, got %d",
+			c.Search.BM25CandidateFloor,
+		)
+	}
+	if c.Search.BM25CandidateMultiplier != 0 && c.Search.BM25CandidateMultiplier < 1 {
+		return fmt.Errorf(
+			"search.bm25_candidate_multiplier must be at least 1, got %g",
+			c.Search.BM25CandidateMultiplier,
+		)
+	}
+	return nil
+}
+
+func (c *Config) validateEmbeddingProviders() error {
 	for name := range c.Embedding.Providers {
-		p := c.Embedding.Providers[name]
-		switch p.Backend {
-		case "", "openai", "onnx":
+		provider := c.Embedding.Providers[name]
+		if err := validateProviderConfig(name, &provider); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateProviderConfig(name string, p *ProviderConfig) error {
+	switch p.Backend {
+	case "", "openai", "onnx":
+		// ok
+	default:
+		return fmt.Errorf(
+			"embedding.providers.%s.backend must be \"openai\" or \"onnx\", got %q",
+			name, p.Backend,
+		)
+	}
+	if p.Backend == "onnx" {
+		if p.ModelDir == "" {
+			return fmt.Errorf("embedding.providers.%s.model_dir is required for onnx backend", name)
+		}
+		switch p.ExecutionProvider {
+		case "", "cpu":
 			// ok
 		default:
 			return fmt.Errorf(
-				"embedding.providers.%s.backend must be \"openai\" or \"onnx\", got %q",
-				name, p.Backend,
+				"embedding.providers.%s.execution_provider must be \"cpu\", got %q",
+				name, p.ExecutionProvider,
 			)
 		}
-		if p.Backend == "onnx" {
-			if p.ModelDir == "" {
-				return fmt.Errorf("embedding.providers.%s.model_dir is required for onnx backend", name)
-			}
-			switch p.ExecutionProvider {
-			case "", "cpu":
-				// ok
-			default:
-				return fmt.Errorf(
-					"embedding.providers.%s.execution_provider must be \"cpu\", got %q",
-					name, p.ExecutionProvider,
-				)
-			}
-			if p.MaxLength <= 0 {
-				return fmt.Errorf(
-					"embedding.providers.%s.max_length must be greater than 0 for onnx backend, got %d",
-					name, p.MaxLength,
-				)
-			}
-		}
-		switch p.Budget.Action {
-		case "", "warn", "reject":
-			// ok
-		default:
+		if p.MaxLength <= 0 {
 			return fmt.Errorf(
-				"embedding.providers.%s.budget.action must be \"warn\" or \"reject\", got %q",
-				name, p.Budget.Action,
+				"embedding.providers.%s.max_length must be greater than 0 for onnx backend, got %d",
+				name, p.MaxLength,
 			)
 		}
+	}
+	switch p.Budget.Action {
+	case "", "warn", "reject":
+		// ok
+	default:
+		return fmt.Errorf(
+			"embedding.providers.%s.budget.action must be \"warn\" or \"reject\", got %q",
+			name, p.Budget.Action,
+		)
 	}
 	return nil
 }

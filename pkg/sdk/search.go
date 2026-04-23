@@ -63,7 +63,7 @@ func (s *SearchService) Query(
 	return SearchResponse{
 		Results: fromSearchResults(results),
 		Total:   total,
-		Limit:   opts.Limit,
+		Limit:   req.Limit(),
 	}, nil
 }
 

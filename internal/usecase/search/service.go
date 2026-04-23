@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
@@ -14,22 +15,39 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain/search/result"
 )
 
+type asyncSearchResult struct {
+	results []result.Result
+	err     error
+}
+
 // Service handles document search across semantic, keyword, and hybrid modes.
 type Service struct {
 	repo  Repository
 	colls CollectionReader
 	embed Embedder
 	docs  DocumentReader
+	cfg   Config
 }
 
 // New creates a search service.
 func New(repo Repository, colls CollectionReader, embed Embedder) *Service {
-	return &Service{repo: repo, colls: colls, embed: embed}
+	return &Service{
+		repo:  repo,
+		colls: colls,
+		embed: embed,
+		cfg:   DefaultConfig(),
+	}
 }
 
 // WithDocuments sets the document reader for Similar() functionality.
 func (s *Service) WithDocuments(docs DocumentReader) *Service {
 	s.docs = docs
+	return s
+}
+
+// WithConfig overrides retrieval window defaults.
+func (s *Service) WithConfig(cfg Config) *Service {
+	s.cfg = normalizeConfig(cfg)
 	return s
 }
 
@@ -169,7 +187,14 @@ func (s *Service) searchSemantic(
 	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
 
 	results, err := s.repo.SearchKNN(
-		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(),
+		ctx, collectionName, embResult.Embedding, req.Filters(),
+		candidateWindow(
+			req.TopK(),
+			req.Limit(),
+			s.cfg.SemanticCandidateFloor,
+			s.cfg.SemanticCandidateMultiplier,
+		),
+		req.IncludeVectors(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search knn: %w", err)
@@ -180,7 +205,7 @@ func (s *Service) searchSemantic(
 		return results[i].Score() > results[j].Score()
 	})
 
-	return results, nil
+	return aggregateToDocuments(results, req.TopK()), nil
 }
 
 // searchKeyword runs BM25 search when the backend exposes a TEXT field.
@@ -192,12 +217,18 @@ func (s *Service) searchKeyword(
 	}
 
 	results, err := s.repo.SearchBM25(
-		ctx, collectionName, req.Query(), req.Filters(), req.TopK(),
+		ctx, collectionName, req.Query(), req.Filters(),
+		candidateWindow(
+			req.TopK(),
+			req.Limit(),
+			s.cfg.BM25CandidateFloor,
+			s.cfg.BM25CandidateMultiplier,
+		),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search bm25: %w", err)
 	}
-	return results, nil
+	return aggregateToDocuments(results, req.TopK()), nil
 }
 
 // searchHybrid runs KNN + BM25 in parallel, then fuses via RRF.
@@ -208,28 +239,102 @@ func (s *Service) searchHybrid(
 		return nil, domain.ErrKeywordSearchNotSupported
 	}
 
+	semanticCandidateK := candidateWindow(
+		req.TopK(),
+		req.Limit(),
+		s.cfg.SemanticCandidateFloor,
+		s.cfg.SemanticCandidateMultiplier,
+	)
+	bm25CandidateK := candidateWindow(
+		req.TopK(),
+		req.Limit(),
+		s.cfg.BM25CandidateFloor,
+		s.cfg.BM25CandidateMultiplier,
+	)
+
+	semanticCh := make(chan asyncSearchResult, 1)
+	keywordCh := make(chan asyncSearchResult, 1)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go s.runHybridSemantic(ctx, collectionName, req, semanticCandidateK, semanticCh, &wg)
+	go s.runHybridKeyword(ctx, collectionName, req, bm25CandidateK, keywordCh, &wg)
+
+	semanticRes, keywordRes := waitHybridResults(semanticCh, keywordCh, &wg)
+
+	if semanticRes.err != nil {
+		return nil, semanticRes.err
+	}
+	if keywordRes.err != nil {
+		return nil, keywordRes.err
+	}
+
+	fused := fuseRRF(semanticRes.results, keywordRes.results, 0)
+	return aggregateToDocuments(fused, req.TopK()), nil
+}
+
+func (s *Service) runHybridSemantic(
+	ctx context.Context,
+	collectionName string,
+	req *request.Request,
+	candidateK int,
+	out chan<- asyncSearchResult,
+	wg *sync.WaitGroup,
+) {
+	defer wg.Done()
+
 	embResult, err := s.embed.Embed(ctx, req.Query())
 	if err != nil {
-		return nil, fmt.Errorf("vectorize query: %w", err)
+		out <- asyncSearchResult{err: fmt.Errorf("vectorize query: %w", err)}
+		return
 	}
 
 	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
 
-	knnResults, err := s.repo.SearchKNN(
-		ctx, collectionName, embResult.Embedding, req.Filters(), req.TopK(), req.IncludeVectors(),
+	results, err := s.repo.SearchKNN(
+		ctx, collectionName, embResult.Embedding, req.Filters(), candidateK, req.IncludeVectors(),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("search knn: %w", err)
+		out <- asyncSearchResult{err: fmt.Errorf("search knn: %w", err)}
+		return
 	}
 
-	bm25Results, err := s.repo.SearchBM25(
-		ctx, collectionName, req.Query(), req.Filters(), req.TopK(),
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score() > results[j].Score()
+	})
+
+	out <- asyncSearchResult{results: results}
+}
+
+func (s *Service) runHybridKeyword(
+	ctx context.Context,
+	collectionName string,
+	req *request.Request,
+	candidateK int,
+	out chan<- asyncSearchResult,
+	wg *sync.WaitGroup,
+) {
+	defer wg.Done()
+
+	results, err := s.repo.SearchBM25(
+		ctx, collectionName, req.Query(), req.Filters(), candidateK,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("search bm25: %w", err)
+		out <- asyncSearchResult{err: fmt.Errorf("search bm25: %w", err)}
+		return
 	}
 
-	return fuseRRF(knnResults, bm25Results, req.TopK()), nil
+	out <- asyncSearchResult{results: results}
+}
+
+func waitHybridResults(
+	semanticCh, keywordCh <-chan asyncSearchResult,
+	wg *sync.WaitGroup,
+) (semanticRes, keywordRes asyncSearchResult) {
+	semanticRes = <-semanticCh
+	keywordRes = <-keywordCh
+	wg.Wait()
+	return semanticRes, keywordRes
 }
 
 // validateFiltersAgainstSchema ensures filter fields exist in the collection
