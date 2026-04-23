@@ -26,23 +26,27 @@ type mockRepo struct {
 	knnCalled      bool
 	bm25Called     bool
 	lastIncludeVec bool
+	lastKNNK       int
+	lastBM25K      int
 }
 
 func (m *mockRepo) SearchKNN(
 	_ context.Context, _ string,
-	_ []float32, _ filter.Expression, _ int,
+	_ []float32, _ filter.Expression, topK int,
 	includeVectors bool,
 ) ([]result.Result, error) {
 	m.knnCalled = true
 	m.lastIncludeVec = includeVectors
+	m.lastKNNK = topK
 	return m.knnResults, m.knnErr
 }
 
 func (m *mockRepo) SearchBM25(
 	_ context.Context, _ string,
-	_ string, _ filter.Expression, _ int,
+	_ string, _ filter.Expression, topK int,
 ) ([]result.Result, error) {
 	m.bm25Called = true
+	m.lastBM25K = topK
 	return m.bm25Results, m.bm25Err
 }
 
@@ -91,6 +95,17 @@ func makeSearchRequest(t *testing.T, m mode.Mode) *request.Request {
 		t.Fatalf("request.New: %v", err)
 	}
 	return &r
+}
+
+func makeChunkResult(id, parentID string, score float64, chunkIndex float64, content string) result.Result {
+	return result.New(
+		id,
+		score,
+		content,
+		map[string]string{domcol.SystemParentDocID: parentID},
+		map[string]float64{domcol.SystemChunkIndex: chunkIndex},
+		nil,
+	)
 }
 
 // --- Tests ---
@@ -174,6 +189,99 @@ func TestSearch_Hybrid(t *testing.T) {
 	}
 	if !embed.called {
 		t.Error("expected Embed to be called")
+	}
+}
+
+func TestSearch_SemanticAggregatesChunksToDocuments(t *testing.T) {
+	repo := &mockRepo{
+		knnResults: []result.Result{
+			makeChunkResult("paper-a-chunk-1", "paper-a", 0.95, 1, "best chunk"),
+			makeChunkResult("paper-a-chunk-2", "paper-a", 0.91, 2, "later chunk"),
+			makeChunkResult("paper-b-chunk-1", "paper-b", 0.80, 1, "other doc"),
+		},
+		textSearchOK: true,
+	}
+	embed := &mockEmbedder{vec: []float32{0.1, 0.2}}
+	svc := New(repo, defaultMockColls(), embed)
+
+	req := makeSearchRequest(t, mode.Semantic)
+	results, total, err := svc.Search(context.Background(), "test-col", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("expected total=2 docs, got %d", total)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 document results, got %d", len(results))
+	}
+	if results[0].ID() != "paper-a" {
+		t.Fatalf("expected first doc ID paper-a, got %s", results[0].ID())
+	}
+	if results[0].Content() != "best chunk" {
+		t.Fatalf("expected best chunk content, got %q", results[0].Content())
+	}
+}
+
+func TestSearch_HybridAggregatesAfterChunkRRF(t *testing.T) {
+	repo := &mockRepo{
+		knnResults: []result.Result{
+			makeChunkResult("paper-a-sem-1", "paper-a", 0.92, 1, "semantic hit"),
+			makeChunkResult("paper-b-sem-1", "paper-b", 0.80, 1, "semantic only"),
+		},
+		bm25Results: []result.Result{
+			makeChunkResult("paper-a-bm25-2", "paper-a", 0.88, 2, "keyword hit"),
+			makeChunkResult("paper-c-bm25-1", "paper-c", 0.70, 1, "keyword only"),
+		},
+		textSearchOK: true,
+	}
+	embed := &mockEmbedder{vec: []float32{0.1}}
+	svc := New(repo, defaultMockColls(), embed)
+
+	req := makeSearchRequest(t, mode.Hybrid)
+	results, total, err := svc.Search(context.Background(), "test-col", req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("expected total=3 docs, got %d", total)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 document results, got %d", len(results))
+	}
+	if results[0].ID() != "paper-a" {
+		t.Fatalf("expected fused overlap doc first, got %s", results[0].ID())
+	}
+}
+
+func TestSearch_UsesConfiguredCandidateWindows(t *testing.T) {
+	repo := &mockRepo{
+		knnResults:   []result.Result{result.New("a", 0.9, "text", nil, nil, nil)},
+		bm25Results:  []result.Result{result.New("b", 0.8, "text", nil, nil, nil)},
+		textSearchOK: true,
+	}
+	embed := &mockEmbedder{vec: []float32{0.1}}
+	svc := New(repo, defaultMockColls(), embed).WithConfig(Config{
+		SemanticCandidateFloor:      25,
+		SemanticCandidateMultiplier: 3,
+		BM25CandidateFloor:          25,
+		BM25CandidateMultiplier:     4,
+	})
+
+	r, err := request.New("test query", mode.Hybrid, filter.Expression{}, 10, 5, 0, false)
+	if err != nil {
+		t.Fatalf("request.New: %v", err)
+	}
+
+	_, _, err = svc.Search(context.Background(), "test-col", &r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.lastKNNK != 30 {
+		t.Fatalf("expected semantic candidate window 30, got %d", repo.lastKNNK)
+	}
+	if repo.lastBM25K != 40 {
+		t.Fatalf("expected bm25 candidate window 40, got %d", repo.lastBM25K)
 	}
 }
 

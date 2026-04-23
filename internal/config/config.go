@@ -18,6 +18,7 @@ type Config struct {
 	Embedding EmbeddingConfig `yaml:"embedding"`
 	Auth      AuthConfig      `yaml:"auth"`
 	Index     IndexConfig     `yaml:"index"`
+	Search    SearchConfig    `yaml:"search"`
 	Storage   StorageConfig   `yaml:"storage"`
 	Logging   LoggingConfig   `yaml:"logging"`
 }
@@ -54,6 +55,14 @@ type IndexConfig struct {
 	DefaultPageSize int `yaml:"default_page_size"`
 	MaxPageSize     int `yaml:"max_page_size"`
 	MaxBatchSize    int `yaml:"max_batch_size"`
+}
+
+// SearchConfig holds retrieval window settings for chunk-based search.
+type SearchConfig struct {
+	SemanticCandidateFloor      int     `yaml:"semantic_candidate_floor"`
+	SemanticCandidateMultiplier float64 `yaml:"semantic_candidate_multiplier"`
+	BM25CandidateFloor          int     `yaml:"bm25_candidate_floor"`
+	BM25CandidateMultiplier     float64 `yaml:"bm25_candidate_multiplier"`
 }
 
 // StorageConfig holds storage settings.
@@ -172,6 +181,18 @@ func (c *Config) applyScalarDefaults() {
 	if c.Index.MaxBatchSize <= 0 {
 		c.Index.MaxBatchSize = 100
 	}
+	if c.Search.SemanticCandidateFloor <= 0 {
+		c.Search.SemanticCandidateFloor = 100
+	}
+	if c.Search.SemanticCandidateMultiplier <= 0 {
+		c.Search.SemanticCandidateMultiplier = 2.0
+	}
+	if c.Search.BM25CandidateFloor <= 0 {
+		c.Search.BM25CandidateFloor = 100
+	}
+	if c.Search.BM25CandidateMultiplier <= 0 {
+		c.Search.BM25CandidateMultiplier = 2.0
+	}
 	if c.Storage.KeyPrefix == "" {
 		c.Storage.KeyPrefix = "vecdex:"
 	}
@@ -202,6 +223,30 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Valkey.Addrs) == 0 {
 		return fmt.Errorf("valkey.addrs is required")
+	}
+	if c.Search.SemanticCandidateFloor < 0 {
+		return fmt.Errorf(
+			"search.semantic_candidate_floor must be greater than or equal to 0, got %d",
+			c.Search.SemanticCandidateFloor,
+		)
+	}
+	if c.Search.SemanticCandidateMultiplier != 0 && c.Search.SemanticCandidateMultiplier < 1 {
+		return fmt.Errorf(
+			"search.semantic_candidate_multiplier must be at least 1, got %g",
+			c.Search.SemanticCandidateMultiplier,
+		)
+	}
+	if c.Search.BM25CandidateFloor < 0 {
+		return fmt.Errorf(
+			"search.bm25_candidate_floor must be greater than or equal to 0, got %d",
+			c.Search.BM25CandidateFloor,
+		)
+	}
+	if c.Search.BM25CandidateMultiplier != 0 && c.Search.BM25CandidateMultiplier < 1 {
+		return fmt.Errorf(
+			"search.bm25_candidate_multiplier must be at least 1, got %g",
+			c.Search.BM25CandidateMultiplier,
+		)
 	}
 	for name := range c.Embedding.Providers {
 		p := c.Embedding.Providers[name]

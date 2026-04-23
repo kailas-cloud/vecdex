@@ -498,8 +498,9 @@ paths:
         - **semantic**: pure vector KNN search.
         - **keyword**: pure BM25 full-text search.
 
-        `top_k` controls the KNN computation window size.
-        `limit` controls how many results are returned to the client from that window.
+        Retrieval runs over chunk candidates internally, but the API returns documents.
+        `top_k` controls the document ranking window before final limiting.
+        `limit` controls how many documents are returned to the client.
         There is no offset — if you need more results, increase `top_k`.
 
         Supports structured filters with `must`/`should`/`must_not` conditions.
@@ -1239,10 +1240,10 @@ components:
           maximum: 500
           default: 10
           description: |
-            Number of nearest neighbors for KNN (the computation window).
-            The server computes this many candidates, then `limit` controls
-            how many are returned. Increasing `top_k` is more expensive.
-            In keyword mode, controls BM25 result window size.
+            Document ranking window size before applying `limit`.
+            The server may retrieve more chunk candidates per search mode internally,
+            aggregate them into documents, and then keep the top `top_k` documents
+            before applying `limit`.
           example: 50
         min_score:
           type: number
@@ -1270,9 +1271,9 @@ components:
           maximum: 100
           default: 20
           description: |
-            Maximum results to return from the top_k window. If top_k=100
-            and limit=10, the server computes 100 nearest neighbors but
-            returns only the top 10. If limit > top_k, the server silently
+            Maximum documents to return from the `top_k` document window.
+            If top_k=100 and limit=10, the server ranks 100 documents and
+            returns the top 10. If limit > top_k, the server silently
             caps to top_k (no error).
 
     SimilarRequest:
@@ -1425,7 +1426,8 @@ components:
       properties:
         id:
           type: string
-          example: chunk-1
+          description: Document identifier. For chunked ingest, this is the parent document id.
+          example: article-1
         score:
           type: number
           format: double
@@ -1439,6 +1441,7 @@ components:
           example: 0.87
         content:
           type: string
+          description: Representative snippet for the ranked document. For chunked ingest, this is the best matching chunk.
           example: "CreateCollection validates name and creates FT index"
         tags:
           type: object
@@ -1469,10 +1472,9 @@ components:
         total:
           type: integer
           description: |
-            Number of candidates that passed min_score filtering within the
-            top_k window. May be greater than `limit` — in that case, increase
-            `limit` to see more results from the same KNN window. To get more
-            candidates overall, increase `top_k`.
+            Number of document candidates that passed min_score filtering within
+            the `top_k` document window. May be greater than `limit` — in that
+            case, increase `limit` to see more results from the same ranked set.
           example: 42
         limit:
           type: integer

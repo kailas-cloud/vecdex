@@ -19,6 +19,12 @@ index:
   max_page_size: 100
   max_batch_size: 100
 
+search:
+  semantic_candidate_floor: 100
+  semantic_candidate_multiplier: 2.0
+  bm25_candidate_floor: 100
+  bm25_candidate_multiplier: 2.0
+
 storage:
   key_prefix: "vecdex:"
 

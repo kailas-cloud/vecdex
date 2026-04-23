@@ -170,7 +170,7 @@ func waitForDocumentSearch(
 				Must: []FilterCondition{{Key: ParentDocIDTag, Match: "paper-scifact"}},
 			},
 		})
-		if err == nil && len(resp.Results) >= 2 {
+		if err == nil && len(resp.Results) >= 1 {
 			return resp
 		}
 		if time.Now().After(deadline) {
@@ -182,7 +182,13 @@ func waitForDocumentSearch(
 
 func assertDocumentSearchResults(t *testing.T, results []SearchResult) {
 	t.Helper()
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
 	for _, item := range results {
+		if item.ID != "paper-scifact" {
+			t.Fatalf("id = %q, want paper-scifact", item.ID)
+		}
 		if item.Tags[ParentDocIDTag] != "paper-scifact" {
 			t.Fatalf("parent_doc_id = %q, want paper-scifact", item.Tags[ParentDocIDTag])
 		}
@@ -212,10 +218,13 @@ func queryChunkRange(
 
 func assertChunkRangeResults(t *testing.T, results []SearchResult) {
 	t.Helper()
-	if len(results) == 0 {
-		t.Fatal("expected chunk_index>=2 results")
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
 	}
 	for _, item := range results {
+		if item.ID != "paper-scifact" {
+			t.Fatalf("id = %q, want paper-scifact", item.ID)
+		}
 		if item.Numerics[ChunkIndexNumeric] < 2 {
 			t.Fatalf("chunk_index range filter violated: %v", item.Numerics[ChunkIndexNumeric])
 		}

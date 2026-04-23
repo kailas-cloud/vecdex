@@ -68,10 +68,9 @@ class TestChunkedDocumentSearch:
             filters={"must": [{"key": "parent_doc_id", "match": "paper-a"}]},
         )
         items = resp.json()["items"]
-        ids = {item["id"] for item in items}
-        assert ids == {"paper-a-chunk-0001", "paper-a-chunk-0002"}
-        for item in items:
-            assert item["tags"]["parent_doc_id"] == "paper-a"
+        assert [item["id"] for item in items] == ["paper-a"]
+        assert items[0]["tags"]["parent_doc_id"] == "paper-a"
+        assert items[0]["numerics"]["chunk_index"] >= 1
 
         resp = search_with_retry(
             client,
@@ -88,7 +87,7 @@ class TestChunkedDocumentSearch:
             },
         )
         items = resp.json()["items"]
-        assert [item["id"] for item in items] == ["paper-a-chunk-0002"]
+        assert [item["id"] for item in items] == ["paper-a"]
         assert items[0]["numerics"]["chunk_index"] == 2
 
     def test_parallel_batch_ingest_preserves_document_lookup(
@@ -142,7 +141,7 @@ class TestChunkedDocumentSearch:
             filters={"must": [{"key": "parent_doc_id", "match": "paper-par"}]},
         )
         items = resp.json()["items"]
-        assert len(items) == 100
-        chunk_indexes = sorted(item["numerics"]["chunk_index"] for item in items)
-        assert chunk_indexes == list(range(1, 101))
-        assert all(item["tags"]["parent_doc_id"] == "paper-par" for item in items)
+        assert len(items) == 1
+        assert items[0]["id"] == "paper-par"
+        assert items[0]["tags"]["parent_doc_id"] == "paper-par"
+        assert items[0]["numerics"]["chunk_index"] >= 1
