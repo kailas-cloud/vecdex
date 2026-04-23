@@ -175,39 +175,65 @@ func splitSentences(text string) []string {
 	sentences := make([]string, 0, 8)
 	start := 0
 	for i := 0; i < len(runes); i++ {
-		r := runes[i]
-		if r == '\n' {
-			if i+1 < len(runes) && runes[i+1] == '\n' {
-				if sentence := normalizeSentenceRunes(runes[start:i]); sentence != "" {
-					sentences = append(sentences, sentence)
-				}
-				start = i + 2
-				i++
-			}
+		if handled, nextStart, nextIndex := consumeParagraphBreak(runes, start, i, &sentences); handled {
+			start = nextStart
+			i = nextIndex
 			continue
 		}
-		if !isSentenceTerminator(r) {
+		boundaryEnd, ok := sentenceBoundaryEnd(runes, i)
+		if !ok {
 			continue
 		}
-
-		j := i + 1
-		for j < len(runes) && isClosingPunctuation(runes[j]) {
-			j++
-		}
-		if j < len(runes) && !unicode.IsSpace(runes[j]) && runes[j] != '\n' {
-			continue
-		}
-
-		if sentence := normalizeSentenceRunes(runes[start:j]); sentence != "" {
-			sentences = append(sentences, sentence)
-		}
-		start = j
+		appendSentence(&sentences, runes[start:boundaryEnd])
+		start = boundaryEnd
 	}
 
-	if sentence := normalizeSentenceRunes(runes[start:]); sentence != "" {
-		sentences = append(sentences, sentence)
-	}
+	appendSentence(&sentences, runes[start:])
 	return sentences
+}
+
+func consumeParagraphBreak(
+	runes []rune,
+	start int,
+	index int,
+	sentences *[]string,
+) (handled bool, nextStart, nextIndex int) {
+	if runes[index] != '\n' || index+1 >= len(runes) || runes[index+1] != '\n' {
+		return false, start, index
+	}
+	appendSentence(sentences, runes[start:index])
+	return true, index + 2, index + 1
+}
+
+func sentenceBoundaryEnd(runes []rune, index int) (int, bool) {
+	if !isSentenceTerminator(runes[index]) {
+		return 0, false
+	}
+	end := skipClosingPunctuation(runes, index+1)
+	if !isBoundaryWhitespace(runes, end) {
+		return 0, false
+	}
+	return end, true
+}
+
+func skipClosingPunctuation(runes []rune, index int) int {
+	for index < len(runes) && isClosingPunctuation(runes[index]) {
+		index++
+	}
+	return index
+}
+
+func isBoundaryWhitespace(runes []rune, index int) bool {
+	if index >= len(runes) {
+		return true
+	}
+	return unicode.IsSpace(runes[index]) || runes[index] == '\n'
+}
+
+func appendSentence(sentences *[]string, runes []rune) {
+	if sentence := normalizeSentenceRunes(runes); sentence != "" {
+		*sentences = append(*sentences, sentence)
+	}
 }
 
 func normalizeSentenceRunes(runes []rune) string {
@@ -389,60 +415,82 @@ func collectIngestResults(
 
 func (i *TextIngestor) chunkDocuments(docs []Document) ([]Document, error) {
 	if i.chunker == nil {
-		plain := make([]Document, 0, len(docs))
-		for _, doc := range docs {
-			plain = append(plain, withParentDocIDTag(doc, doc.ID))
-		}
-		return plain, nil
+		return addParentTags(docs), nil
 	}
 
 	chunked := make([]Document, 0, len(docs))
 	for _, doc := range docs {
-		parts, err := i.chunker.Chunk(doc.Content)
+		docChunks, err := i.chunkDocument(doc)
 		if err != nil {
-			return nil, fmt.Errorf("chunk document %q: %w", doc.ID, err)
+			return nil, err
 		}
-		if len(parts) <= 1 {
-			chunked = append(chunked, withParentDocIDTag(doc, doc.ID))
-			continue
-		}
-
-		for idx, part := range parts {
-			tags := cloneTags(doc.Tags)
-			if tags == nil {
-				tags = make(map[string]string, 1)
-			}
-			tags[ParentDocIDTag] = doc.ID
-			numerics := cloneNumerics(doc.Numerics)
-			if numerics == nil {
-				numerics = make(map[string]float64, 1)
-			}
-			numerics[ChunkIndexNumeric] = float64(idx + 1)
-			chunked = append(chunked, Document{
-				ID:       fmt.Sprintf("%s-chunk-%04d", doc.ID, idx+1),
-				Content:  part.Content,
-				Tags:     tags,
-				Numerics: numerics,
-			})
-		}
+		chunked = append(chunked, docChunks...)
 	}
 	return chunked, nil
 }
 
+func addParentTags(docs []Document) []Document {
+	plain := make([]Document, 0, len(docs))
+	for _, doc := range docs {
+		plain = append(plain, withParentDocIDTag(doc, doc.ID))
+	}
+	return plain
+}
+
+func (i *TextIngestor) chunkDocument(doc Document) ([]Document, error) {
+	parts, err := i.chunker.Chunk(doc.Content)
+	if err != nil {
+		return nil, fmt.Errorf("chunk document %q: %w", doc.ID, err)
+	}
+	if len(parts) <= 1 {
+		return []Document{withParentDocIDTag(doc, doc.ID)}, nil
+	}
+	return buildChunkDocuments(doc, parts), nil
+}
+
+func buildChunkDocuments(doc Document, parts []TextChunk) []Document {
+	chunked := make([]Document, 0, len(parts))
+	for idx, part := range parts {
+		chunked = append(chunked, newChunkDocument(doc, part, idx+1))
+	}
+	return chunked
+}
+
+func newChunkDocument(doc Document, part TextChunk, chunkIndex int) Document {
+	tags := ensureTags(cloneTags(doc.Tags))
+	tags[ParentDocIDTag] = doc.ID
+	numerics := ensureNumerics(cloneNumerics(doc.Numerics))
+	numerics[ChunkIndexNumeric] = float64(chunkIndex)
+	return Document{
+		ID:       fmt.Sprintf("%s-chunk-%04d", doc.ID, chunkIndex),
+		Content:  part.Content,
+		Tags:     tags,
+		Numerics: numerics,
+	}
+}
+
 func withParentDocIDTag(doc Document, parentDocID string) Document {
-	tags := cloneTags(doc.Tags)
-	if tags == nil {
-		tags = make(map[string]string, 1)
-	}
+	tags := ensureTags(cloneTags(doc.Tags))
 	tags[ParentDocIDTag] = parentDocID
-	numerics := cloneNumerics(doc.Numerics)
-	if numerics == nil {
-		numerics = make(map[string]float64, 1)
-	}
+	numerics := ensureNumerics(cloneNumerics(doc.Numerics))
 	numerics[ChunkIndexNumeric] = 1
 	doc.Tags = tags
 	doc.Numerics = numerics
 	return doc
+}
+
+func ensureTags(tags map[string]string) map[string]string {
+	if tags != nil {
+		return tags
+	}
+	return make(map[string]string, 1)
+}
+
+func ensureNumerics(numerics map[string]float64) map[string]float64 {
+	if numerics != nil {
+		return numerics
+	}
+	return make(map[string]float64, 1)
 }
 
 func shardDocuments(docs []Document, size int) [][]Document {
