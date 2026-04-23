@@ -32,7 +32,7 @@ func aggregateToDocuments(results []result.Result, topK int) []result.Result {
 		}
 
 		current, ok := bestByDoc[docID]
-		if !ok || betterDocumentCandidate(candidate, current) {
+		if !ok || betterDocumentCandidate(&candidate, &current) {
 			bestByDoc[docID] = candidate
 		}
 	}
@@ -43,7 +43,7 @@ func aggregateToDocuments(results []result.Result, topK int) []result.Result {
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
-		return betterDocumentCandidate(candidates[i], candidates[j])
+		return betterDocumentCandidate(&candidates[i], &candidates[j])
 	})
 
 	if len(candidates) > topK {
@@ -65,7 +65,7 @@ func aggregateToDocuments(results []result.Result, topK int) []result.Result {
 	return docResults
 }
 
-func betterDocumentCandidate(candidate, current docCandidate) bool {
+func betterDocumentCandidate(candidate, current *docCandidate) bool {
 	if candidate.score != current.score {
 		return candidate.score > current.score
 	}

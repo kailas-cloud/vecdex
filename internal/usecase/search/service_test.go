@@ -97,7 +97,7 @@ func makeSearchRequest(t *testing.T, m mode.Mode) *request.Request {
 	return &r
 }
 
-func makeChunkResult(id, parentID string, score float64, chunkIndex float64, content string) result.Result {
+func makeChunkResult(id, parentID string, score, chunkIndex float64, content string) result.Result {
 	return result.New(
 		id,
 		score,

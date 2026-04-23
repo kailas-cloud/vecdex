@@ -217,10 +217,15 @@ func TestApplyDefaults(t *testing.T) {
 
 func TestApplyDefaults_NoOverride(t *testing.T) {
 	cfg := Config{
-		HTTP:    HTTPConfig{ReadTimeoutSec: 30, WriteTimeoutSec: 60, ShutdownSec: 5},
-		Valkey:  ValkeyConfig{ReadinessTimeout: 15},
-		Index:   IndexConfig{HNSWM: 16, HNSWEFConstruct: 200, DefaultPageSize: 50, MaxPageSize: 500, MaxBatchSize: 50},
-		Search:  SearchConfig{SemanticCandidateFloor: 60, SemanticCandidateMultiplier: 3, BM25CandidateFloor: 70, BM25CandidateMultiplier: 4},
+		HTTP:   HTTPConfig{ReadTimeoutSec: 30, WriteTimeoutSec: 60, ShutdownSec: 5},
+		Valkey: ValkeyConfig{ReadinessTimeout: 15},
+		Index:  IndexConfig{HNSWM: 16, HNSWEFConstruct: 200, DefaultPageSize: 50, MaxPageSize: 500, MaxBatchSize: 50},
+		Search: SearchConfig{
+			SemanticCandidateFloor:      60,
+			SemanticCandidateMultiplier: 3,
+			BM25CandidateFloor:          70,
+			BM25CandidateMultiplier:     4,
+		},
 		Storage: StorageConfig{KeyPrefix: "custom:"},
 	}
 	cfg.ApplyDefaults()
