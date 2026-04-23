@@ -30,6 +30,10 @@ DEFAULT_COLLECTION = "scifact-benchmark"
 DEFAULT_QRELS_SPLIT = "test"
 DEFAULT_CHUNK_SIZE = 256
 DEFAULT_OVERLAP = 0
+CHUNK_GROUP_PRESETS = {
+    "A": {"chunk_size": 128, "overlap": 16},
+    "B": {"chunk_size": 256, "overlap": 32},
+}
 DEFAULT_TOP_K = 500
 DEFAULT_LIMIT = 100
 DEFAULT_MODES = ("semantic", "hybrid")
@@ -39,6 +43,10 @@ DEFAULT_SEARCH_RETRIES = 8
 DEFAULT_SEARCH_RETRY_SLEEP = 1.5
 PARENT_DOC_ID_TAG = "parent_doc_id"
 CHUNK_INDEX_NUMERIC = "chunk_index"
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
 
 
 @dataclass(frozen=True)
@@ -96,16 +104,7 @@ class VecdexClient:
             )
 
     def create_collection(self, name: str) -> dict[str, Any]:
-        response = self._client.post(
-            "/collections",
-            json={
-                "name": name,
-                "fields": [
-                    {"name": PARENT_DOC_ID_TAG, "type": "tag"},
-                    {"name": CHUNK_INDEX_NUMERIC, "type": "numeric"},
-                ],
-            },
-        )
+        response = self._client.post("/collections", json={"name": name})
         response.raise_for_status()
         return response.json()
 
@@ -155,6 +154,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-cache-dir", default=None, help="optional Hugging Face datasets cache dir")
     parser.add_argument("--dataset", default="scifact", help="dataset label written to the report")
     parser.add_argument("--qrels-split", default=DEFAULT_QRELS_SPLIT, help="SciFact qrels split to evaluate")
+    parser.add_argument(
+        "--chunk-group",
+        choices=sorted(CHUNK_GROUP_PRESETS),
+        default=None,
+        help="named chunking preset: A=128/16, B=256/32 (overrides --chunk-size/--overlap)",
+    )
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE, help="maximum tokens per chunk, including special tokens")
     parser.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP, help="token overlap between adjacent chunks")
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K, help="vecdex top_k search parameter")
@@ -165,11 +170,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--search-retries", type=int, default=DEFAULT_SEARCH_RETRIES, help="retries for readiness probe and empty-search retry wrapper")
     parser.add_argument("--search-retry-sleep", type=float, default=DEFAULT_SEARCH_RETRY_SLEEP, help="seconds between search retries")
     parser.add_argument("--http-timeout", type=float, default=120.0, help="HTTP timeout in seconds")
+    parser.add_argument("--ingest-only", action="store_true", help="stop after building and ingesting the full chunked corpus")
     return parser.parse_args()
 
 
 def main() -> int:
+    benchmark_started_at = time.perf_counter()
     args = parse_args()
+    apply_chunk_group_preset(args)
     validate_args(args)
 
     output_dir = Path(args.output_dir).resolve()
@@ -178,7 +186,12 @@ def main() -> int:
     if not tokenizer_path.is_file():
         raise FileNotFoundError(f"tokenizer not found: {tokenizer_path}")
 
-    print(f"[info] tokenizer: {tokenizer_path}")
+    log(f"[info] tokenizer: {tokenizer_path}")
+    if args.chunk_group:
+        log(
+            f"[info] chunk group={args.chunk_group}: "
+            f"chunk_size={args.chunk_size} overlap={args.overlap}"
+        )
     tokenizer = Tokenizer.from_file(str(tokenizer_path))
     # Match the Go embedder's raw token counting before it applies fixed-size padding.
     tokenizer.no_padding()
@@ -190,20 +203,20 @@ def main() -> int:
             f"chunk size {args.chunk_size} is too small for tokenizer special tokens ({special_tokens_per_text})"
         )
 
-    print("[info] loading SciFact corpus, queries, and qrels from Hugging Face")
+    log("[info] loading SciFact corpus, queries, and qrels from Hugging Face")
     corpus, queries, qrels = load_scifact_data(args.dataset_cache_dir, args.qrels_split)
-    print(
+    log(
         f"[info] loaded corpus={len(corpus)} docs, queries={len(queries)} test queries, qrels={sum(len(v) for v in qrels.values())}"
     )
 
-    print("[info] building chunked corpus")
+    log("[info] building chunked corpus")
     chunks, corpus_stats = build_chunk_documents(
         corpus=corpus,
         tokenizer=tokenizer,
         chunk_size=args.chunk_size,
         overlap=args.overlap,
     )
-    print(
+    log(
         "[info] built "
         f"{corpus_stats['chunk_count']} chunks from {corpus_stats['document_count']} docs "
         f"(avg={corpus_stats['avg_chunks_per_doc']:.2f}, max_tokens={corpus_stats['max_chunk_tokens']})"
@@ -215,7 +228,10 @@ def main() -> int:
     try:
         wait_for_health(client, retries=args.search_retries, sleep_sec=args.search_retry_sleep)
         reset_collection(client, args.collection)
-        ingest_chunks(client, args.collection, chunks, batch_size=args.batch_size)
+        ingest_stats = ingest_chunks(client, args.collection, chunks, batch_size=args.batch_size)
+        if args.ingest_only:
+            log(f"[done] ingest complete for collection={args.collection}; skipping evaluation (--ingest-only)")
+            return 0
         probe_search_readiness(
             client=client,
             collection=args.collection,
@@ -227,12 +243,15 @@ def main() -> int:
             sleep_sec=args.search_retry_sleep,
         )
 
-        print("[info] running full evaluation")
+        log("[info] running full evaluation")
         per_query_rows: list[dict[str, Any]] = []
         summary_by_mode: dict[str, Any] = {}
+        performance_by_mode: dict[str, Any] = {}
+        evaluation_started_at = time.perf_counter()
 
         for mode in args.modes:
-            print(f"[info] mode={mode}: evaluating {len(queries)} queries")
+            log(f"[info] mode={mode}: evaluating {len(queries)} queries")
+            mode_started_at = time.perf_counter()
             mode_rows, mode_summary = evaluate_mode(
                 client=client,
                 collection=args.collection,
@@ -246,6 +265,15 @@ def main() -> int:
             )
             per_query_rows.extend(mode_rows)
             summary_by_mode[mode] = mode_summary
+            mode_elapsed = time.perf_counter() - mode_started_at
+            performance_by_mode[mode] = {
+                "elapsed_sec": mode_elapsed,
+                "query_count": len(mode_rows),
+                "queries_per_sec": len(mode_rows) / mode_elapsed if mode_elapsed > 0 else 0.0,
+            }
+
+        evaluation_elapsed = time.perf_counter() - evaluation_started_at
+        total_elapsed = time.perf_counter() - benchmark_started_at
 
         summary = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -254,6 +282,7 @@ def main() -> int:
             "collection": args.collection,
             "base_url": args.base_url,
             "config": {
+                "chunk_group": args.chunk_group,
                 "chunk_size": args.chunk_size,
                 "overlap": args.overlap,
                 "top_k": args.top_k,
@@ -266,6 +295,16 @@ def main() -> int:
             },
             "corpus_stats": corpus_stats,
             "metrics_by_mode": summary_by_mode,
+            "performance": {
+                "ingest": ingest_stats,
+                "evaluation": {
+                    "elapsed_sec": evaluation_elapsed,
+                    "queries_total": len(queries) * len(args.modes),
+                    "queries_per_sec": (len(queries) * len(args.modes)) / evaluation_elapsed if evaluation_elapsed > 0 else 0.0,
+                    "by_mode": performance_by_mode,
+                },
+                "total_elapsed_sec": total_elapsed,
+            },
         }
 
         write_outputs(
@@ -275,11 +314,20 @@ def main() -> int:
             queries=queries,
             qrels=qrels,
         )
-        print(f"[done] benchmark artifacts written to {output_dir}")
+        log(f"[done] benchmark artifacts written to {output_dir}")
     finally:
         client.close()
 
     return 0
+
+
+def apply_chunk_group_preset(args: argparse.Namespace) -> None:
+    if not args.chunk_group:
+        return
+
+    preset = CHUNK_GROUP_PRESETS[args.chunk_group]
+    args.chunk_size = int(preset["chunk_size"])
+    args.overlap = int(preset["overlap"])
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -517,6 +565,9 @@ def chunk_text(
         chunks.append(accepted)
         chunk_idx += 1
 
+        if accepted_end >= len(token_ids):
+            break
+
         next_token_start = accepted_end - overlap
         if next_token_start <= token_start:
             raise RuntimeError(
@@ -558,13 +609,13 @@ def wait_for_health(client: VecdexClient, retries: int, sleep_sec: float) -> Non
             return
         except Exception as exc:  # noqa: BLE001
             last_error = exc
-            print(f"[warn] health probe attempt={attempt} failed: {exc}", file=sys.stderr)
+            print(f"[warn] health probe attempt={attempt} failed: {exc}", file=sys.stderr, flush=True)
             time.sleep(sleep_sec)
     raise RuntimeError("vecdex health probe failed") from last_error
 
 
 def reset_collection(client: VecdexClient, collection: str) -> None:
-    print(f"[info] resetting collection {collection!r}")
+    log(f"[info] resetting collection {collection!r}")
     client.delete_collection(collection)
     client.create_collection(collection)
 
@@ -574,10 +625,26 @@ def ingest_chunks(
     collection: str,
     chunks: list[ChunkDocument],
     batch_size: int,
-) -> None:
+) -> dict[str, Any]:
     total = len(chunks)
+    total_tokens = sum(chunk.token_count for chunk in chunks)
+    started_at = time.perf_counter()
+    tokens_done = 0
+    log(
+        f"[info] ingest start: collection={collection} chunks={total} total_tokens={total_tokens} batch_size={batch_size}"
+    )
     for start in range(0, total, batch_size):
         batch = chunks[start : start + batch_size]
+        batch_started_at = time.perf_counter()
+        batch_no = start // batch_size + 1
+        batch_total = math.ceil(total / batch_size)
+        batch_tokens = sum(chunk.token_count for chunk in batch)
+        tokens_done += batch_tokens
+        first_chunk_id = batch[0].chunk_id
+        last_chunk_id = batch[-1].chunk_id
+        log(
+            f"[info] ingest batch {batch_no}/{batch_total} start: docs={len(batch)} tokens={batch_tokens} ids={first_chunk_id}..{last_chunk_id}"
+        )
         documents = [
             {
                 "id": chunk.chunk_id,
@@ -588,10 +655,32 @@ def ingest_chunks(
             for chunk in batch
         ]
         client.batch_upsert(collection, documents)
-        batch_no = start // batch_size + 1
-        batch_total = math.ceil(total / batch_size)
-        if batch_no == 1 or batch_no == batch_total or batch_no % 10 == 0:
-            print(f"[info] ingested batch {batch_no}/{batch_total} ({min(start + batch_size, total)}/{total} chunks)")
+        batch_elapsed = time.perf_counter() - batch_started_at
+        elapsed = time.perf_counter() - started_at
+        done = min(start + batch_size, total)
+        remaining = total - done
+        chunks_per_sec = done / elapsed if elapsed > 0 else 0.0
+        tokens_per_sec = tokens_done / elapsed if elapsed > 0 else 0.0
+        eta_sec = remaining / chunks_per_sec if chunks_per_sec > 0 else 0.0
+        log(
+            "[info] ingest batch "
+            f"{batch_no}/{batch_total} done: progress={done}/{total} "
+            f"batch_elapsed={batch_elapsed:.2f}s total_elapsed={elapsed:.2f}s "
+            f"chunks_per_sec={chunks_per_sec:.2f} tokens_per_sec={tokens_per_sec:.2f} eta={eta_sec:.1f}s"
+        )
+
+    total_elapsed = time.perf_counter() - started_at
+    log(
+        f"[info] ingest complete: collection={collection} chunks={total} total_tokens={total_tokens} elapsed={total_elapsed:.2f}s"
+    )
+    return {
+        "chunk_count": total,
+        "total_tokens": total_tokens,
+        "batch_count": math.ceil(total / batch_size),
+        "elapsed_sec": total_elapsed,
+        "chunks_per_sec": total / total_elapsed if total_elapsed > 0 else 0.0,
+        "tokens_per_sec": total_tokens / total_elapsed if total_elapsed > 0 else 0.0,
+    }
 
 
 def probe_search_readiness(
@@ -614,7 +703,7 @@ def probe_search_readiness(
             try:
                 payload = client.search(collection, query_text, mode=mode, top_k=top_k, limit=limit)
                 if payload.get("items"):
-                    print(
+                    log(
                         f"[info] readiness probe passed for mode={mode} on query={query_id} attempt={attempt}"
                     )
                     break
@@ -622,6 +711,7 @@ def probe_search_readiness(
                 print(
                     f"[warn] readiness probe failed for mode={mode} attempt={attempt}: {exc}",
                     file=sys.stderr,
+                    flush=True,
                 )
             time.sleep(sleep_sec)
         else:
@@ -677,7 +767,7 @@ def evaluate_mode(
         )
 
         if idx == 1 or idx == query_count or idx % 25 == 0:
-            print(f"[info] mode={mode}: processed {idx}/{query_count} queries")
+            log(f"[info] mode={mode}: processed {idx}/{query_count} queries")
 
     summary = summarize_mode(rows)
     return rows, summary

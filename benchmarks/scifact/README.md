@@ -5,7 +5,7 @@ This directory contains a standalone Python harness for running a chunked retrie
 The harness:
 
 - loads the full SciFact corpus and test qrels
-- builds non-overlapping 256-token chunks using the local `all-MiniLM-L6-v2` tokenizer
+- builds chunked documents using the local `all-MiniLM-L6-v2` tokenizer
 - recreates one vecdex collection with chunk metadata
 - indexes all chunks via REST batch upserts
 - evaluates `semantic` and `hybrid` search
@@ -37,18 +37,39 @@ pip install -r benchmarks/scifact/requirements.txt
 
 ## Run
 
+Named chunking presets for test runs:
+
+- Group `A`: `128` tokens, overlap `16`
+- Group `B`: `256` tokens, overlap `32`
+
+Example: group `A`
+
 ```bash
 python benchmarks/scifact/run.py \
   --base-url http://localhost:8080 \
   --api-key test-api-key \
-  --collection scifact-benchmark \
+  --collection scifact-benchmark-a \
+  --chunk-group A \
   --modes semantic hybrid \
-  --output-dir benchmarks/scifact/output/latest
+  --output-dir benchmarks/scifact/output/group-a
+```
+
+Example: group `B`
+
+```bash
+python benchmarks/scifact/run.py \
+  --base-url http://localhost:8080 \
+  --api-key test-api-key \
+  --collection scifact-benchmark-b \
+  --chunk-group B \
+  --modes semantic hybrid \
+  --output-dir benchmarks/scifact/output/group-b
 ```
 
 ## Important behavior
 
 - The harness deletes and recreates the target collection before indexing.
+- `--chunk-group` applies a named preset and overrides manual `--chunk-size` / `--overlap` values.
 - `--chunk-size` counts total tokens per chunk, including tokenizer-added special tokens.
 - Chunking uses the local [`tokenizer.json`](/Users/chistopat/GolandProjects/vecdex/models/all-MiniLM-L6-v2/tokenizer.json) so chunk length matches the ONNX model path used by `vecdex`.
 - Search is evaluated at document level:
@@ -73,6 +94,9 @@ python benchmarks/scifact/run.py \
 - Qrels split: `test`
 - Chunk size: `256`
 - Overlap: `0`
+- Chunk groups:
+  - `A`: chunk size `128`, overlap `16`
+  - `B`: chunk size `256`, overlap `32`
 - `top_k`: `500`
 - `limit`: `100`
 - Modes: `semantic hybrid`
