@@ -53,9 +53,9 @@ python benchmarks/scifact/run.py \
 - Chunking uses the local [`tokenizer.json`](/Users/chistopat/GolandProjects/vecdex/models/all-MiniLM-L6-v2/tokenizer.json) so chunk length matches the ONNX model path used by `vecdex`.
 - Search is evaluated at document level:
   - vecdex returns chunk hits
-  - hits are grouped by `source_doc_id`
+  - hits are grouped by `parent_doc_id`
   - each document keeps the best chunk score
-  - ties break by earlier chunk rank, then lower `chunk_idx`
+  - ties break by earlier chunk rank, then lower `chunk_index`
 
 ## Output artifacts
 

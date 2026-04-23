@@ -37,6 +37,8 @@ DEFAULT_BATCH_SIZE = 100
 DEFAULT_SMOKE_QUERIES = 5
 DEFAULT_SEARCH_RETRIES = 8
 DEFAULT_SEARCH_RETRY_SLEEP = 1.5
+PARENT_DOC_ID_TAG = "parent_doc_id"
+CHUNK_INDEX_NUMERIC = "chunk_index"
 
 
 @dataclass(frozen=True)
@@ -99,8 +101,8 @@ class VecdexClient:
             json={
                 "name": name,
                 "fields": [
-                    {"name": "source_doc_id", "type": "tag"},
-                    {"name": "chunk_idx", "type": "numeric"},
+                    {"name": PARENT_DOC_ID_TAG, "type": "tag"},
+                    {"name": CHUNK_INDEX_NUMERIC, "type": "numeric"},
                 ],
             },
         )
@@ -580,8 +582,8 @@ def ingest_chunks(
             {
                 "id": chunk.chunk_id,
                 "content": chunk.content,
-                "tags": {"source_doc_id": chunk.source_doc_id},
-                "numerics": {"chunk_idx": chunk.chunk_idx},
+                "tags": {PARENT_DOC_ID_TAG: chunk.source_doc_id},
+                "numerics": {CHUNK_INDEX_NUMERIC: chunk.chunk_idx},
             }
             for chunk in batch
         ]
@@ -714,11 +716,11 @@ def parse_chunk_hits(payload: dict[str, Any]) -> list[SearchHit]:
     for rank, item in enumerate(payload.get("items", []), start=1):
         tags = item.get("tags") or {}
         numerics = item.get("numerics") or {}
-        source_doc_id = tags.get("source_doc_id")
+        source_doc_id = tags.get(PARENT_DOC_ID_TAG)
         if source_doc_id is None:
-            raise RuntimeError(f"search hit missing source_doc_id tag: {item}")
+            raise RuntimeError(f"search hit missing {PARENT_DOC_ID_TAG} tag: {item}")
 
-        raw_chunk_idx = numerics.get("chunk_idx", 0)
+        raw_chunk_idx = numerics.get(CHUNK_INDEX_NUMERIC, 0)
         chunk_idx = int(raw_chunk_idx)
         hits.append(
             SearchHit(
