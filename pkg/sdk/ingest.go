@@ -107,42 +107,66 @@ func (c *ONNXChunker) Chunk(text string) ([]TextChunk, error) {
 
 	chunks := make([]TextChunk, 0, len(sentences))
 	for start := 0; start < len(sentences); {
-		end := start
-		totalTokens := 0
-		for end < len(sentences) && totalTokens+tokenCounts[end] <= c.maxTokens {
-			totalTokens += tokenCounts[end]
-			end++
+		chunk, nextStart, done, err := c.nextChunk(sentences, tokenCounts, start)
+		if err != nil {
+			return nil, err
 		}
-		if end == start {
-			return nil, fmt.Errorf(
-				"onnx chunker: sentence exceeds %d-token window",
-				c.maxTokens,
-			)
-		}
-
-		chunks = append(chunks, TextChunk{
-			Content: strings.Join(sentences[start:end], " "),
-			Tokens:  totalTokens,
-		})
-		if end == len(sentences) {
+		chunks = append(chunks, chunk)
+		if done {
 			break
-		}
-
-		nextStart := end
-		if c.overlapTokens > 0 {
-			overlap := 0
-			for i := end - 1; i > start; i-- {
-				overlap += tokenCounts[i]
-				nextStart = i
-				if overlap >= c.overlapTokens {
-					break
-				}
-			}
 		}
 		start = nextStart
 	}
 
 	return chunks, nil
+}
+
+func (c *ONNXChunker) nextChunk(
+	sentences []string,
+	tokenCounts []int,
+	start int,
+) (chunk TextChunk, nextStart int, done bool, err error) {
+	end, totalTokens, err := c.chunkWindow(tokenCounts, start)
+	if err != nil {
+		return TextChunk{}, 0, false, err
+	}
+
+	return TextChunk{
+		Content: strings.Join(sentences[start:end], " "),
+		Tokens:  totalTokens,
+	}, c.nextChunkStart(start, end, tokenCounts), end == len(sentences), nil
+}
+
+func (c *ONNXChunker) chunkWindow(tokenCounts []int, start int) (end, totalTokens int, err error) {
+	end = start
+	for end < len(tokenCounts) && totalTokens+tokenCounts[end] <= c.maxTokens {
+		totalTokens += tokenCounts[end]
+		end++
+	}
+	if end == start {
+		return 0, 0, fmt.Errorf(
+			"onnx chunker: sentence exceeds %d-token window",
+			c.maxTokens,
+		)
+	}
+	return end, totalTokens, nil
+}
+
+func (c *ONNXChunker) nextChunkStart(start, end int, tokenCounts []int) int {
+	if c.overlapTokens <= 0 {
+		return end
+	}
+
+	nextStart := end
+	overlap := 0
+	for i := end - 1; i > start; i-- {
+		overlap += tokenCounts[i]
+		nextStart = i
+		if overlap >= c.overlapTokens {
+			break
+		}
+	}
+	return nextStart
 }
 
 func (c *ONNXChunker) countTokens(sentences []string) ([]int, error) {
