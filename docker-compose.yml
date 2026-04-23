@@ -4,7 +4,9 @@ services:
     profiles: [valkey]
     ports:
       - "6379:6379"
-    command: ["--protected-mode", "no"]
+    command: ["--protected-mode", "no", "--appendonly", "yes"]
+    volumes:
+      - valkey-data:/data
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
@@ -60,3 +62,6 @@ services:
         go mod download &&
         go test ./... -v
       "
+
+volumes:
+  valkey-data:

@@ -21,6 +21,14 @@ config/prod.yaml
 # OS
 .DS_Store
 
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Local benchmark caches
+.cache/
+benchmarks/scifact/output/
+
 # Test reports
 tests/reports/
 

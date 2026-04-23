@@ -2,7 +2,9 @@ services:
   valkey:
     image: valkey/valkey-bundle:unstable
     profiles: [valkey, valkey-onnx]
-    command: ["--protected-mode", "no"]
+    command: ["--protected-mode", "no", "--appendonly", "yes"]
+    volumes:
+      - valkey-data-tests:/data
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 3s
@@ -90,3 +92,6 @@ services:
         condition: service_healthy
     volumes:
       - ./reports:/reports
+
+volumes:
+  valkey-data-tests:

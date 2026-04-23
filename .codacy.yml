@@ -1,4 +1,6 @@
 exclude_paths:
+  - "benchmarks/**"
+  - "experiments/**"
   - "models/**"
   - "tests/**"
   - "cmd/**"

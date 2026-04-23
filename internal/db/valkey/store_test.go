@@ -746,6 +746,15 @@ func TestEscapeQuery(t *testing.T) {
 	}
 }
 
+func TestEscapeQuery_SciFactPunctuation(t *testing.T) {
+	input := `The ureABIEFGH gene cluster encodes urease maturation proteins : UreD/UreH, UreE, UreF, and UreG.`
+	escaped := escapeQuery(input)
+	want := `The ureABIEFGH gene cluster encodes urease maturation proteins \: UreD\/UreH\, UreE\, UreF\, and UreG\.`
+	if escaped != want {
+		t.Errorf("unexpected escaped: %q", escaped)
+	}
+}
+
 func TestVectorToBytes(t *testing.T) {
 	v := []float32{1.0}
 	b := vectorToBytes(v)
