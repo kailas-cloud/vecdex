@@ -6,6 +6,7 @@ import (
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
+	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 )
@@ -68,8 +69,11 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 		return results
 	}
 
-	fieldTypes := make(map[string]field.Type)
+	fieldTypes := make(map[string]field.Type, len(col.Fields())+len(domcol.SystemFields()))
 	for _, f := range col.Fields() {
+		fieldTypes[f.Name()] = f.FieldType()
+	}
+	for _, f := range domcol.SystemFields() {
 		fieldTypes[f.Name()] = f.FieldType()
 	}
 

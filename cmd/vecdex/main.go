@@ -281,6 +281,7 @@ func buildEmbedder(
 		if err != nil {
 			return nil, fmt.Errorf("create onnx embedder: %w", err)
 		}
+		base = embeddinguc.NewParallelBatchEmbedder(base, 10, 10)
 	default:
 		return nil, fmt.Errorf("unsupported embedding backend %q", provCfg.Backend)
 	}

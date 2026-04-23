@@ -1,0 +1,38 @@
+http:
+  port: 8080
+  read_timeout_sec: 10
+  write_timeout_sec: 30
+  shutdown_timeout_sec: 10
+
+valkey:
+  addrs:
+    - ${VALKEY_ADDR:-localhost:6379}
+  password: ${VALKEY_PASSWORD:-}
+  readiness_timeout_sec: 10
+
+index:
+  hnsw_m: 32
+  hnsw_ef_construction: 400
+  default_page_size: 20
+  max_page_size: 100
+  max_batch_size: 5000
+
+storage:
+  key_prefix: "vecdex:"
+
+auth:
+  api_keys:
+    - ${VECDEX_API_KEY:-test-api-key}
+
+embedding:
+  providers:
+    stub:
+      api_key: "fake-key"
+      base_url: "http://localhost:9999/v1/"
+  vectorizers:
+    json:
+      provider: stub
+      model: stub
+      dimensions: 1024
+      document_instruction: ""
+      query_instruction: ""
