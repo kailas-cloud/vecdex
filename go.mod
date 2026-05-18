@@ -6,7 +6,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/oapi-codegen/runtime v1.4.0
 	github.com/prometheus/client_golang v1.23.2
-	github.com/redis/rueidis v1.0.74
+	github.com/redis/rueidis v1.0.75
 	github.com/redis/rueidis/mock v1.0.74
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/sugarme/tokenizer v0.3.0
@@ -30,12 +30,11 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/sys v0.39.0 // indirect
-	golang.org/x/text v0.32.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 )
