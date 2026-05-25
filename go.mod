@@ -4,7 +4,7 @@ go 1.25.7
 
 require (
 	github.com/go-chi/chi/v5 v5.2.5
-	github.com/oapi-codegen/runtime v1.4.0
+	github.com/oapi-codegen/runtime v1.4.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/rueidis v1.0.74
 	github.com/redis/rueidis/mock v1.0.74
