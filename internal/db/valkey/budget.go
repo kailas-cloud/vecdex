@@ -15,15 +15,26 @@ import (
 // Budget uses optimistic native transactions over a fixed set of four keys.
 // All accounting, validation and retry logic runs in Go, without Lua.
 func (s *Store) Budget(ctx context.Context, c *db.BudgetCommand) (domusage.Snapshot, error) {
+	if err := validateBudgetCommand(c); err != nil {
+		return domusage.Snapshot{}, err
+	}
+	return s.retryBudget(ctx, c)
+}
+
+func validateBudgetCommand(c *db.BudgetCommand) error {
 	if len(c.Keys) != 4 {
-		return domusage.Snapshot{}, fmt.Errorf("budget requires four keys")
+		return fmt.Errorf("budget requires four keys")
 	}
 	if c.Action != "read" && c.Action != "reserve" && c.Action != "complete" {
-		return domusage.Snapshot{}, fmt.Errorf("invalid budget action")
+		return fmt.Errorf("invalid budget action")
 	}
 	if c.Amount < 0 || c.Tokens < 0 {
-		return domusage.Snapshot{}, fmt.Errorf("negative budget amount")
+		return fmt.Errorf("negative budget amount")
 	}
+	return nil
+}
+
+func (s *Store) retryBudget(ctx context.Context, c *db.BudgetCommand) (domusage.Snapshot, error) {
 	for attempt := 0; attempt < maxTransactionAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return domusage.Snapshot{}, fmt.Errorf("budget operation canceled: %w", err)
@@ -147,20 +158,7 @@ func parseBudgetSnapshot(values []rueidis.RedisMessage) (domusage.Snapshot, erro
 
 func applyBudget(c *db.BudgetCommand, snapshot *domusage.Snapshot, receipt string) (bool, error) {
 	if c.Action == "reserve" {
-		if receipt != "" {
-			return false, nil
-		}
-		if !budgetFits(&snapshot.Day, c.DailyLimit, c.Amount) ||
-			!budgetFits(&snapshot.Month, c.MonthlyLimit, c.Amount) {
-			return false, domain.ErrEmbeddingQuotaExceeded
-		}
-		for _, counter := range []*domusage.Counters{&snapshot.Day, &snapshot.Month, &snapshot.Total} {
-			if c.Amount > math.MaxInt64-counter.Reserved {
-				return false, fmt.Errorf("budget reservation overflow")
-			}
-			counter.Reserved += c.Amount
-		}
-		return true, nil
+		return reserveBudget(c, snapshot, receipt)
 	}
 	if receipt == "" || receipt == "done" {
 		return false, nil
@@ -173,6 +171,23 @@ func applyBudget(c *db.BudgetCommand, snapshot *domusage.Snapshot, receipt strin
 		if err := completeBudgetCounters(counter, c, amount); err != nil {
 			return false, err
 		}
+	}
+	return true, nil
+}
+
+func reserveBudget(c *db.BudgetCommand, snapshot *domusage.Snapshot, receipt string) (bool, error) {
+	if receipt != "" {
+		return false, nil
+	}
+	if !budgetFits(&snapshot.Day, c.DailyLimit, c.Amount) ||
+		!budgetFits(&snapshot.Month, c.MonthlyLimit, c.Amount) {
+		return false, domain.ErrEmbeddingQuotaExceeded
+	}
+	for _, counter := range []*domusage.Counters{&snapshot.Day, &snapshot.Month, &snapshot.Total} {
+		if c.Amount > math.MaxInt64-counter.Reserved {
+			return false, fmt.Errorf("budget reservation overflow")
+		}
+		counter.Reserved += c.Amount
 	}
 	return true, nil
 }

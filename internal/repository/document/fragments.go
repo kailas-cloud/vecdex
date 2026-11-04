@@ -30,7 +30,7 @@ func prepareFragmentFields(doc *domdoc.Document, base, version string) (map[stri
 	children := make([]db.HashSetItem, len(parts))
 	offset := 0
 	for i, part := range parts {
-		if part.Content == "" || !strings.HasPrefix(doc.Content()[offset:], part.Content) {
+		if !matchesFragment(doc.Content()[offset:], part.Content) {
 			return nil, nil, fmt.Errorf("fragment does not match source: %w", domain.ErrInvalidSchema)
 		}
 		if err := domain.ValidateVector(part.Vector, len(doc.Vector())); err != nil {
@@ -64,6 +64,10 @@ func prepareFragmentFields(doc *domdoc.Document, base, version string) (map[stri
 	return fields, children, nil
 }
 
+func matchesFragment(remaining, content string) bool {
+	return content != "" && strings.HasPrefix(remaining, content)
+}
+
 func hydrateFragments(doc *domdoc.Document, fields map[string]string) error {
 	if fields["__parts"] == "" {
 		return nil
@@ -78,13 +82,9 @@ func hydrateFragments(doc *domdoc.Document, fields map[string]string) error {
 		if row.End <= start || row.End > len(doc.Content()) {
 			return fmt.Errorf("invalid fragment span")
 		}
-		raw, err := base64.StdEncoding.DecodeString(row.Vector)
+		vector, err := decodeFragmentVector(row.Vector, len(doc.Vector()))
 		if err != nil {
-			return fmt.Errorf("decode fragment vector: %w", err)
-		}
-		vector := bytesToVector(string(raw))
-		if err := domain.ValidateVector(vector, len(doc.Vector())); err != nil {
-			return fmt.Errorf("stored fragment: %w", err)
+			return err
 		}
 		parts[i] = domdoc.Fragment{Content: doc.Content()[start:row.End], Vector: vector}
 		start = row.End
@@ -94,4 +94,16 @@ func hydrateFragments(doc *domdoc.Document, fields map[string]string) error {
 	}
 	doc.SetFragments(parts)
 	return nil
+}
+
+func decodeFragmentVector(encoded string, dimensions int) ([]float32, error) {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode fragment vector: %w", err)
+	}
+	vector := bytesToVector(string(raw))
+	if err := domain.ValidateVector(vector, dimensions); err != nil {
+		return nil, fmt.Errorf("stored fragment: %w", err)
+	}
+	return vector, nil
 }

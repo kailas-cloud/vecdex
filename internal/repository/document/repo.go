@@ -162,28 +162,8 @@ func applyPatch(current domdoc.Document, p patch.Patch, newVector []float32) dom
 	if p.HasContent() {
 		content = *p.Content()
 	}
-	tags := current.Tags()
-	if tags == nil {
-		tags = map[string]string{}
-	}
-	for k, v := range p.Tags() {
-		if v == nil {
-			delete(tags, k)
-		} else {
-			tags[k] = *v
-		}
-	}
-	numerics := current.Numerics()
-	if numerics == nil {
-		numerics = map[string]float64{}
-	}
-	for k, v := range p.Numerics() {
-		if v == nil {
-			delete(numerics, k)
-		} else {
-			numerics[k] = *v
-		}
-	}
+	tags := applyFieldPatch(current.Tags(), p.Tags())
+	numerics := applyFieldPatch(current.Numerics(), p.Numerics())
 	vector := current.Vector()
 	if newVector != nil {
 		vector = newVector
@@ -191,6 +171,20 @@ func applyPatch(current domdoc.Document, p patch.Patch, newVector []float32) dom
 	updated := domdoc.Reconstruct(current.ID(), content, tags, numerics, vector, current.Revision())
 	updated.SetFragments(current.Fragments())
 	return updated
+}
+
+func applyFieldPatch[T any](fields map[string]T, updates map[string]*T) map[string]T {
+	if fields == nil {
+		fields = map[string]T{}
+	}
+	for key, value := range updates {
+		if value == nil {
+			delete(fields, key)
+		} else {
+			fields[key] = *value
+		}
+	}
+	return fields
 }
 
 func documentKey(ctx context.Context, collection, id string) string {

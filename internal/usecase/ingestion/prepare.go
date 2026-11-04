@@ -75,9 +75,15 @@ func prepareParts(
 	if !errors.Is(err, domain.ErrEmbeddingInputTooLong) {
 		return nil, fmt.Errorf("prepare embedding: %w", err)
 	}
+	return prepareSplitParts(ctx, embedder, text, dimensions, usage, err)
+}
+
+func prepareSplitParts(
+	ctx context.Context, embedder Embedder, text string, dimensions int, usage *Prepared, cause error,
+) ([]Fragment, error) {
 	left, right, ok := splitText(text)
 	if !ok {
-		return nil, fmt.Errorf("model rejected indivisible text: %w", err)
+		return nil, fmt.Errorf("model rejected indivisible text: %w", cause)
 	}
 	before, err := prepareParts(ctx, embedder, left, dimensions, usage)
 	if err != nil {
@@ -115,12 +121,20 @@ func preferredBoundary(runes []rune, cut, priority int) bool {
 	}
 	switch priority {
 	case 0:
-		return cut > 1 && runes[cut-1] == '\n' && runes[cut-2] == '\n'
+		return paragraphBoundary(runes, cut)
 	case 1:
-		return cut > 1 && unicode.IsSpace(runes[cut-1]) && sentenceEnd(runes[cut-2])
+		return sentenceBoundary(runes, cut)
 	default:
 		return unicode.IsSpace(runes[cut-1])
 	}
+}
+
+func paragraphBoundary(runes []rune, cut int) bool {
+	return cut > 1 && runes[cut-1] == '\n' && runes[cut-2] == '\n'
+}
+
+func sentenceBoundary(runes []rune, cut int) bool {
+	return cut > 1 && unicode.IsSpace(runes[cut-1]) && sentenceEnd(runes[cut-2])
 }
 
 func sentenceEnd(r rune) bool {

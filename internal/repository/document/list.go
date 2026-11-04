@@ -41,16 +41,24 @@ func (r *Repo) List(ctx context.Context, collectionName, cursor string, limit in
 	if len(ids) == 0 {
 		return nil, "", nil
 	}
+	docs, err := r.readDocumentPage(ctx, collectionName, ids)
+	if err != nil {
+		return nil, "", err
+	}
+	return docs, next, nil
+}
+
+func (r *Repo) readDocumentPage(ctx context.Context, collectionName string, ids []string) ([]domdoc.Document, error) {
 	keys := make([]string, len(ids))
 	for i, id := range ids {
 		keys[i] = documentKey(ctx, collectionName, id)
 	}
 	rows, err := r.store.HGetAllMulti(ctx, keys)
 	if err != nil {
-		return nil, "", fmt.Errorf("read document page: %w", err)
+		return nil, fmt.Errorf("read document page: %w", err)
 	}
 	if len(rows) != len(ids) {
-		return nil, "", fmt.Errorf("invalid document page response")
+		return nil, fmt.Errorf("invalid document page response")
 	}
 	docs := make([]domdoc.Document, 0, len(ids))
 	for i, row := range rows {
@@ -58,7 +66,7 @@ func (r *Repo) List(ctx context.Context, collectionName, cursor string, limit in
 			docs = append(docs, parseHashFields(ids[i], row))
 		}
 	}
-	return docs, next, nil
+	return docs, nil
 }
 
 // Count reads the catalog cardinality, without a search-index or keyspace scan.
@@ -87,9 +95,15 @@ func decodeDocumentCursor(base, cursor string) (string, error) {
 		return "", invalid()
 	}
 	parts := strings.SplitN(string(decoded), "\x00", 2)
-	if len(parts) != 2 || parts[0] != base || parts[1] == "" || len(parts[1]) > 256 ||
-		strings.ContainsRune(parts[1], 0) {
+	if !validCursorParts(base, parts) {
 		return "", invalid()
 	}
 	return parts[1], nil
+}
+
+func validCursorParts(base string, parts []string) bool {
+	if len(parts) != 2 || parts[0] != base {
+		return false
+	}
+	return parts[1] != "" && len(parts[1]) <= 256 && !strings.ContainsRune(parts[1], 0)
 }

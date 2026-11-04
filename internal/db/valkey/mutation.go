@@ -68,14 +68,21 @@ func (s *Store) mutateHashAttempt(ctx context.Context, m *db.HashMutation) (db.H
 	}
 	result := db.HashMutationResult{Revision: revision, Created: !exists}
 	if m.Delete {
-		_, committed, err := execTransaction(ctx, client, mutationCommitCommands(client, m, ""))
-		if committed {
-			s.unlinkHashes(oldChildren)
-		}
-		return result, committed, err
+		return s.commitHashDeletion(ctx, client, m, oldChildren, result)
 	}
 	result.Revision++
 	return s.commitHashReplacement(ctx, client, m, previous, oldChildren, result)
+}
+
+func (s *Store) commitHashDeletion(
+	ctx context.Context, client rueidis.DedicatedClient, m *db.HashMutation, children []string,
+	result db.HashMutationResult,
+) (db.HashMutationResult, bool, error) {
+	_, committed, err := execTransaction(ctx, client, mutationCommitCommands(client, m, ""))
+	if committed {
+		s.unlinkHashes(children)
+	}
+	return result, committed, err
 }
 
 func readMutationParent(
@@ -109,19 +116,27 @@ func checkMutation(m *db.HashMutation, parent map[string]string) (revision int, 
 			return 0, exists, fmt.Errorf("invalid stored revision: %w", err)
 		}
 	}
+	return revision, exists, checkMutationConditions(m, revision, exists)
+}
+
+func checkMutationConditions(m *db.HashMutation, revision int, exists bool) error {
 	if m.RequireAbsent && exists {
-		return 0, exists, domain.ErrAlreadyExists
+		return domain.ErrAlreadyExists
 	}
-	if m.ExpectedRevision != nil && (!exists || *m.ExpectedRevision != revision) {
-		return revision, exists, fmt.Errorf("check document revision: %w", domain.NewRevisionConflict(revision))
+	if !matchesExpectedRevision(m.ExpectedRevision, revision, exists) {
+		return fmt.Errorf("check document revision: %w", domain.NewRevisionConflict(revision))
 	}
 	if m.RequireExists && !exists {
-		return 0, false, domain.ErrDocumentNotFound
+		return domain.ErrDocumentNotFound
 	}
 	if !m.Delete && revision == int(^uint(0)>>1) {
-		return 0, exists, fmt.Errorf("revision exhausted")
+		return fmt.Errorf("revision exhausted")
 	}
-	return revision, exists, nil
+	return nil
+}
+
+func matchesExpectedRevision(expected *int, revision int, exists bool) bool {
+	return expected == nil || (exists && *expected == revision)
 }
 
 func mutationChildren(parent map[string]string) ([]string, error) {
@@ -156,17 +171,25 @@ func replacementFields(
 	fields["__revision"] = strconv.Itoa(revision)
 	fields["__mutation_id"] = mutationID
 	if len(m.Children) > 0 || m.Replace {
-		keys := make([]string, len(m.Children))
-		for i, child := range m.Children {
-			keys[i] = child.Key
-		}
-		data, err := json.Marshal(keys)
+		data, err := encodeMutationChildren(m.Children)
 		if err != nil {
-			return nil, fmt.Errorf("encode document children: %w", err)
+			return nil, err
 		}
 		fields["__children"] = string(data)
 	}
 	return fields, nil
+}
+
+func encodeMutationChildren(children []db.HashSetItem) ([]byte, error) {
+	keys := make([]string, len(children))
+	for i, child := range children {
+		keys[i] = child.Key
+	}
+	data, err := json.Marshal(keys)
+	if err != nil {
+		return nil, fmt.Errorf("encode document children: %w", err)
+	}
+	return data, nil
 }
 
 func (s *Store) commitHashReplacement(
@@ -191,6 +214,13 @@ func (s *Store) commitHashReplacement(
 		s.discardPrepared(m, stagingKey, id)
 		return result, false, err
 	}
+	return s.executeHashReplacement(ctx, client, m, stagingKey, id, oldChildren, result)
+}
+
+func (s *Store) executeHashReplacement(
+	ctx context.Context, client rueidis.DedicatedClient, m *db.HashMutation, stagingKey, id string,
+	oldChildren []string, result db.HashMutationResult,
+) (db.HashMutationResult, bool, error) {
 	_, committed, err := execTransaction(ctx, client, mutationCommitCommands(client, m, stagingKey))
 	if committed {
 		if len(m.Children) > 0 || m.Replace {

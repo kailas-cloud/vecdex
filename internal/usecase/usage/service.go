@@ -20,46 +20,69 @@ func New(br BudgetReader) *Service { return &Service{br: br} }
 // only in budget availability. Total usage is a lifetime counter, not a month alias.
 func (s *Service) GetReport(ctx context.Context, period domusage.Period) (domusage.Report, error) {
 	now := time.Now().UTC()
-	var snapshot domusage.Snapshot
-	if s.br != nil {
-		var err error
-		snapshot, err = s.br.Snapshot(ctx)
-		if err != nil {
-			return domusage.Report{}, fmt.Errorf("get usage report: %w", err)
-		}
+	snapshot, err := s.readSnapshot(ctx)
+	if err != nil {
+		return domusage.Report{}, err
 	}
-	counters := snapshot.Total
-	start, end := int64(0), int64(0)
-	limit := int64(-1)
-	budgetCounters := snapshot.Month
-	if s.br != nil {
-		limit = s.br.MonthlyLimit()
+	window := s.reportWindow(now, period, &snapshot)
+	b := reportBudget(now, period, window)
+	counters := window.counters
+	m := metrics.New(int(counters.Requests), int(counters.Tokens), 0).WithUnknownRequests(int(counters.Unknown))
+	return domusage.NewReport(period, window.start, window.end, "", m, b), nil
+}
+
+func (s *Service) readSnapshot(ctx context.Context) (domusage.Snapshot, error) {
+	if s.br == nil {
+		return domusage.Snapshot{}, nil
 	}
+	snapshot, err := s.br.Snapshot(ctx)
+	if err != nil {
+		return domusage.Snapshot{}, fmt.Errorf("get usage report: %w", err)
+	}
+	return snapshot, nil
+}
+
+type usageWindow struct {
+	counters, budgetCounters domusage.Counters
+	start, end, limit        int64
+}
+
+func (s *Service) reportWindow(now time.Time, period domusage.Period, snapshot *domusage.Snapshot) usageWindow {
+	window := usageWindow{counters: snapshot.Total, budgetCounters: snapshot.Month, limit: s.periodLimit(period)}
 	switch period {
 	case domusage.PeriodDay:
 		beginning := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-		start, end = beginning.UnixMilli(), beginning.AddDate(0, 0, 1).UnixMilli()
-		counters = snapshot.Day
-		budgetCounters = snapshot.Day
-		if s.br != nil {
-			limit = s.br.DailyLimit()
-		}
+		window.start, window.end = beginning.UnixMilli(), beginning.AddDate(0, 0, 1).UnixMilli()
+		window.counters, window.budgetCounters = snapshot.Day, snapshot.Day
 	case domusage.PeriodMonth:
 		beginning := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-		start, end = beginning.UnixMilli(), beginning.AddDate(0, 1, 0).UnixMilli()
-		counters = snapshot.Month
+		window.start, window.end = beginning.UnixMilli(), beginning.AddDate(0, 1, 0).UnixMilli()
+		window.counters = snapshot.Month
 	}
+	return window
+}
+
+func (s *Service) periodLimit(period domusage.Period) int64 {
+	if s.br == nil {
+		return -1
+	}
+	if period == domusage.PeriodDay {
+		return s.br.DailyLimit()
+	}
+	return s.br.MonthlyLimit()
+}
+
+func reportBudget(now time.Time, period domusage.Period, window usageWindow) budget.Budget {
 	remaining, resetsAt := int64(-1), int64(0)
+	limit := window.limit
 	if limit > 0 {
-		remaining = max(int64(0), limit-budgetCounters.Tokens-budgetCounters.Reserved)
-		resetsAt = end
+		remaining = max(int64(0), limit-window.budgetCounters.Tokens-window.budgetCounters.Reserved)
+		resetsAt = window.end
 		if period == domusage.PeriodTotal {
 			resetsAt = time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
 		}
 	} else {
 		limit = -1
 	}
-	b := budget.New(int(limit), int(remaining), limit > 0 && remaining == 0, resetsAt)
-	m := metrics.New(int(counters.Requests), int(counters.Tokens), 0).WithUnknownRequests(int(counters.Unknown))
-	return domusage.NewReport(period, start, end, "", m, b), nil
+	return budget.New(int(limit), int(remaining), limit > 0 && remaining == 0, resetsAt)
 }

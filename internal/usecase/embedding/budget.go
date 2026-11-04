@@ -109,18 +109,25 @@ func (b *BudgetTracker) monthlyKey(t time.Time) string {
 // the model upper bound atomically; callers must use Begin before invoking a model.
 func (b *BudgetTracker) Check(ctx context.Context) error {
 	if b.accounting != nil {
-		snap, err := b.Snapshot(ctx)
-		if err != nil {
-			return err
-		}
-		dailyExceeded := b.dailyLimit > 0 && snap.Day.Tokens+snap.Day.Reserved >= b.dailyLimit
-		monthlyExceeded := b.monthlyLimit > 0 && snap.Month.Tokens+snap.Month.Reserved >= b.monthlyLimit
-		if b.action == BudgetActionReject && (dailyExceeded || monthlyExceeded) {
-			return domain.ErrEmbeddingQuotaExceeded
-		}
-
-		return nil
+		return b.checkSharedBudget(ctx)
 	}
+	return b.checkLocalBudget()
+}
+
+func (b *BudgetTracker) checkSharedBudget(ctx context.Context) error {
+	snap, err := b.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	dailyExceeded := b.dailyLimit > 0 && snap.Day.Tokens+snap.Day.Reserved >= b.dailyLimit
+	monthlyExceeded := b.monthlyLimit > 0 && snap.Month.Tokens+snap.Month.Reserved >= b.monthlyLimit
+	if b.action == BudgetActionReject && (dailyExceeded || monthlyExceeded) {
+		return domain.ErrEmbeddingQuotaExceeded
+	}
+	return nil
+}
+
+func (b *BudgetTracker) checkLocalBudget() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

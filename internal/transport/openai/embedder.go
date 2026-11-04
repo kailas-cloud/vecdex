@@ -216,19 +216,21 @@ func (e *Embedder) createEmbeddings(
 	}
 	resp, err := e.client.CreateEmbeddings(ctx, req)
 	unknown := resp.Usage.TotalTokens <= 0
-	if err != nil {
-		var apiErr *openai.APIError
-		var requestErr *openai.RequestError
-		if errors.As(err, &apiErr) && apiErr.HTTPStatusCode >= 400 && apiErr.HTTPStatusCode < 500 {
-			unknown = false
-		}
-		if errors.As(err, &requestErr) && requestErr.HTTPStatusCode >= 400 && requestErr.HTTPStatusCode < 500 {
-			unknown = false
-		}
+	if rejectedRequest(err) {
+		unknown = false
 	}
 	complete(resp.Usage.TotalTokens, unknown)
 	if err != nil {
 		return resp, parseAPIError(err)
 	}
 	return resp, nil
+}
+
+func rejectedRequest(err error) bool {
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode >= 400 && apiErr.HTTPStatusCode < 500 {
+		return true
+	}
+	var requestErr *openai.RequestError
+	return errors.As(err, &requestErr) && requestErr.HTTPStatusCode >= 400 && requestErr.HTTPStatusCode < 500
 }

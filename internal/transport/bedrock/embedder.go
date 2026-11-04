@@ -93,13 +93,8 @@ func NewEmbedder(cfg *Config) (*Embedder, error) {
 	}
 	settings := *cfg
 	cfg = &settings
+	applyConfigDefaults(cfg)
 
-	if cfg.Timeout == 0 {
-		cfg.Timeout = 30 * time.Second
-	}
-	if cfg.MaxConcurrency == 0 {
-		cfg.MaxConcurrency = 4
-	}
 	slots := cfg.ConcurrencyLimiter
 	if slots == nil {
 		slots = make(chan struct{}, cfg.MaxConcurrency)
@@ -110,9 +105,6 @@ func NewEmbedder(cfg *Config) (*Embedder, error) {
 	}
 	// Never forward credentials to a redirect destination.
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	if cfg.Provider == "" {
-		cfg.Provider = "bedrock"
-	}
 	return &Embedder{
 		provider: cfg.Provider,
 		observer: cfg.Observer,
@@ -127,6 +119,18 @@ func NewEmbedder(cfg *Config) (*Embedder, error) {
 		timeout:    cfg.Timeout,
 		slots:      slots,
 	}, nil
+}
+
+func applyConfigDefaults(cfg *Config) {
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 30 * time.Second
+	}
+	if cfg.MaxConcurrency == 0 {
+		cfg.MaxConcurrency = 4
+	}
+	if cfg.Provider == "" {
+		cfg.Provider = "bedrock"
+	}
 }
 
 // Embed embeds one complete text without truncation.
@@ -165,6 +169,20 @@ func (e *Embedder) BatchEmbed(ctx context.Context, texts []string) (domain.Batch
 }
 
 func (e *Embedder) invoke(ctx context.Context, texts []string) (result domain.BatchEmbeddingResult, resultErr error) {
+	body, err := e.encodeInput(texts)
+	if err != nil {
+		return result, err
+	}
+	if len(body) > maxPayloadBytes {
+		if len(texts) > 1 {
+			return e.invokeSplit(ctx, texts)
+		}
+		return result, &InputTooLongError{}
+	}
+	return e.invokePrepared(ctx, body, len(texts))
+}
+
+func (e *Embedder) encodeInput(texts []string) ([]byte, error) {
 	body, err := json.Marshal(struct {
 		Texts           []string `json:"texts"`
 		InputType       string   `json:"input_type"`
@@ -173,14 +191,14 @@ func (e *Embedder) invoke(ctx context.Context, texts []string) (result domain.Ba
 		Truncate        string   `json:"truncate"`
 	}{texts, e.purpose, e.dimensions, 128000, "NONE"})
 	if err != nil {
-		return result, fmt.Errorf("encode Bedrock request: %w", err)
+		return nil, fmt.Errorf("encode Bedrock request: %w", err)
 	}
-	if len(body) > maxPayloadBytes {
-		if len(texts) > 1 {
-			return e.invokeSplit(ctx, texts)
-		}
-		return result, &InputTooLongError{}
-	}
+	return body, nil
+}
+
+func (e *Embedder) invokePrepared(
+	ctx context.Context, body []byte, inputs int,
+) (result domain.BatchEmbeddingResult, resultErr error) {
 	start := time.Now()
 	defer func() { e.observe(result, resultErr, time.Since(start)) }()
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
@@ -191,18 +209,20 @@ func (e *Embedder) invoke(ctx context.Context, texts []string) (result domain.Ba
 	case <-ctx.Done():
 		return result, fmt.Errorf("wait for Bedrock slot: %w", ctx.Err())
 	}
+	return e.invokeWithRetry(ctx, body, inputs)
+}
+
+func (e *Embedder) invokeWithRetry(ctx context.Context, body []byte, inputs int) (domain.BatchEmbeddingResult, error) {
+	result := domain.BatchEmbeddingResult{}
 	for attempt := 0; attempt < 3; attempt++ {
-		resp, data, callErr := e.request(ctx, body, len(texts))
+		resp, data, callErr := e.request(ctx, body, inputs)
 		if callErr != nil {
 			result.UsageUnknown = result.UsageUnknown || errors.Is(callErr, domain.ErrEmbeddingProviderError)
 			return result, callErr
 		}
-		tokens, unknown := invocationUsage(resp.StatusCode, resp.Header)
-		result.TotalTokens += tokens
-		result.PromptTokens += tokens
-		result.UsageUnknown = result.UsageUnknown || unknown
+		addInvocationUsage(&result, resp)
 		if resp.StatusCode == http.StatusOK {
-			decoded, decodeErr := e.decode(data, resp.Header, len(texts))
+			decoded, decodeErr := e.decode(data, resp.Header, inputs)
 			result.Embeddings = decoded.Embeddings
 			return result, decodeErr
 		}
@@ -215,6 +235,13 @@ func (e *Embedder) invoke(ctx context.Context, texts []string) (result domain.Ba
 		}
 	}
 	return result, domain.ErrEmbeddingProviderError
+}
+
+func addInvocationUsage(result *domain.BatchEmbeddingResult, resp *upstreamResponse) {
+	tokens, unknown := invocationUsage(resp.StatusCode, resp.Header)
+	result.TotalTokens += tokens
+	result.PromptTokens += tokens
+	result.UsageUnknown = result.UsageUnknown || unknown
 }
 
 func (e *Embedder) request(ctx context.Context, body []byte, inputs int) (*upstreamResponse, []byte, error) {
@@ -344,32 +371,47 @@ func (e *Embedder) decode(data []byte, h http.Header, count int) (domain.BatchEm
 	if json.Unmarshal(data, &body) != nil {
 		return out, fmt.Errorf("invalid Bedrock JSON: %w", domain.ErrEmbeddingProviderError)
 	}
-	var vectors [][]float32
-	if json.Unmarshal(body.Embeddings, &vectors) != nil {
-		var typed struct {
-			Float [][]float32 `json:"float"`
-		}
-		if json.Unmarshal(body.Embeddings, &typed) != nil {
-			return out, fmt.Errorf("invalid Bedrock embeddings: %w", domain.ErrEmbeddingProviderError)
-		}
-		vectors = typed.Float
+	vectors, err := decodeEmbeddings(body.Embeddings)
+	if err != nil {
+		return out, err
 	}
+	if err := e.validateVectors(vectors, count); err != nil {
+		return out, err
+	}
+	out.Embeddings = vectors
+	return out, nil
+}
+
+func decodeEmbeddings(data json.RawMessage) ([][]float32, error) {
+	var vectors [][]float32
+	if json.Unmarshal(data, &vectors) == nil {
+		return vectors, nil
+	}
+	var typed struct {
+		Float [][]float32 `json:"float"`
+	}
+	if json.Unmarshal(data, &typed) != nil {
+		return nil, fmt.Errorf("invalid Bedrock embeddings: %w", domain.ErrEmbeddingProviderError)
+	}
+	return typed.Float, nil
+}
+
+func (e *Embedder) validateVectors(vectors [][]float32, count int) error {
 	if len(vectors) != count {
-		return out, fmt.Errorf("invalid Bedrock embedding count: %w", domain.ErrEmbeddingProviderError)
+		return fmt.Errorf("invalid Bedrock embedding count: %w", domain.ErrEmbeddingProviderError)
 	}
 
 	for _, v := range vectors {
 		if len(v) != e.dimensions {
-			return out, fmt.Errorf("bedrock vector dimension mismatch: %w", domain.ErrEmbeddingProviderError)
+			return fmt.Errorf("bedrock vector dimension mismatch: %w", domain.ErrEmbeddingProviderError)
 		}
 		for _, f := range v {
 			if math.IsNaN(float64(f)) || math.IsInf(float64(f), 0) {
-				return out, fmt.Errorf("invalid Bedrock vector: %w", domain.ErrEmbeddingProviderError)
+				return fmt.Errorf("invalid Bedrock vector: %w", domain.ErrEmbeddingProviderError)
 			}
 		}
 	}
-	out.Embeddings = vectors
-	return out, nil
+	return nil
 }
 
 func ctxError(ctx context.Context, err error) error {
@@ -401,6 +443,10 @@ func validateConfig(cfg *Config) error {
 	if cfg.Region == "" || strings.ContainsAny(cfg.Region, "/:?# \t\r\n") {
 		return errors.New("bedrock requires a valid region")
 	}
+	return validateModelConfig(cfg)
+}
+
+func validateModelConfig(cfg *Config) error {
 	switch cfg.Model {
 	case "cohere.embed-v4:0", "eu.cohere.embed-v4:0", "us.cohere.embed-v4:0", "global.cohere.embed-v4:0":
 	default:
@@ -411,6 +457,10 @@ func validateConfig(cfg *Config) error {
 	default:
 		return errors.New("bedrock dimensions must be 256, 512, 1024 or 1536")
 	}
+	return validateExecutionConfig(cfg)
+}
+
+func validateExecutionConfig(cfg *Config) error {
 	if cfg.Purpose != "search_document" && cfg.Purpose != "search_query" {
 		return errors.New("bedrock purpose must be search_document or search_query")
 	}

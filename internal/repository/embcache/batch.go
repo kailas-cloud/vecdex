@@ -42,6 +42,23 @@ func (c *CachedEmbedder) BatchEmbed(ctx context.Context, texts []string) (domain
 	}
 	plan := c.planBatch(texts)
 	vectors := c.readBatchCache(ctx, plan.keys)
+	misses, indexes := c.findBatchMisses(plan, vectors)
+	result := domain.BatchEmbeddingResult{}
+	var embedErr error
+	if len(misses) > 0 {
+		result, embedErr = c.embedBatchMisses(ctx, plan, misses, indexes, vectors)
+	}
+	result.Embeddings = expandBatch(plan, vectors, len(texts), embedErr != nil)
+	if embedErr != nil {
+		return result, fmt.Errorf("embed unique misses: %w", embedErr)
+	}
+	return result, nil
+}
+
+func (c *CachedEmbedder) findBatchMisses(
+	plan *batchPlan,
+	vectors [][]float32,
+) (missingTexts []string, missingIndexes []int) {
 	var misses []string
 	var indexes []int
 	for i, vector := range vectors {
@@ -55,34 +72,32 @@ func (c *CachedEmbedder) BatchEmbed(ctx context.Context, texts []string) (domain
 			c.cacheTotal.WithLabelValues(label).Add(float64(plan.counts[i]))
 		}
 	}
-	result := domain.BatchEmbeddingResult{}
-	var embedErr error
-	if len(misses) > 0 {
-		result, embedErr = c.embedMisses(ctx, misses)
-		if embedErr == nil && len(result.Embeddings) != len(misses) {
-			embedErr = domain.ErrEmbeddingProviderError
-			result.Embeddings = nil
-		}
-		entries := make([]db.KVItem, 0, len(result.Embeddings))
-		for j, vector := range result.Embeddings {
-			if j >= len(indexes) {
-				break
-			}
-			if err := domain.ValidateVector(vector, c.dimensions); err != nil {
-				embedErr = err
-				break
-			}
-			index := indexes[j]
-			vectors[index] = vector
-			entries = append(entries, db.KVItem{Key: plan.keys[index], Value: vectorToCacheBytes(vector)})
-		}
-		c.writeBatchCache(ctx, entries)
+	return misses, indexes
+}
+
+func (c *CachedEmbedder) embedBatchMisses(
+	ctx context.Context, plan *batchPlan, misses []string, indexes []int, vectors [][]float32,
+) (domain.BatchEmbeddingResult, error) {
+	result, embedErr := c.embedMisses(ctx, misses)
+	if embedErr == nil && len(result.Embeddings) != len(misses) {
+		embedErr = domain.ErrEmbeddingProviderError
+		result.Embeddings = nil
 	}
-	result.Embeddings = expandBatch(plan, vectors, len(texts), embedErr != nil)
-	if embedErr != nil {
-		return result, fmt.Errorf("embed unique misses: %w", embedErr)
+	entries := make([]db.KVItem, 0, len(result.Embeddings))
+	for j, vector := range result.Embeddings {
+		if j >= len(indexes) {
+			break
+		}
+		if err := domain.ValidateVector(vector, c.dimensions); err != nil {
+			embedErr = err
+			break
+		}
+		index := indexes[j]
+		vectors[index] = vector
+		entries = append(entries, db.KVItem{Key: plan.keys[index], Value: vectorToCacheBytes(vector)})
 	}
-	return result, nil
+	c.writeBatchCache(ctx, entries)
+	return result, embedErr
 }
 
 func expandBatch(plan *batchPlan, vectors [][]float32, count int, partial bool) [][]float32 {

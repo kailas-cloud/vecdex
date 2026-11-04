@@ -214,18 +214,7 @@ func (r *Repo) filterCommitted(ctx context.Context, collection string, found *db
 	if found == nil {
 		return nil
 	}
-	keys := make([]string, 0, len(found.Entries))
-	positions := map[string]int{}
-	for _, entry := range found.Entries {
-		id := entry.Fields["__parent_id"]
-		if id == "" {
-			continue
-		}
-		if _, exists := positions[id]; !exists {
-			positions[id] = len(keys)
-			keys = append(keys, domain.GenerationDocumentPrefix(collection, domain.CollectionGeneration(ctx))+id)
-		}
-	}
+	keys, positions := committedParentKeys(ctx, collection, found.Entries)
 	if len(keys) == 0 {
 		return nil
 	}
@@ -236,6 +225,29 @@ func (r *Repo) filterCommitted(ctx context.Context, collection string, found *db
 	if len(versions) != len(keys) {
 		return fmt.Errorf("document version count mismatch")
 	}
+	keepCommittedEntries(found, positions, versions)
+	return nil
+}
+
+func committedParentKeys(
+	ctx context.Context, collection string, entries []db.SearchEntry,
+) (parentKeys []string, parentPositions map[string]int) {
+	keys := make([]string, 0, len(entries))
+	positions := map[string]int{}
+	for _, entry := range entries {
+		id := entry.Fields["__parent_id"]
+		if id == "" {
+			continue
+		}
+		if _, exists := positions[id]; !exists {
+			positions[id] = len(keys)
+			keys = append(keys, domain.GenerationDocumentPrefix(collection, domain.CollectionGeneration(ctx))+id)
+		}
+	}
+	return keys, positions
+}
+
+func keepCommittedEntries(found *db.SearchResult, positions map[string]int, versions []string) {
 	visible := found.Entries[:0]
 	for _, entry := range found.Entries {
 		id := entry.Fields["__parent_id"]
@@ -245,7 +257,6 @@ func (r *Repo) filterCommitted(ctx context.Context, collection string, found *db
 	}
 	found.Entries = visible
 	found.Total = len(visible)
-	return nil
 }
 
 func projectedMetadata(
