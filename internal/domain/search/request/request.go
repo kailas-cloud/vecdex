@@ -2,6 +2,7 @@ package request
 
 import (
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/mode"
@@ -41,7 +42,7 @@ func New(
 	if query == "" {
 		return Request{}, fmt.Errorf("query is required")
 	}
-	if len(query) > MaxQueryLength {
+	if utf8.RuneCountInString(query) > MaxQueryLength {
 		return Request{}, fmt.Errorf("query too long (max %d chars)", MaxQueryLength)
 	}
 	if m == "" {

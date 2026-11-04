@@ -17,7 +17,13 @@ type Repository interface {
 		docs []domdoc.Document, nextCursor string, err error,
 	)
 	Delete(ctx context.Context, collectionName, id string) error
-	Patch(ctx context.Context, collectionName, id string, p patch.Patch, newVector []float32) error
+	Patch(
+		ctx context.Context,
+		collectionName, id string,
+		p patch.Patch,
+		newVector []float32,
+		fragments []domdoc.Fragment,
+	) error
 	Count(ctx context.Context, collectionName string) (int, error)
 }
 

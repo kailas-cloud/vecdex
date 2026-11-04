@@ -53,7 +53,7 @@ func TestValidate_InvalidEmbeddingBackend(t *testing.T) {
 		t.Fatal("expected error for invalid backend")
 	}
 
-	expected := `embedding.providers.local.backend must be "openai" or "onnx", got "invalid"`
+	expected := `embedding.providers.local.backend must be "openai", "onnx" or "bedrock", got "invalid"`
 	if err.Error() != expected {
 		t.Fatalf("unexpected error:\ngot:  %q\nwant: %q", err.Error(), expected)
 	}
@@ -174,8 +174,8 @@ func TestApplyDefaults(t *testing.T) {
 	if cfg.HTTP.ReadTimeoutSec != 10 {
 		t.Errorf("expected ReadTimeoutSec=10, got %d", cfg.HTTP.ReadTimeoutSec)
 	}
-	if cfg.HTTP.WriteTimeoutSec != 10 {
-		t.Errorf("expected WriteTimeoutSec=10, got %d", cfg.HTTP.WriteTimeoutSec)
+	if cfg.HTTP.WriteTimeoutSec != 310 {
+		t.Errorf("expected WriteTimeoutSec=310, got %d", cfg.HTTP.WriteTimeoutSec)
 	}
 	if cfg.HTTP.ShutdownSec != 10 {
 		t.Errorf("expected ShutdownSec=10, got %d", cfg.HTTP.ShutdownSec)
@@ -288,4 +288,39 @@ func TestValidate_InvalidSearchConfig(t *testing.T) {
 			t.Fatal("expected error for invalid bm25 candidate multiplier")
 		}
 	})
+}
+
+func TestActiveVectorizer(t *testing.T) {
+	cfg := Config{
+		Embedding: EmbeddingConfig{
+			Vectorizers: map[string]VectorizerConfig{"first": {Provider: "a"}, "second": {Provider: "b"}},
+		},
+	}
+	if _, _, err := cfg.ActiveVectorizer(); err == nil {
+		t.Fatal("ambiguous selection accepted")
+	}
+	cfg.Embedding.ActiveVectorizer = "second"
+	_, v, err := cfg.ActiveVectorizer()
+	if err != nil || v.Provider != "b" {
+		t.Fatalf("selection: %+v %v", v, err)
+	}
+	cfg.Embedding.ActiveVectorizer = "missing"
+	if _, _, err := cfg.ActiveVectorizer(); err == nil {
+		t.Fatal("missing selection accepted")
+	}
+}
+func TestBedrockValidation(t *testing.T) {
+	p := ProviderConfig{Backend: "bedrock", APIKey: "token", Region: "eu-west-1"}
+	if err := validateProviderConfig("aws", &p); err != nil {
+		t.Fatal(err)
+	}
+	p.APIKey = "token\nheader"
+	if err := validateProviderConfig("aws", &p); err == nil {
+		t.Fatal("invalid token accepted")
+	}
+	p.APIKey = "token"
+	p.Region = ""
+	if err := validateProviderConfig("aws", &p); err == nil {
+		t.Fatal("missing region accepted")
+	}
 }

@@ -435,7 +435,7 @@ class TestUpsertDocumentHeaders:
         assert_embedding_headers(resp)
 
     def test_upsert_has_location_header(self, client, collection_factory):
-        """4.1.4: Location header present and starts with /api/v1/."""
+        """4.1.4: Location resolves to the created document."""
         coll = collection_factory()
         resp = client.put(
             f"/collections/{coll['name']}/documents/loc-1",
@@ -443,7 +443,10 @@ class TestUpsertDocumentHeaders:
         )
         assert resp.status_code == 201
         assert "location" in resp.headers
-        assert resp.headers["location"].startswith("/api/v1/")
+        assert resp.headers["location"] == f"/collections/{coll['name']}/documents/loc-1"
+        fetched = client.get(resp.headers["location"])
+        assert fetched.status_code == 200
+        assert fetched.json()["content"] == "location header test"
 
 
 @pytest.mark.p0

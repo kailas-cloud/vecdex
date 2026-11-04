@@ -1,0 +1,26 @@
+http:
+  port: 8080
+  write_timeout_sec: 310
+valkey:
+  addrs: [valkey:6379]
+auth:
+  api_keys: [test-api-key]
+index:
+  max_batch_size: 5000
+embedding:
+  providers:
+    bedrock:
+      backend: bedrock
+      region: us-east-1
+      api_key: fake-bedrock-key
+      timeout_sec: 30
+      max_concurrency: 4
+      budget:
+        action: reject
+        daily_token_limit: 100000000
+        monthly_token_limit: 1000000000
+  vectorizers:
+    text:
+      provider: bedrock
+      model: cohere.embed-v4:0
+      dimensions: 1024

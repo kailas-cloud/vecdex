@@ -1,0 +1,16 @@
+http:
+  port: 8080
+valkey:
+  addrs: [valkey:6379]
+auth:
+  api_keys: [test-api-key]
+embedding:
+  providers:
+    stub:
+      api_key: fake-key
+      base_url: http://mock-embedder:9999/v1/
+  vectorizers:
+    json:
+      provider: stub
+      model: incompatible-model
+      dimensions: 1024

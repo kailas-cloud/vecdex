@@ -18,7 +18,7 @@ func TestSearchKNN_HappyPath(t *testing.T) {
 	ctx := context.Background()
 
 	ms.searchKNNFn = func(_ context.Context, q *db.KNNQuery) (*db.SearchResult, error) {
-		if q.IndexName != "vecdex:notes:idx" {
+		if q.IndexName != "vecdex:v2:{notes}:index" {
 			t.Errorf("unexpected index: %s", q.IndexName)
 		}
 		if q.K != 10 {
@@ -28,7 +28,7 @@ func TestSearchKNN_HappyPath(t *testing.T) {
 			Total: 2,
 			Entries: []db.SearchEntry{
 				{
-					Key:   "vecdex:notes:doc-1",
+					Key:   "vecdex:v2:{notes}:doc:doc-1",
 					Score: 0.877,
 					Fields: map[string]string{
 						"__content":    "hello world",
@@ -37,7 +37,7 @@ func TestSearchKNN_HappyPath(t *testing.T) {
 					},
 				},
 				{
-					Key:   "vecdex:notes:doc-2",
+					Key:   "vecdex:v2:{notes}:doc:doc-2",
 					Score: 0.544,
 					Fields: map[string]string{
 						"__content": "goodbye world",
@@ -82,7 +82,7 @@ func TestSearchKNN_IncludeVectors(t *testing.T) {
 			Total: 1,
 			Entries: []db.SearchEntry{
 				{
-					Key:   "vecdex:notes:doc-1",
+					Key:   "vecdex:v2:{notes}:doc:doc-1",
 					Score: 0.9,
 					Fields: map[string]string{
 						"__content": "text",
@@ -154,7 +154,7 @@ func TestSearchKNN_WithFilter(t *testing.T) {
 			Total: 1,
 			Entries: []db.SearchEntry{
 				{
-					Key:   "vecdex:notes:doc-1",
+					Key:   "vecdex:v2:{notes}:doc:doc-1",
 					Score: 0.9,
 					Fields: map[string]string{
 						"__content": "filtered",
@@ -181,7 +181,7 @@ func TestSearchBM25_HappyPath(t *testing.T) {
 	ctx := context.Background()
 
 	ms.searchBM25Fn = func(_ context.Context, q *db.TextQuery) (*db.SearchResult, error) {
-		if q.IndexName != "vecdex:notes:idx" {
+		if q.IndexName != "vecdex:v2:{notes}:index" {
 			t.Errorf("unexpected index: %s", q.IndexName)
 		}
 		if q.Query != "hello" {
@@ -191,7 +191,7 @@ func TestSearchBM25_HappyPath(t *testing.T) {
 			Total: 2,
 			Entries: []db.SearchEntry{
 				{
-					Key:   "vecdex:notes:doc-1",
+					Key:   "vecdex:v2:{notes}:doc:doc-1",
 					Score: 0.85,
 					Fields: map[string]string{
 						"__content": "hello world",
@@ -199,7 +199,7 @@ func TestSearchBM25_HappyPath(t *testing.T) {
 					},
 				},
 				{
-					Key:   "vecdex:notes:doc-2",
+					Key:   "vecdex:v2:{notes}:doc:doc-2",
 					Score: 0.42,
 					Fields: map[string]string{
 						"__content": "goodbye world",
@@ -279,4 +279,25 @@ func testVectorToBytes(v []float32) string {
 		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
 	}
 	return string(buf)
+}
+
+func TestOnlyCommittedFragmentsAreVisible(t *testing.T) {
+	repo, store := newTestRepo(t)
+	store.versionFn = func(_ context.Context, keys []string, field string) ([]string, error) {
+		if len(keys) != 2 || field != "__chunk_version" {
+			t.Fatal("unexpected version query")
+		}
+		return []string{"current", ""}, nil
+	}
+	found := &db.SearchResult{Total: 3, Entries: []db.SearchEntry{
+		{Key: "chunk-old", Fields: map[string]string{"__parent_id": "a", "__version": "old"}},
+		{Key: "chunk-current", Fields: map[string]string{"__parent_id": "a", "__version": "current"}},
+		{Key: "orphan", Fields: map[string]string{"__parent_id": "b", "__version": "uncommitted"}},
+	}}
+	if err := repo.filterCommitted(context.Background(), "notes", found); err != nil {
+		t.Fatal(err)
+	}
+	if len(found.Entries) != 1 || found.Entries[0].Key != "chunk-current" {
+		t.Fatalf("visible %+v", found.Entries)
+	}
 }

@@ -2,6 +2,7 @@ package vecdex
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	domusage "github.com/kailas-cloud/vecdex/internal/domain/usage"
@@ -28,6 +29,7 @@ type UsageReport struct {
 
 // UsageMetrics tracks embedding resource consumption.
 type UsageMetrics struct {
+	UnknownRequests   int
 	EmbeddingRequests int
 	Tokens            int
 	CostMillidollars  int
@@ -42,13 +44,14 @@ type BudgetStatus struct {
 }
 
 // Usage returns an embedding usage report for the given period.
-// Observer always records success — the underlying use-case is in-memory
-// and does not produce errors.
-func (c *Client) Usage(ctx context.Context, period UsagePeriod) UsageReport {
+func (c *Client) Usage(ctx context.Context, period UsagePeriod) (result UsageReport, resultErr error) {
 	start := time.Now()
-	defer func() { c.obs.observe("usage", start, nil) }()
+	defer func() { c.obs.observe("usage", start, resultErr) }()
 
-	report := c.usageSvc.GetReport(ctx, domusage.Period(period))
+	report, err := c.usageSvc.GetReport(ctx, domusage.Period(period))
+	if err != nil {
+		return UsageReport{}, fmt.Errorf("usage: %w", err)
+	}
 	m := report.Metrics()
 	b := report.Budget()
 
@@ -58,6 +61,7 @@ func (c *Client) Usage(ctx context.Context, period UsagePeriod) UsageReport {
 		PeriodEnd:   time.UnixMilli(report.PeriodEnd()).UTC(),
 		Metrics: UsageMetrics{
 			EmbeddingRequests: m.EmbeddingRequests(),
+			UnknownRequests:   m.UnknownRequests(),
 			Tokens:            m.Tokens(),
 			CostMillidollars:  m.CostMillidollars(),
 		},
@@ -67,10 +71,10 @@ func (c *Client) Usage(ctx context.Context, period UsagePeriod) UsageReport {
 			IsExhausted:     b.IsExhausted(),
 			ResetsAt:        time.UnixMilli(b.ResetsAt()).UTC(),
 		},
-	}
+	}, nil
 }
 
 // usageUseCase is the internal interface for usage reports.
 type usageUseCase interface {
-	GetReport(ctx context.Context, period domusage.Period) domusage.Report
+	GetReport(ctx context.Context, period domusage.Period) (domusage.Report, error)
 }

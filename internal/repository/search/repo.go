@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 // store is the consumer interface for search operations (ISP).
 type store interface {
+	HGetFieldMulti(ctx context.Context, keys []string, field string) ([]string, error)
 	SearchKNN(ctx context.Context, q *db.KNNQuery) (*db.SearchResult, error)
 	SearchBM25(ctx context.Context, q *db.TextQuery) (*db.SearchResult, error)
 	SupportsTextSearch(ctx context.Context) bool
@@ -42,14 +44,16 @@ func (r *Repo) SearchKNN(
 	vector []float32, filters filter.Expression, topK int,
 	includeVectors bool,
 ) ([]result.Result, error) {
-	indexName := fmt.Sprintf("%s%s:idx", domain.KeyPrefix, collectionName)
+	indexName := domain.GenerationIndexName(collectionName, domain.CollectionGeneration(ctx))
 
 	q := &db.KNNQuery{
-		IndexName:     indexName,
-		Filters:       filters,
-		Vector:        vector,
-		K:             topK,
-		IncludeVector: includeVectors,
+		IndexName:       indexName,
+		ExcludeParentID: domain.ExcludedDocument(ctx),
+		Filters:         filters,
+		Vector:          vector,
+		K:               topK,
+		IncludeVector:   includeVectors,
+		ReturnFields:    searchReturnFields(ctx, includeVectors, true),
 	}
 
 	sr, err := r.store.SearchKNN(ctx, q)
@@ -57,6 +61,9 @@ func (r *Repo) SearchKNN(
 		return nil, fmt.Errorf("search knn %s: %w", collectionName, err)
 	}
 
+	if err := r.filterCommitted(ctx, collectionName, sr); err != nil {
+		return nil, err
+	}
 	return parseKNNResults(sr, collectionName, includeVectors)
 }
 
@@ -65,13 +72,14 @@ func (r *Repo) SearchBM25(
 	ctx context.Context, collectionName string,
 	query string, filters filter.Expression, topK int,
 ) ([]result.Result, error) {
-	indexName := fmt.Sprintf("%s%s:idx", domain.KeyPrefix, collectionName)
+	indexName := domain.GenerationIndexName(collectionName, domain.CollectionGeneration(ctx))
 
 	q := &db.TextQuery{
-		IndexName: indexName,
-		Query:     query,
-		Filters:   filters,
-		TopK:      topK,
+		IndexName:    indexName,
+		Query:        query,
+		Filters:      filters,
+		TopK:         topK,
+		ReturnFields: searchReturnFields(ctx, false, false),
 	}
 
 	sr, err := r.store.SearchBM25(ctx, q)
@@ -79,20 +87,25 @@ func (r *Repo) SearchBM25(
 		return nil, fmt.Errorf("search bm25 %s: %w", collectionName, err)
 	}
 
+	if err := r.filterCommitted(ctx, collectionName, sr); err != nil {
+		return nil, err
+	}
 	return parseBM25Results(sr, collectionName)
 }
 
 // parseKNNResults converts db.SearchResult into []result.Result.
-func parseKNNResults(sr *db.SearchResult, collection string, includeVectors bool) ([]result.Result, error) {
+func parseKNNResults(sr *db.SearchResult, _ string, includeVectors bool) ([]result.Result, error) {
 	if sr == nil || sr.Total == 0 {
 		return nil, nil
 	}
 
-	prefix := fmt.Sprintf("%s%s:", domain.KeyPrefix, collection)
 	results := make([]result.Result, 0, len(sr.Entries))
 
 	for _, entry := range sr.Entries {
-		docID := strings.TrimPrefix(entry.Key, prefix)
+		docID := entry.Key[strings.LastIndex(entry.Key, ":")+1:]
+		if entry.Fields["__parent_id"] != "" {
+			docID = entry.Fields["__parent_id"]
+		}
 		res := parseEntryFields(docID, entry, includeVectors)
 		results = append(results, res)
 	}
@@ -101,16 +114,18 @@ func parseKNNResults(sr *db.SearchResult, collection string, includeVectors bool
 }
 
 // parseBM25Results converts db.SearchResult into []result.Result.
-func parseBM25Results(sr *db.SearchResult, collection string) ([]result.Result, error) {
+func parseBM25Results(sr *db.SearchResult, _ string) ([]result.Result, error) {
 	if sr == nil || sr.Total == 0 {
 		return nil, nil
 	}
 
-	prefix := fmt.Sprintf("%s%s:", domain.KeyPrefix, collection)
 	results := make([]result.Result, 0, len(sr.Entries))
 
 	for _, entry := range sr.Entries {
-		docID := strings.TrimPrefix(entry.Key, prefix)
+		docID := entry.Key[strings.LastIndex(entry.Key, ":")+1:]
+		if entry.Fields["__parent_id"] != "" {
+			docID = entry.Fields["__parent_id"]
+		}
 		res := parseBM25EntryFields(docID, entry.Score, entry)
 		results = append(results, res)
 	}
@@ -150,6 +165,7 @@ func parseEntryFields(docID string, entry db.SearchEntry, includeVectors bool) r
 		}
 	}
 
+	tags, numerics = projectedMetadata(entry.Fields, tags, numerics)
 	return result.New(docID, entry.Score, content, tags, numerics, vector)
 }
 
@@ -177,6 +193,7 @@ func parseBM25EntryFields(docID string, score float64, entry db.SearchEntry) res
 		}
 	}
 
+	tags, numerics = projectedMetadata(entry.Fields, tags, numerics)
 	return result.New(docID, score, content, tags, numerics, nil)
 }
 
@@ -191,4 +208,68 @@ func bytesToVector(s string) []float32 {
 		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
 	}
 	return v
+}
+
+func (r *Repo) filterCommitted(ctx context.Context, collection string, found *db.SearchResult) error {
+	if found == nil {
+		return nil
+	}
+	keys, positions := committedParentKeys(ctx, collection, found.Entries)
+	if len(keys) == 0 {
+		return nil
+	}
+	versions, err := r.store.HGetFieldMulti(ctx, keys, "__chunk_version")
+	if err != nil {
+		return fmt.Errorf("read committed document versions: %w", err)
+	}
+	if len(versions) != len(keys) {
+		return fmt.Errorf("document version count mismatch")
+	}
+	keepCommittedEntries(found, positions, versions)
+	return nil
+}
+
+func committedParentKeys(
+	ctx context.Context, collection string, entries []db.SearchEntry,
+) (parentKeys []string, parentPositions map[string]int) {
+	keys := make([]string, 0, len(entries))
+	positions := map[string]int{}
+	for _, entry := range entries {
+		id := entry.Fields["__parent_id"]
+		if id == "" {
+			continue
+		}
+		if _, exists := positions[id]; !exists {
+			positions[id] = len(keys)
+			keys = append(keys, domain.GenerationDocumentPrefix(collection, domain.CollectionGeneration(ctx))+id)
+		}
+	}
+	return keys, positions
+}
+
+func keepCommittedEntries(found *db.SearchResult, positions map[string]int, versions []string) {
+	visible := found.Entries[:0]
+	for _, entry := range found.Entries {
+		id := entry.Fields["__parent_id"]
+		if id == "" || (entry.Fields["__version"] != "" && versions[positions[id]] == entry.Fields["__version"]) {
+			visible = append(visible, entry)
+		}
+	}
+	found.Entries = visible
+	found.Total = len(visible)
+}
+
+func projectedMetadata(
+	fields map[string]string,
+	tags map[string]string,
+	numerics map[string]float64,
+) (projectedTags map[string]string, projectedNumerics map[string]float64) {
+	if fields["__metadata"] == "" {
+		return tags, numerics
+	}
+	var metadata db.RecordMetadata
+	if json.Unmarshal([]byte(fields["__metadata"]), &metadata) != nil {
+		return tags, numerics
+	}
+	return metadata.Tags, metadata.Numerics
 }

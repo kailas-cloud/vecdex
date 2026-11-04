@@ -10,6 +10,7 @@ import (
 
 // mockStore implements the consumer interface for tests.
 type mockStore struct {
+	versionFn            func(context.Context, []string, string) ([]string, error)
 	searchKNNFn          func(ctx context.Context, q *db.KNNQuery) (*db.SearchResult, error)
 	searchBM25Fn         func(ctx context.Context, q *db.TextQuery) (*db.SearchResult, error)
 	supportsTextSearchFn func(ctx context.Context) bool
@@ -67,4 +68,11 @@ func mustExpression(t *testing.T, must, should, mustNot []filter.Condition) filt
 		t.Fatalf("NewExpression: %v", err)
 	}
 	return e
+}
+
+func (m *mockStore) HGetFieldMulti(ctx context.Context, keys []string, field string) ([]string, error) {
+	if m.versionFn != nil {
+		return m.versionFn(ctx, keys, field)
+	}
+	return make([]string, len(keys)), nil
 }

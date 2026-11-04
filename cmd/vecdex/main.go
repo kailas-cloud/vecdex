@@ -18,6 +18,7 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/db"
 	dbValkey "github.com/kailas-cloud/vecdex/internal/db/valkey"
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	domusage "github.com/kailas-cloud/vecdex/internal/domain/usage"
 	logpkg "github.com/kailas-cloud/vecdex/internal/logger"
 	"github.com/kailas-cloud/vecdex/internal/metrics"
 	budgetrepo "github.com/kailas-cloud/vecdex/internal/repository/budget"
@@ -25,6 +26,7 @@ import (
 	documentrepo "github.com/kailas-cloud/vecdex/internal/repository/document"
 	"github.com/kailas-cloud/vecdex/internal/repository/embcache"
 	searchrepo "github.com/kailas-cloud/vecdex/internal/repository/search"
+	bedrockEmb "github.com/kailas-cloud/vecdex/internal/transport/bedrock"
 	chiTransport "github.com/kailas-cloud/vecdex/internal/transport/chi"
 	gen "github.com/kailas-cloud/vecdex/internal/transport/generated"
 	onnxEmb "github.com/kailas-cloud/vecdex/internal/transport/onnx"
@@ -82,49 +84,48 @@ func main() {
 	metrics.RegisterEmbeddingMetrics()
 
 	// Build embedder chain — composition root
-	// Take the first vectorizer config
-	var vecCfg config.VectorizerConfig
-	var provName string
-	for _, vc := range cfg.Embedding.Vectorizers {
-		vecCfg = vc
-		provName = vc.Provider
-		break
+	_, vecCfg, err := cfg.ActiveVectorizer()
+	if err != nil {
+		logger.Fatal("Invalid active vectorizer", zap.Error(err))
 	}
+	provName := vecCfg.Provider
+
 	provCfg := cfg.Embedding.Providers[provName]
 
-	// Single BudgetTracker shared across all embedders and usage service.
-	var budget *embeddinguc.BudgetTracker
+	// Accounting is always active, including when no limits are configured.
 	budgetCfg := provCfg.Budget
-	if budgetCfg.DailyTokenLimit > 0 || budgetCfg.MonthlyTokenLimit > 0 {
-		action := embeddinguc.BudgetActionWarn
-		if budgetCfg.Action == "reject" {
-			action = embeddinguc.BudgetActionReject
-		}
-		budget = embeddinguc.NewBudgetTracker(
-			provName, budgetCfg.DailyTokenLimit, budgetCfg.MonthlyTokenLimit, action, logger,
-		)
-		// Connect persistence store — loads current counters from DB.
-		budgetStore := budgetrepo.New(store, 48*time.Hour, 62*24*time.Hour)
-		budget.WithStore(ctx, budgetStore)
+	action := embeddinguc.BudgetActionWarn
+	if budgetCfg.Action == "reject" {
+		action = embeddinguc.BudgetActionReject
 	}
-
-	// Pass nil interface (not typed nil pointer!) if budget is not configured.
-	// Go gotcha: (*BudgetTracker)(nil) wrapped in BudgetChecker != nil.
-	var budgetChecker embeddinguc.BudgetChecker
-	if budget != nil {
-		budgetChecker = budget
+	maxInputTokens := int64(128000)
+	if provCfg.Backend == "onnx" {
+		maxInputTokens = int64(provCfg.MaxLength)
+	}
+	budget := embeddinguc.NewBudgetTracker(
+		provName, budgetCfg.DailyTokenLimit, budgetCfg.MonthlyTokenLimit, action, logger,
+	).
+		WithAccountingStore(budgetrepo.NewAccounting(store), maxInputTokens)
+	var budgetChecker embeddinguc.BudgetChecker = budget
+	var providerSlots chan struct{}
+	if provCfg.Backend == "bedrock" {
+		concurrency := provCfg.MaxConcurrency
+		if concurrency == 0 {
+			concurrency = 4
+		}
+		providerSlots = make(chan struct{}, concurrency)
 	}
 
 	docEmbedder, err := buildEmbedder(
-		provName, &provCfg, vecCfg, vecCfg.DocumentInstruction,
-		store, budgetChecker, logger,
+		provName, &provCfg, vecCfg, "search_document", vecCfg.DocumentInstruction,
+		store, budgetChecker, providerSlots, logger,
 	)
 	if err != nil {
 		logger.Fatal("Failed to create document embedder", zap.Error(err))
 	}
 	queryEmbedder, err := buildEmbedder(
-		provName, &provCfg, vecCfg, vecCfg.QueryInstruction,
-		store, budgetChecker, logger,
+		provName, &provCfg, vecCfg, "search_query", vecCfg.QueryInstruction,
+		store, budgetChecker, providerSlots, logger,
 	)
 	if err != nil {
 		logger.Fatal("Failed to create query embedder", zap.Error(err))
@@ -148,11 +149,14 @@ func main() {
 	docRepo := documentrepo.New(store)
 	searchRepo := searchrepo.New(store)
 
+	embeddingSpace := vecCfg.Fingerprint(&provCfg)
 	// Create use case services
-	collSvc := collectionuc.New(collRepo, vectorDim)
+	collSvc := collectionuc.New(collRepo, vectorDim).WithEmbeddingSpace(embeddingSpace)
 	docSvc := documentuc.New(docRepo, collRepo, docEmbedder, queryEmbedder).
-		WithPagination(cfg.Index.DefaultPageSize, cfg.Index.MaxPageSize)
-	searchSvc := searchuc.New(searchRepo, collRepo, queryEmbedder).WithDocuments(docRepo)
+		WithPagination(cfg.Index.DefaultPageSize, cfg.Index.MaxPageSize).WithEmbeddingSpace(embeddingSpace)
+	searchSvc := searchuc.New(searchRepo, collRepo, queryEmbedder).
+		WithDocuments(docRepo).
+		WithEmbeddingSpace(embeddingSpace)
 	searchSvc = searchSvc.WithConfig(searchuc.Config{
 		SemanticCandidateFloor:      cfg.Search.SemanticCandidateFloor,
 		SemanticCandidateMultiplier: cfg.Search.SemanticCandidateMultiplier,
@@ -165,7 +169,7 @@ func main() {
 		batchEmb = be
 	}
 	batchSvc := batchuc.New(docRepo, docRepo, docRepo, collRepo, docEmbedder, batchEmb).
-		WithMaxBatchSize(cfg.Index.MaxBatchSize)
+		WithMaxBatchSize(cfg.Index.MaxBatchSize).WithEmbeddingSpace(embeddingSpace)
 
 	// Usage service — reads from shared BudgetTracker
 	var budgetReader usageuc.BudgetReader
@@ -254,9 +258,11 @@ func buildEmbedder(
 	provName string,
 	provCfg *config.ProviderConfig,
 	vecCfg config.VectorizerConfig,
+	purpose string,
 	instruction string,
 	store db.Store,
 	budget embeddinguc.BudgetChecker,
+	providerSlots chan struct{},
 	logger *zap.Logger,
 ) (domain.Embedder, error) {
 	var (
@@ -273,7 +279,19 @@ func buildEmbedder(
 			Dimensions: vecCfg.Dimensions,
 			Provider:   provName,
 			Logger:     logger,
+			Observer:   invocationObserver(budget),
 		})
+	case "bedrock":
+		base, err = bedrockEmb.NewEmbedder(&bedrockEmb.Config{
+			APIKey: provCfg.APIKey, Region: provCfg.Region, Model: vecCfg.Model, Provider: provName,
+			Dimensions: vecCfg.Dimensions, Purpose: purpose,
+			Timeout: time.Duration(provCfg.TimeoutSec) * time.Second, MaxConcurrency: provCfg.MaxConcurrency,
+			Observer:           invocationObserver(budget),
+			ConcurrencyLimiter: providerSlots,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create Bedrock embedder: %w", err)
+		}
 	case "onnx":
 		base, err = onnxEmb.NewEmbedder(&onnxEmb.Config{
 			ModelDir:          provCfg.ModelDir,
@@ -281,6 +299,7 @@ func buildEmbedder(
 			Dimensions:        vecCfg.Dimensions,
 			MaxLength:         provCfg.MaxLength,
 			ExecutionProvider: provCfg.ExecutionProvider,
+			Observer:          invocationObserver(budget),
 			Provider:          provName,
 			Logger:            logger,
 		})
@@ -295,12 +314,15 @@ func buildEmbedder(
 	// Cached
 	embedder := base
 	if store != nil {
-		embedder = embcache.New(base, store, metrics.EmbeddingCacheTotal, logger)
+		embedder = embcache.New(base, store, metrics.EmbeddingCacheTotal, logger).
+			WithNamespace(vecCfg.Fingerprint(provCfg) + "|" + purpose).
+			WithTTL(time.Duration(provCfg.CacheTTLSec) * time.Second).
+			WithDimensions(vecCfg.Dimensions)
 	}
 
 	// Instrumented (budget + metrics)
 	embedder = embeddinguc.NewInstrumentedEmbedder(
-		embedder, provName, vecCfg.Model, budget, logger,
+		embedder, provName, vecCfg.Model, nil, logger,
 	)
 
 	// Instruction prefix (outermost — cache key includes instruction)
@@ -368,4 +390,9 @@ func wideEventMiddleware(logger *zap.Logger) func(next http.Handler) http.Handle
 			)
 		})
 	}
+}
+
+func invocationObserver(budget embeddinguc.BudgetChecker) domusage.InvocationObserver {
+	observer, _ := budget.(domusage.InvocationObserver)
+	return observer
 }

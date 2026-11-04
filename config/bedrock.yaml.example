@@ -1,0 +1,25 @@
+http:
+  port: 8080
+  read_timeout_sec: 10
+  write_timeout_sec: 310
+  shutdown_timeout_sec: 30
+valkey:
+  addrs: ["${VALKEY_ADDR:-localhost:6379}"]
+  password: "${VALKEY_PASSWORD}"
+auth:
+  api_keys: ["${VECDEX_API_KEY}"]
+embedding:
+  active_vectorizer: text
+  providers:
+    aws:
+      backend: bedrock
+      region: "${AWS_REGION:-us-east-1}"
+      api_key: "${AWS_BEARER_TOKEN_BEDROCK}"
+      timeout_sec: 30
+      max_concurrency: 4
+      cache_ttl_sec: 604800
+  vectorizers:
+    text:
+      provider: aws
+      model: cohere.embed-v4:0
+      dimensions: 1024

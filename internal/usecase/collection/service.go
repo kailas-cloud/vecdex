@@ -11,8 +11,9 @@ import (
 
 // Service handles collection CRUD operations.
 type Service struct {
-	repo      Repository
-	vectorDim int
+	embeddingSpace string
+	repo           Repository
+	vectorDim      int
 }
 
 // New creates a collection service.
@@ -29,6 +30,7 @@ func (s *Service) Create(
 		return domcol.Collection{}, fmt.Errorf("validate collection: %w: %w", domain.ErrInvalidSchema, err)
 	}
 
+	col = col.WithEmbeddingSpace(s.embeddingSpace)
 	if err := s.repo.Create(ctx, col); err != nil {
 		return domcol.Collection{}, fmt.Errorf("create collection: %w", err)
 	}
@@ -60,4 +62,10 @@ func (s *Service) Delete(ctx context.Context, name string) error {
 		return fmt.Errorf("delete collection: %w", err)
 	}
 	return nil
+}
+
+// WithEmbeddingSpace binds vector operations to the configured embedding space.
+func (s *Service) WithEmbeddingSpace(fingerprint string) *Service {
+	s.embeddingSpace = fingerprint
+	return s
 }

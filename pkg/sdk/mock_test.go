@@ -123,8 +123,8 @@ type mockUsageUC struct {
 
 func (m *mockUsageUC) GetReport(
 	ctx context.Context, period domusage.Period,
-) domusage.Report {
-	return m.getReportFn(ctx, period)
+) (domusage.Report, error) {
+	return m.getReportFn(ctx, period), nil
 }
 
 // --- helpers ---

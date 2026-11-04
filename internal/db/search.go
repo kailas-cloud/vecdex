@@ -4,12 +4,13 @@ import "github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 
 // KNNQuery is the input for vector similarity search.
 type KNNQuery struct {
-	IndexName     string
-	Filters       filter.Expression
-	Vector        []float32
-	K             int
-	ReturnFields  []string
-	IncludeVector bool
+	ExcludeParentID string
+	IndexName       string
+	Filters         filter.Expression
+	Vector          []float32
+	K               int
+	ReturnFields    []string
+	IncludeVector   bool
 }
 
 // TextQuery is the input for BM25 text search.

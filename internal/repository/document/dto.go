@@ -54,7 +54,8 @@ func parseHashFields(id string, m map[string]string) domdoc.Document {
 		}
 	}
 
-	return domdoc.Reconstruct(id, content, tags, numerics, vector, 0)
+	revision, _ := strconv.Atoi(m["__revision"])
+	return domdoc.Reconstruct(id, content, tags, numerics, vector, revision)
 }
 
 // vectorToBytes serializes []float32 to a binary string (4 bytes per float, little-endian).

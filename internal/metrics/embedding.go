@@ -4,6 +4,14 @@ import "github.com/prometheus/client_golang/prometheus"
 
 // Embedding Prometheus metrics.
 var (
+	EmbeddingUsageUnknownTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "vecdex",
+			Name:      "embedding_usage_unknown_total",
+			Help:      "Embedding responses without a valid upstream token count",
+		},
+		[]string{"provider", "model"},
+	)
 	EmbeddingRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "vecdex",
@@ -67,6 +75,7 @@ func RegisterEmbeddingMetrics() {
 	if embMetricsRegistered {
 		return
 	}
+	prometheus.MustRegister(EmbeddingUsageUnknownTotal)
 	prometheus.MustRegister(EmbeddingRequestsTotal)
 	prometheus.MustRegister(EmbeddingRequestDuration)
 	prometheus.MustRegister(EmbeddingTokensTotal)

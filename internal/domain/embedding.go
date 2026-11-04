@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"fmt"
+	"math"
 )
 
 // Embedder is the shared text vectorization contract between layers.
@@ -22,6 +23,7 @@ type HealthChecker interface {
 
 // EmbeddingResult carries the embedding vector and token usage through the decorator chain.
 type EmbeddingResult struct {
+	UsageUnknown bool
 	Embedding    []float32
 	PromptTokens int
 	TotalTokens  int
@@ -29,6 +31,7 @@ type EmbeddingResult struct {
 
 // BatchEmbeddingResult carries multiple embedding vectors and aggregate token usage.
 type BatchEmbeddingResult struct {
+	UsageUnknown bool
 	Embeddings   [][]float32
 	PromptTokens int
 	TotalTokens  int
@@ -39,18 +42,30 @@ type BatchEmbeddingResult struct {
 func BatchFallback(ctx context.Context, e Embedder, texts []string) (BatchEmbeddingResult, error) {
 	embeddings := make([][]float32, len(texts))
 	var totalPrompt, totalTokens int
+	var unknown bool
 
 	for i, text := range texts {
 		res, err := e.Embed(ctx, text)
-		if err != nil {
-			return BatchEmbeddingResult{}, fmt.Errorf("fallback embed [%d]: %w", i, err)
-		}
-		embeddings[i] = res.Embedding
 		totalPrompt += res.PromptTokens
 		totalTokens += res.TotalTokens
+		unknown = unknown || res.UsageUnknown
+		if err != nil {
+			return BatchEmbeddingResult{
+				Embeddings:   embeddings[:i],
+				PromptTokens: totalPrompt,
+				TotalTokens:  totalTokens,
+				UsageUnknown: unknown,
+			}, fmt.Errorf(
+				"fallback embed [%d]: %w",
+				i,
+				err,
+			)
+		}
+		embeddings[i] = res.Embedding
 	}
 
 	return BatchEmbeddingResult{
+		UsageUnknown: unknown,
 		Embeddings:   embeddings,
 		PromptTokens: totalPrompt,
 		TotalTokens:  totalTokens,
@@ -72,7 +87,7 @@ func NewInstructionEmbedder(inner Embedder, instruction string) *InstructionEmbe
 func (e *InstructionEmbedder) Embed(ctx context.Context, text string) (EmbeddingResult, error) {
 	result, err := e.inner.Embed(ctx, e.instruction+text)
 	if err != nil {
-		return EmbeddingResult{}, fmt.Errorf("instruction embed: %w", err)
+		return result, fmt.Errorf("instruction embed: %w", err)
 	}
 	return result, nil
 }
@@ -88,14 +103,37 @@ func (e *InstructionEmbedder) BatchEmbed(ctx context.Context, texts []string) (B
 	if be, ok := e.inner.(BatchEmbedder); ok {
 		res, err := be.BatchEmbed(ctx, prefixed)
 		if err != nil {
-			return BatchEmbeddingResult{}, fmt.Errorf("instruction batch embed: %w", err)
+			return res, fmt.Errorf("instruction batch embed: %w", err)
 		}
 		return res, nil
 	}
 
 	res, err := BatchFallback(ctx, e.inner, prefixed)
 	if err != nil {
-		return BatchEmbeddingResult{}, fmt.Errorf("instruction batch embed fallback: %w", err)
+		return res, fmt.Errorf("instruction batch embed fallback: %w", err)
 	}
 	return res, nil
+}
+
+// HealthCheck forwards provider availability checks.
+func (e *InstructionEmbedder) HealthCheck(ctx context.Context) error {
+	if h, ok := e.inner.(HealthChecker); ok {
+		if err := h.HealthCheck(ctx); err != nil {
+			return fmt.Errorf("embedding health: %w", err)
+		}
+	}
+	return nil
+}
+
+// ValidateVector rejects incomplete, mismatched and non-finite embeddings before storage.
+func ValidateVector(vector []float32, dimensions int) error {
+	if len(vector) == 0 || (dimensions > 0 && len(vector) != dimensions) {
+		return fmt.Errorf("got %d vector dimensions, expected %d: %w", len(vector), dimensions, ErrVectorDimMismatch)
+	}
+	for _, value := range vector {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return fmt.Errorf("non-finite vector: %w", ErrEmbeddingProviderError)
+		}
+	}
+	return nil
 }

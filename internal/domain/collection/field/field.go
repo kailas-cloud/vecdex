@@ -1,6 +1,9 @@
 package field
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Type is the indexing type of a field.
 type Type string
@@ -32,7 +35,7 @@ func New(name string, ft Type) (Field, error) {
 	if len(name) > 64 {
 		return Field{}, fmt.Errorf("field name %q too long (max 64)", name)
 	}
-	if reservedFieldNames[name] {
+	if reservedFieldNames[name] || IsInternalName(name) {
 		return Field{}, fmt.Errorf("field name %q is reserved", name)
 	}
 	if ft != Tag && ft != Numeric {
@@ -54,3 +57,6 @@ func (f Field) Name() string { return f.name }
 
 // FieldType returns the field's indexing type.
 func (f Field) FieldType() Type { return f.fieldType }
+
+// IsInternalName reports names reserved for the storage representation.
+func IsInternalName(name string) bool { return strings.HasPrefix(name, "__") }

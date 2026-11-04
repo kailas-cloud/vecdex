@@ -15,16 +15,20 @@ type mockEmbedder struct {
 	batchResult domain.BatchEmbeddingResult
 	batchErr    error
 	batchCalls  int
+	embedCalls  int
+	batchTexts  []string
 }
 
 func (m *mockEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResult, error) {
+	m.embedCalls++
 	return m.result, m.err
 }
 
 func (m *mockEmbedder) BatchEmbed(_ context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
 	m.batchCalls++
+	m.batchTexts = append([]string(nil), texts...)
 	if m.batchErr != nil {
-		return domain.BatchEmbeddingResult{}, m.batchErr
+		return m.batchResult, m.batchErr
 	}
 	if m.batchResult.Embeddings != nil {
 		return m.batchResult, nil

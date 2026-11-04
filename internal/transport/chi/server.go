@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -76,6 +77,11 @@ func NewServer(
 	}
 	s.errorHandlers = []errorHandler{
 		revisionConflictHandler,
+		sentinelHandler(
+			domain.ErrEmbeddingSpaceMismatch,
+			http.StatusConflict,
+			gen.ErrorResponseCodeEmbeddingSpaceMismatch,
+		),
 		sentinelHandler(domain.ErrNotFound, http.StatusNotFound, gen.ErrorResponseCodeCollectionNotFound),
 		sentinelHandler(domain.ErrDocumentNotFound, http.StatusNotFound, gen.ErrorResponseCodeDocumentNotFound),
 		sentinelHandler(domain.ErrAlreadyExists, http.StatusConflict, gen.ErrorResponseCodeCollectionAlreadyExists),
@@ -84,6 +90,7 @@ func NewServer(
 		sentinelHandler(domain.ErrRateLimited, http.StatusTooManyRequests, gen.ErrorResponseCodeRateLimited),
 		sentinelHandler(domain.ErrEmbeddingQuotaExceeded,
 			http.StatusPaymentRequired, gen.ErrorResponseCodeEmbeddingQuotaExceeded),
+		sentinelHandler(domain.ErrEmbeddingInputTooLong, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed),
 		sentinelHandler(domain.ErrEmbeddingProviderError,
 			http.StatusBadGateway, gen.ErrorResponseCodeEmbeddingProviderError),
 		sentinelHandler(domain.ErrKeywordSearchNotSupported,
@@ -136,6 +143,10 @@ func (s *Server) CreateCollection(w http.ResponseWriter, r *http.Request, params
 
 // ListCollections handles GET /collections.
 func (s *Server) ListCollections(w http.ResponseWriter, r *http.Request, params gen.ListCollectionsParams) {
+	if params.Limit != nil && (*params.Limit < 1 || *params.Limit > 100) {
+		writeError(w, 400, gen.ErrorResponseCodeBadRequest, "limit must be between 1 and 100")
+		return
+	}
 	cols, err := s.collections.List(r.Context())
 	if err != nil {
 		s.handleDomainError(w, err)
@@ -237,6 +248,12 @@ func (s *Server) UpsertDocument(
 	id gen.DocumentId,
 	params gen.UpsertDocumentParams,
 ) {
+	revision, err := expectedRevision(params.IfMatch)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
+		return
+	}
+
 	var req gen.UpsertDocumentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
@@ -250,7 +267,8 @@ func (s *Server) UpsertDocument(
 	}
 
 	ctx, usage := domain.NewContextWithUsage(r.Context())
-	created, err := s.documents.Upsert(ctx, collection, &doc)
+	created, err := s.documents.Upsert(domain.WithExpectedRevision(ctx, revision), collection, &doc)
+	setEmbeddingHeaders(w, usage)
 	if err != nil {
 		s.handleDomainError(w, err)
 		return
@@ -259,9 +277,10 @@ func (s *Server) UpsertDocument(
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
-		w.Header().Set("Location", fmt.Sprintf("/api/v1/collections/%s/documents/%s", collection, id))
+		w.Header().Set("Location", fmt.Sprintf("/collections/%s/documents/%s", collection, id))
 	}
 	setEmbeddingHeaders(w, usage)
+	w.Header().Set("ETag", strconv.Quote(strconv.Itoa(doc.Revision())))
 
 	writeJSON(w, status, documentToGen(&doc))
 }
@@ -346,6 +365,12 @@ func (s *Server) PatchDocument(
 	id gen.DocumentId,
 	params gen.PatchDocumentParams,
 ) {
+	revision, err := expectedRevision(params.IfMatch)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
+		return
+	}
+
 	var req gen.PatchDocumentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
@@ -359,13 +384,15 @@ func (s *Server) PatchDocument(
 	}
 
 	ctx, usage := domain.NewContextWithUsage(r.Context())
-	doc, err := s.documents.Patch(ctx, collection, id, p)
+	doc, err := s.documents.Patch(domain.WithExpectedRevision(ctx, revision), collection, id, p)
+	setEmbeddingHeaders(w, usage)
 	if err != nil {
 		s.handleDomainError(w, err)
 		return
 	}
 
 	setEmbeddingHeaders(w, usage)
+	w.Header().Set("ETag", strconv.Quote(strconv.Itoa(doc.Revision())))
 	writeJSON(w, http.StatusOK, documentToGen(&doc))
 }
 
@@ -390,6 +417,7 @@ func (s *Server) SearchDocuments(
 
 	ctx, usage := domain.NewContextWithUsage(r.Context())
 	results, total, err := s.search.Search(ctx, collection, &searchReq)
+	setEmbeddingHeaders(w, usage)
 	if err != nil {
 		s.handleDomainError(w, err)
 		return
@@ -422,8 +450,8 @@ func (s *Server) FindSimilarDocuments(
 	params gen.FindSimilarDocumentsParams,
 ) {
 	var req gen.SimilarRequest
-	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
 			return
 		}
@@ -487,7 +515,9 @@ func (s *Server) BatchUpsert(
 		docs = append(docs, doc)
 	}
 
-	results := s.batch.Upsert(r.Context(), collection, docs)
+	ctx, usage := domain.NewContextWithUsage(r.Context())
+	results := s.batch.Upsert(ctx, collection, docs)
+	setEmbeddingHeaders(w, usage)
 
 	succeeded, failed := 0, 0
 	items := make([]gen.BatchResultItem, len(results))
@@ -548,6 +578,15 @@ func (s *Server) BatchDelete(
 
 // GetUsage handles GET /usage.
 func (s *Server) GetUsage(w http.ResponseWriter, r *http.Request, params gen.GetUsageParams) {
+	if params.Collection != nil {
+		writeError(
+			w,
+			http.StatusBadRequest,
+			gen.ErrorResponseCodeValidationFailed,
+			"collection usage filtering is not supported",
+		)
+		return
+	}
 	period := domusage.PeriodMonth
 	if params.Period != nil {
 		switch *params.Period {
@@ -558,12 +597,17 @@ func (s *Server) GetUsage(w http.ResponseWriter, r *http.Request, params gen.Get
 		}
 	}
 
-	report := s.usage.GetReport(r.Context(), period)
+	report, err := s.usage.GetReport(r.Context(), period)
+	if err != nil {
+		s.handleDomainError(w, err)
+		return
+	}
 
 	resp := gen.UsageResponse{
 		Period: gen.UsageResponsePeriod(report.Period()),
 		Usage: gen.UsageMetrics{
 			EmbeddingRequests: report.Metrics().EmbeddingRequests(),
+			UnknownRequests:   report.Metrics().UnknownRequests(),
 			Tokens:            report.Metrics().Tokens(),
 		},
 		Budget: gen.BudgetStatus{
@@ -588,10 +632,6 @@ func (s *Server) GetUsage(w http.ResponseWriter, r *http.Request, params gen.Get
 	if report.Budget().ResetsAt() > 0 {
 		resetsAt := time.UnixMilli(report.Budget().ResetsAt()).UTC()
 		resp.Budget.ResetsAt = &resetsAt
-	}
-
-	if params.Collection != nil {
-		resp.Collection = params.Collection
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -627,6 +667,11 @@ func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
 
 func setEmbeddingHeaders(w http.ResponseWriter, usage *domain.EmbeddingUsage) {
 	if usage != nil && usage.Used {
+		if usage.Unknown {
+			w.Header().Set("X-Embedding-Usage", "unknown")
+			return
+		}
+		w.Header().Set("X-Embedding-Usage", "known")
 		w.Header().Set("X-Embedding-Tokens", strconv.Itoa(usage.TotalTokens))
 	}
 }
@@ -651,10 +696,12 @@ func safeDomainMessage(err error) string {
 		domain.ErrDocumentNotFound,
 		domain.ErrAlreadyExists,
 		domain.ErrRevisionConflict,
+		domain.ErrEmbeddingSpaceMismatch,
 		domain.ErrVectorDimMismatch,
 		domain.ErrInvalidSchema,
 		domain.ErrRateLimited,
 		domain.ErrEmbeddingQuotaExceeded,
+		domain.ErrEmbeddingInputTooLong,
 		domain.ErrEmbeddingProviderError,
 		domain.ErrKeywordSearchNotSupported,
 		domain.ErrNotImplemented,
@@ -730,7 +777,13 @@ func collectionToGen(c domcol.Collection) gen.Collection {
 
 	colType := gen.CollectionType(c.Type())
 
+	var embeddingSpace *string
+	if c.EmbeddingSpace() != "" {
+		space := c.EmbeddingSpace()
+		embeddingSpace = &space
+	}
 	return gen.Collection{
+		EmbeddingSpace:   embeddingSpace,
 		Name:             c.Name(),
 		Type:             &colType,
 		Fields:           fields,
@@ -1070,6 +1123,8 @@ func batchErrorCode(err error) gen.ErrorResponseCode {
 		return gen.ErrorResponseCodeCollectionNotFound
 	case errors.Is(err, domain.ErrDocumentNotFound):
 		return gen.ErrorResponseCodeDocumentNotFound
+	case errors.Is(err, domain.ErrEmbeddingSpaceMismatch):
+		return gen.ErrorResponseCodeEmbeddingSpaceMismatch
 	case errors.Is(err, domain.ErrVectorDimMismatch):
 		return gen.ErrorResponseCodeVectorDimMismatch
 	case errors.Is(err, domain.ErrInvalidSchema):

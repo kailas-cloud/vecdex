@@ -27,6 +27,7 @@ func buildIndex(
 		Fields:      make([]db.IndexField, 0, len(fields)+extraFields),
 	}
 
+	def.Fields = append(def.Fields, db.IndexField{Name: "__parent_id", Type: db.IndexFieldTag})
 	for _, f := range fields {
 		var fieldType db.IndexFieldType
 		switch f.FieldType() {

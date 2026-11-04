@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain"
@@ -15,6 +16,7 @@ import (
 //
 //nolint:interfacebloat // collection repo needs hash + index management operations
 type store interface {
+	db.HashMutator
 	HSet(ctx context.Context, key string, fields map[string]string) error
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
 	HGetAllMulti(ctx context.Context, keys []string) ([]map[string]string, error)
@@ -61,15 +63,6 @@ func (r *Repo) WithHNSW(cfg HNSWConfig) *Repo {
 func (r *Repo) Create(ctx context.Context, col domcol.Collection) error {
 	name := col.Name()
 
-	metaKey := metaKey(name)
-	exists, err := r.store.Exists(ctx, metaKey)
-	if err != nil {
-		return fmt.Errorf("check exists: %w", err)
-	}
-	if exists {
-		return domain.ErrAlreadyExists
-	}
-
 	// Prepare index definition and hash data before writes
 	indexDef, err := buildIndex(name, col.Fields(), col.VectorDim(), r.store.SupportsTextSearch(ctx), r.hnsw)
 	if err != nil {
@@ -80,17 +73,39 @@ func (r *Repo) Create(ctx context.Context, col domcol.Collection) error {
 		return err
 	}
 
-	// Step 1: HSET metadata
-	if err := r.store.HSet(ctx, metaKey, hashData); err != nil {
-		return fmt.Errorf("hset collection %s: %w", name, err)
+	indexDef.Name = domain.GenerationIndexName(name, col.Generation())
+	indexDef.Prefixes = []string{domain.CollectionDataBase(name, col.Generation()) + ":chunk:"}
+	hashData["state"] = "creating"
+	reserved, err := r.store.MutateHash(ctx, &db.HashMutation{
+		Key: metaKey(
+			name,
+		),
+		StagingKey:    domain.CollectionBase(name) + ":meta-pending",
+		Set:           hashData,
+		Replace:       true,
+		RequireAbsent: true,
+	})
+	if err != nil {
+		return fmt.Errorf("reserve collection: %w", err)
 	}
-
-	// FT.CREATE — rollback HSET on error
 	if err := r.store.CreateIndex(ctx, indexDef); err != nil {
-		cleanupErr := r.store.Del(ctx, metaKey)
-		return errors.Join(err, cleanupErr)
+		return r.rollbackCreate(ctx, name, col.Generation(), reserved.Revision, err)
 	}
-
+	_, err = r.store.MutateHash(ctx, &db.HashMutation{
+		Key: metaKey(
+			name,
+		),
+		StagingKey:       domain.CollectionBase(name) + ":meta-pending",
+		Set:              map[string]string{"state": "active"},
+		RequireExists:    true,
+		ExpectedRevision: &reserved.Revision,
+		GuardKey:         metaKey(name),
+		GuardGeneration:  col.Generation(),
+		GuardState:       "creating",
+	})
+	if err != nil {
+		return r.rollbackCreate(ctx, name, col.Generation(), reserved.Revision, err)
+	}
 	return nil
 }
 
@@ -100,7 +115,7 @@ func (r *Repo) Get(ctx context.Context, name string) (domcol.Collection, error) 
 	if err != nil {
 		return domcol.Collection{}, fmt.Errorf("hgetall collection %s: %w", name, err)
 	}
-	if len(m) == 0 {
+	if len(m) == 0 || (m["state"] != "" && m["state"] != "active") {
 		return domcol.Collection{}, domain.ErrNotFound
 	}
 
@@ -124,7 +139,7 @@ func (r *Repo) List(ctx context.Context) ([]domcol.Collection, error) {
 
 	collections := make([]domcol.Collection, 0, len(results))
 	for i, m := range results {
-		if len(m) == 0 {
+		if len(m) == 0 || (m["state"] != "" && m["state"] != "active") {
 			continue
 		}
 		col, err := collectionFromHash(m, r.defaultVectorDim)
@@ -143,51 +158,88 @@ func (r *Repo) List(ctx context.Context) ([]domcol.Collection, error) {
 
 // Delete removes a collection: backup metadata, DEL hash, FT.DROPINDEX (rollback HSET on error).
 func (r *Repo) Delete(ctx context.Context, name string) error {
-	metaKey := metaKey(name)
-
-	// Backup metadata
-	metaBackup, err := r.store.HGetAll(ctx, metaKey)
+	metadata, err := r.store.HGetAll(ctx, metaKey(name))
 	if err != nil {
-		return fmt.Errorf("hgetall collection %s: %w", name, err)
+		return fmt.Errorf("read collection for deletion: %w", err)
 	}
-	if len(metaBackup) == 0 {
+	if len(metadata) == 0 {
 		return domain.ErrNotFound
 	}
-
-	// Check index exists
-	idxName := indexName(name)
-	idxExists, err := r.store.IndexExists(ctx, idxName)
+	generation := metadata["generation"]
+	if generation == "" {
+		return fmt.Errorf("collection generation is missing: %w", domain.ErrInvalidSchema)
+	}
+	if metadata["state"] != "deleting" {
+		revision, _ := strconv.Atoi(metadata["__revision"])
+		_, err = r.store.MutateHash(ctx, &db.HashMutation{
+			Key: metaKey(
+				name,
+			),
+			StagingKey:       domain.CollectionBase(name) + ":meta-pending",
+			Set:              map[string]string{"state": "deleting"},
+			RequireExists:    true,
+			ExpectedRevision: &revision,
+			GuardKey:         metaKey(name),
+			GuardGeneration:  generation,
+		})
+		if err != nil {
+			return fmt.Errorf("mark collection deleting: %w", err)
+		}
+	}
+	keys, err := r.store.Scan(ctx, domain.CollectionDataBase(name, generation)+":*")
 	if err != nil {
-		return fmt.Errorf("check index exists: %w", err)
+		return fmt.Errorf("scan collection data: %w", err)
 	}
-	if !idxExists {
-		return domain.ErrNotFound
+	for _, key := range keys {
+		if key == metaKey(name) || key == domain.CollectionBase(name)+":meta-pending" {
+			continue
+		}
+		if err := r.store.Del(ctx, key); err != nil {
+			return fmt.Errorf("delete collection data: %w", err)
+		}
 	}
-
-	// Step 1: DEL metadata
-	if err := r.store.Del(ctx, metaKey); err != nil {
-		return fmt.Errorf("del collection %s: %w", name, err)
+	if err := r.store.DropIndex(
+		ctx,
+		domain.GenerationIndexName(name, generation),
+	); err != nil &&
+		!errors.Is(err, db.ErrIndexNotFound) {
+		return fmt.Errorf("drop collection index: %w", err)
 	}
-
-	// FT.DROPINDEX — rollback HSET on error
-	if err := r.store.DropIndex(ctx, idxName); err != nil {
-		cleanupErr := r.store.HSet(ctx, metaKey, metaBackup)
-		return errors.Join(err, cleanupErr)
+	_, err = r.store.MutateHash(ctx, &db.HashMutation{
+		Key: metaKey(name), StagingKey: domain.CollectionBase(name) + ":meta-pending", Delete: true,
+		GuardKey: metaKey(name), GuardGeneration: generation, GuardState: "deleting",
+	})
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil
 	}
-
+	if err != nil {
+		return fmt.Errorf("finish collection deletion: %w", err)
+	}
 	return nil
 }
 
 // Valkey key patterns: vecdex:collection:{name}, vecdex:{name}:idx, vecdex:{name}:
 
 func metaKey(name string) string {
-	return fmt.Sprintf("%scollection:%s", domain.KeyPrefix, name)
+	return domain.CollectionMetadataKey(name)
 }
 
 func indexName(name string) string {
-	return fmt.Sprintf("%s%s:idx", domain.KeyPrefix, name)
+	return domain.CollectionIndexName(name)
 }
 
 func collectionPrefix(name string) string {
-	return fmt.Sprintf("%s%s:", domain.KeyPrefix, name)
+	return domain.DocumentPrefix(name)
+}
+
+func (r *Repo) rollbackCreate(ctx context.Context, name, generation string, revision int, cause error) error {
+	dropErr := r.store.DropIndex(ctx, domain.GenerationIndexName(name, generation))
+	if errors.Is(dropErr, db.ErrIndexNotFound) {
+		dropErr = nil
+	}
+	_, cleanupErr := r.store.MutateHash(ctx, &db.HashMutation{
+		Key: metaKey(name), StagingKey: domain.CollectionBase(name) + ":meta-pending", Delete: true,
+		ExpectedRevision: &revision, GuardKey: metaKey(name), GuardGeneration: generation, GuardState: "creating",
+	})
+	return errors.Join(cause, dropErr, cleanupErr)
 }

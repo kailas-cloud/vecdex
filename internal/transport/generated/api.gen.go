@@ -41,6 +41,7 @@ const (
 	ErrorResponseCodeDocumentNotFound          ErrorResponseCode = "document_not_found"
 	ErrorResponseCodeEmbeddingProviderError    ErrorResponseCode = "embedding_provider_error"
 	ErrorResponseCodeEmbeddingQuotaExceeded    ErrorResponseCode = "embedding_quota_exceeded"
+	ErrorResponseCodeEmbeddingSpaceMismatch    ErrorResponseCode = "embedding_space_mismatch"
 	ErrorResponseCodeInternalError             ErrorResponseCode = "internal_error"
 	ErrorResponseCodeKeywordSearchNotSupported ErrorResponseCode = "keyword_search_not_supported"
 	ErrorResponseCodeNotImplemented            ErrorResponseCode = "not_implemented"
@@ -161,9 +162,13 @@ type Collection struct {
 	// CreatedAt Collection creation time (ISO 8601, UTC)
 	CreatedAt time.Time `json:"created_at"`
 
-	// DocumentCount Approximate number of documents. May lag behind recent
-	// batch operations by a few seconds.
+	// DocumentCount Number of source documents observed when the catalog is read.
+	// Internal fragments are excluded. Concurrent writes can change this
+	// count between requests.
 	DocumentCount *int `json:"document_count,omitempty"`
+
+	// EmbeddingSpace Fingerprint of the vectorizer used by this collection. Changing it requires reindexing.
+	EmbeddingSpace *string `json:"embedding_space,omitempty"`
 
 	// Fields Indexed fields for filtering (empty if search-only)
 	Fields *[]FieldDefinition `json:"fields,omitempty"`
@@ -415,9 +420,9 @@ type SearchRequest struct {
 	// keyword mode doesn't use them for ranking.
 	IncludeVectors *bool `json:"include_vectors,omitempty"`
 
-	// Limit Maximum results to return from the top_k window. If top_k=100
-	// and limit=10, the server computes 100 nearest neighbors but
-	// returns only the top 10. If limit > top_k, the server silently
+	// Limit Maximum documents to return from the `top_k` document window.
+	// If top_k=100 and limit=10, the server ranks 100 documents and
+	// returns the top 10. If limit > top_k, the server silently
 	// caps to top_k (no error).
 	Limit *int `json:"limit,omitempty"`
 
@@ -441,10 +446,10 @@ type SearchRequest struct {
 	// Maximum 4096 characters. Queries exceeding this return 400.
 	Query string `json:"query"`
 
-	// TopK Number of nearest neighbors for KNN (the computation window).
-	// The server computes this many candidates, then `limit` controls
-	// how many are returned. Increasing `top_k` is more expensive.
-	// In keyword mode, controls BM25 result window size.
+	// TopK Document ranking window size before applying `limit`.
+	// The server may retrieve more chunk candidates per search mode internally,
+	// aggregate them into documents, and then keep the top `top_k` documents
+	// before applying `limit`.
 	TopK *int `json:"top_k,omitempty"`
 }
 
@@ -458,7 +463,10 @@ type SearchRequestMode string
 
 // SearchResultItem defines model for SearchResultItem.
 type SearchResultItem struct {
-	Content  string              `json:"content"`
+	// Content Representative snippet for the ranked document. For chunked ingest, this is the best matching chunk.
+	Content string `json:"content"`
+
+	// Id Document identifier. For chunked ingest, this is the parent document id.
 	Id       string              `json:"id"`
 	Numerics *map[string]float32 `json:"numerics,omitempty"`
 
@@ -482,10 +490,9 @@ type SearchResultListResponse struct {
 	// Limit Requested limit
 	Limit int `json:"limit"`
 
-	// Total Number of candidates that passed min_score filtering within the
-	// top_k window. May be greater than `limit` — in that case, increase
-	// `limit` to see more results from the same KNN window. To get more
-	// candidates overall, increase `top_k`.
+	// Total Number of document candidates that passed min_score filtering within
+	// the `top_k` document window. May be greater than `limit` — in that
+	// case, increase `limit` to see more results from the same ranked set.
 	Total int `json:"total"`
 }
 
@@ -554,15 +561,18 @@ type UsageMetrics struct {
 	// EmbeddingRequests Number of embedding API calls in this period
 	EmbeddingRequests int `json:"embedding_requests"`
 
-	// Tokens Total embedding tokens consumed in this period
+	// Tokens Measured embedding tokens consumed in this period
 	Tokens int `json:"tokens"`
+
+	// UnknownRequests Invocations whose token usage is unknown; tokens is a lower bound when nonzero.
+	UnknownRequests int `json:"unknown_requests"`
 }
 
 // UsageResponse defines model for UsageResponse.
 type UsageResponse struct {
 	Budget BudgetStatus `json:"budget"`
 
-	// Collection Collection name if filtered, absent for global usage.
+	// Collection Reserved for collection-level accounting; absent in current responses.
 	Collection *string `json:"collection,omitempty"`
 
 	// Period Aggregation period
@@ -595,7 +605,7 @@ type CollectionName = string
 type DocumentId = string
 
 // IfMatch defines model for IfMatch.
-type IfMatch = int
+type IfMatch = string
 
 // Limit defines model for Limit.
 type Limit = int
@@ -707,10 +717,10 @@ type GetDocumentParams struct {
 
 // PatchDocumentParams defines parameters for PatchDocument.
 type PatchDocumentParams struct {
-	// IfMatch Revision-based optimistic concurrency control. Pass the `revision`
-	// value from a previous GET response. If the current revision doesn't
-	// match, the server returns 409 with `code: revision_conflict`.
-	// If omitted, the write proceeds unconditionally (no conflict check).
+	// IfMatch Revision-based optimistic concurrency control. Pass the quoted ETag from
+	// a previous response, or its numeric revision for compatibility. A stale
+	// revision returns 409 with code revision_conflict. Weak validators and
+	// validator lists are not supported. Omit for an unconditional write.
 	IfMatch *IfMatch `json:"If-Match,omitempty"`
 
 	// XRequestID Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
@@ -719,10 +729,10 @@ type PatchDocumentParams struct {
 
 // UpsertDocumentParams defines parameters for UpsertDocument.
 type UpsertDocumentParams struct {
-	// IfMatch Revision-based optimistic concurrency control. Pass the `revision`
-	// value from a previous GET response. If the current revision doesn't
-	// match, the server returns 409 with `code: revision_conflict`.
-	// If omitted, the write proceeds unconditionally (no conflict check).
+	// IfMatch Revision-based optimistic concurrency control. Pass the quoted ETag from
+	// a previous response, or its numeric revision for compatibility. A stale
+	// revision returns 409 with code revision_conflict. Weak validators and
+	// validator lists are not supported. Omit for an unconditional write.
 	IfMatch *IfMatch `json:"If-Match,omitempty"`
 
 	// XRequestID Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
@@ -737,7 +747,7 @@ type FindSimilarDocumentsParams struct {
 
 // GetUsageParams defines parameters for GetUsage.
 type GetUsageParams struct {
-	// Collection Filter usage by collection name. If omitted, returns global usage.
+	// Collection Unsupported; supplying this parameter returns 400.
 	Collection *string `form:"collection,omitempty" json:"collection,omitempty"`
 
 	// Period Aggregation period.

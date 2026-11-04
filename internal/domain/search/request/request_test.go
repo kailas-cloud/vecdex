@@ -189,3 +189,14 @@ func TestNew_WithFilters(t *testing.T) {
 		t.Error("Filters().IsEmpty() = true, want false")
 	}
 }
+
+func TestQueryLimitCountsUnicodeCharacters(t *testing.T) {
+	query := strings.Repeat("中文🚀", 1365)
+	request, err := New(query, mode.Keyword, filter.Expression{}, 10, 10, 0, false)
+	if err != nil || request.Query() != query {
+		t.Fatalf("valid multilingual query rejected: %v", err)
+	}
+	if _, err := New(query+"ab", mode.Keyword, filter.Expression{}, 10, 10, 0, false); err == nil {
+		t.Fatal("oversized multilingual query accepted")
+	}
+}

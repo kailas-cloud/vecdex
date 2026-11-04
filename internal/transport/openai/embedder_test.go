@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -271,5 +272,26 @@ func TestEmbedder_APIError(t *testing.T) {
 	_, err := emb.Embed(context.Background(), "hello")
 	if err == nil {
 		t.Fatal("expected error for 429 response")
+	}
+}
+
+func TestMalformedBatchIndices(t *testing.T) {
+	for _, indices := range [][]int{{-1, 1}, {0, 2}, {0, 0}} {
+		t.Run(fmt.Sprint(indices), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{
+					map[string]any{"index": indices[0], "embedding": []float32{1, 2}},
+					map[string]any{"index": indices[1], "embedding": []float32{3, 4}},
+				}})
+			}))
+			defer server.Close()
+			e := NewEmbedder(
+				&Config{BaseURL: server.URL, Model: "test", Dimensions: 2, Provider: "test", Logger: zap.NewNop()},
+			)
+			if _, err := e.BatchEmbed(context.Background(), []string{"a", "b"}); err == nil {
+				t.Fatal("malformed index accepted")
+			}
+		})
 	}
 }

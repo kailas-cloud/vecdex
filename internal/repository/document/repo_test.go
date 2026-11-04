@@ -13,81 +13,12 @@ import (
 
 // --- Upsert ---
 
-func TestUpsert_Create(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-	doc := testDocument(t)
-
-	ms.existsFn = func(_ context.Context, key string) (bool, error) {
-		if key != "vecdex:notes:doc-1" {
-			t.Errorf("unexpected key: %s", key)
-		}
-		return false, nil
-	}
-	ms.hsetFn = func(_ context.Context, key string, fields map[string]string) error {
-		if key != "vecdex:notes:doc-1" {
-			t.Errorf("unexpected key: %s", key)
-		}
-		if fields["__content"] != "hello world" {
-			t.Errorf("unexpected content: %s", fields["__content"])
-		}
-		if fields["language"] != "go" {
-			t.Errorf("unexpected language: %s", fields["language"])
-		}
-		return nil
-	}
-
-	created, err := repo.Upsert(ctx, "notes", &doc)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !created {
-		t.Fatal("expected created=true for new doc")
-	}
-}
-
-func TestUpsert_Update(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-	doc := testDocument(t)
-
-	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
-	ms.delFn = func(_ context.Context, _ string) error { return nil }
-	ms.hsetFn = func(_ context.Context, _ string, _ map[string]string) error { return nil }
-
-	created, err := repo.Upsert(ctx, "notes", &doc)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if created {
-		t.Fatal("expected created=false for existing doc")
-	}
-}
-
-func TestUpsert_HSetError(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-	doc := testDocument(t)
-
-	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
-	ms.hsetFn = func(_ context.Context, _ string, _ map[string]string) error {
-		return errors.New("OOM")
-	}
-
-	_, err := repo.Upsert(ctx, "notes", &doc)
-	if err == nil {
-		t.Fatal("expected error on HSET failure")
-	}
-}
-
-// --- Get ---
-
 func TestGet_HappyPath(t *testing.T) {
 	repo, ms := newTestRepo(t)
 	ctx := context.Background()
 
 	ms.hgetAllFn = func(_ context.Context, key string) (map[string]string, error) {
-		if key != "vecdex:notes:doc-1" {
+		if key != "vecdex:v2:{notes}:doc:doc-1" {
 			t.Errorf("unexpected key: %s", key)
 		}
 		return map[string]string{
@@ -132,203 +63,64 @@ func TestGet_NotFound(t *testing.T) {
 
 // --- Delete ---
 
-func TestDelete_HappyPath(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	ms.existsFn = func(_ context.Context, key string) (bool, error) {
-		return key == "vecdex:notes:doc-1", nil
-	}
-	ms.delFn = func(_ context.Context, _ string) error { return nil }
-
-	err := repo.Delete(ctx, "notes", "doc-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestDelete_NotFound(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
-
-	err := repo.Delete(ctx, "notes", "doc-1")
-	if !errors.Is(err, domain.ErrDocumentNotFound) {
-		t.Fatalf("expected ErrDocumentNotFound, got %v", err)
-	}
-}
-
-// --- List ---
-
 func TestList_HappyPath(t *testing.T) {
-	repo, ms := newTestRepo(t)
+	repo, store := newTestRepo(t)
 	ctx := context.Background()
-
-	ms.searchListFn = func(_ context.Context, _ string, _ string, _ int, _ int, _ []string) (*db.SearchResult, error) {
-		return &db.SearchResult{
-			Total: 10,
-			Entries: []db.SearchEntry{
-				{Key: "vecdex:notes:doc-1", Fields: map[string]string{"__content": "hello", "language": "go"}},
-				{Key: "vecdex:notes:doc-2", Fields: map[string]string{"__content": "world", "language": "py"}},
-				{Key: "vecdex:notes:doc-3", Fields: map[string]string{"__content": "extra"}},
-			},
+	store.catalogIDsFn = func(_ context.Context, key, after string, limit int) ([]string, error) {
+		if key != domain.DocumentCatalogKey("notes", "") || after != "" || limit != 3 {
+			t.Fatalf("catalog request %s %s %d", key, after, limit)
+		}
+		return []string{"doc-1", "doc-2", "doc-3"}, nil
+	}
+	store.hgetAllMultiFn = func(_ context.Context, keys []string) ([]map[string]string, error) {
+		if len(keys) != 2 {
+			t.Fatalf("fetched %d parents instead of two", len(keys))
+		}
+		return []map[string]string{
+			{"__content": "hello", "language": "go"},
+			{"__content": "world", "language": "py"},
 		}, nil
 	}
-
-	docs, nextCursor, err := repo.List(ctx, "notes", "", 2)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	docs, next, err := repo.List(ctx, "notes", "", 2)
+	if err != nil || len(docs) != 2 {
+		t.Fatalf("page: %v %v", docs, err)
 	}
-	if len(docs) != 2 {
-		t.Fatalf("expected 2 docs, got %d", len(docs))
+	if docs[0].ID() != "doc-1" || docs[1].ID() != "doc-2" {
+		t.Fatal("page order changed")
 	}
-	if docs[0].ID() != "doc-1" {
-		t.Fatalf("expected first doc ID doc-1, got %s", docs[0].ID())
-	}
-	if docs[1].ID() != "doc-2" {
-		t.Fatalf("expected second doc ID doc-2, got %s", docs[1].ID())
-	}
-	if nextCursor != "2" {
-		t.Fatalf("expected nextCursor=2, got %q", nextCursor)
+	after, err := decodeDocumentCursor(domain.CollectionBase("notes"), next)
+	if err != nil || after != "doc-2" {
+		t.Fatalf("cursor: %q %v", next, err)
 	}
 }
 
 func TestList_Empty(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	ms.searchListFn = func(_ context.Context, _ string, _ string, _ int, _ int, _ []string) (*db.SearchResult, error) {
-		return &db.SearchResult{Total: 0}, nil
-	}
-
-	docs, nextCursor, err := repo.List(ctx, "notes", "", 10)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(docs) != 0 {
-		t.Fatalf("expected 0 docs, got %d", len(docs))
-	}
-	if nextCursor != "" {
-		t.Fatalf("expected empty cursor, got %q", nextCursor)
+	repo, _ := newTestRepo(t)
+	docs, next, err := repo.List(context.Background(), "notes", "", 10)
+	if err != nil || len(docs) != 0 || next != "" {
+		t.Fatalf("empty page: %v %q %v", docs, next, err)
 	}
 }
 
 func TestList_WithCursor(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	ms.searchListFn = func(
-		_ context.Context, _ string, _ string, offset int, _ int, _ []string,
-	) (*db.SearchResult, error) {
-		if offset != 2 {
-			t.Errorf("expected offset=2, got %d", offset)
+	repo, store := newTestRepo(t)
+	store.catalogIDsFn = func(_ context.Context, _ string, after string, _ int) ([]string, error) {
+		if after != "doc-2" {
+			t.Fatalf("after %q", after)
 		}
-		return &db.SearchResult{
-			Total: 3,
-			Entries: []db.SearchEntry{
-				{Key: "vecdex:notes:doc-3", Fields: map[string]string{"__content": "last"}},
-			},
-		}, nil
+		return []string{"doc-3"}, nil
 	}
-
-	docs, nextCursor, err := repo.List(ctx, "notes", "2", 2)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	store.hgetAllFn = func(context.Context, string) (map[string]string, error) {
+		return map[string]string{"__content": "last"}, nil
 	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc, got %d", len(docs))
-	}
-	if nextCursor != "" {
-		t.Fatalf("expected empty cursor (no more), got %q", nextCursor)
+	cursor := encodeDocumentCursor(domain.CollectionBase("notes"), "doc-2")
+	docs, next, err := repo.List(context.Background(), "notes", cursor, 2)
+	if err != nil || len(docs) != 1 || docs[0].ID() != "doc-3" || next != "" {
+		t.Fatalf("last page: %v %q %v", docs, next, err)
 	}
 }
 
 // --- Patch ---
-
-func TestPatch_HappyPath(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	newContent := "updated content"
-	p, err := patch.New(&newContent, nil, nil)
-	if err != nil {
-		t.Fatalf("unexpected error creating patch: %v", err)
-	}
-
-	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
-	ms.hsetFn = func(_ context.Context, _ string, fields map[string]string) error {
-		if fields["__content"] != "updated content" {
-			t.Errorf("expected updated content, got %v", fields["__content"])
-		}
-		return nil
-	}
-
-	err = repo.Patch(ctx, "notes", "doc-1", p, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestPatch_NotFound(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	newContent := "updated"
-	p, _ := patch.New(&newContent, nil, nil)
-
-	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
-
-	err := repo.Patch(ctx, "notes", "doc-1", p, nil)
-	if !errors.Is(err, domain.ErrDocumentNotFound) {
-		t.Fatalf("expected ErrDocumentNotFound, got %v", err)
-	}
-}
-
-func TestPatch_DeleteTag(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	p, _ := patch.New(nil, map[string]*string{"language": nil}, nil)
-
-	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
-	var deletedFields []string
-	ms.hdelFn = func(_ context.Context, _ string, fields ...string) error {
-		deletedFields = fields
-		return nil
-	}
-
-	err := repo.Patch(ctx, "notes", "doc-1", p, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(deletedFields) != 1 || deletedFields[0] != "language" {
-		t.Errorf("expected HDEL [language], got %v", deletedFields)
-	}
-}
-
-// --- BatchUpsert ---
-
-func TestBatchUpsert_HappyPath(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	ms.hsetMultiFn = func(_ context.Context, items []db.HashSetItem) error {
-		if len(items) != 1 {
-			t.Errorf("expected 1 item, got %d", len(items))
-		}
-		if items[0].Key != "vecdex:notes:doc-1" {
-			t.Errorf("unexpected key: %s", items[0].Key)
-		}
-		return nil
-	}
-
-	doc := testDocument(t)
-	err := repo.BatchUpsert(ctx, "notes", []domdoc.Document{doc})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
 
 func TestBatchUpsert_Empty(t *testing.T) {
 	repo, _ := newTestRepo(t)
@@ -353,5 +145,164 @@ func TestVectorRoundtrip(t *testing.T) {
 		if original[i] != decoded[i] {
 			t.Errorf("mismatch at %d: %f != %f", i, original[i], decoded[i])
 		}
+	}
+}
+
+func TestAtomicUpsert(t *testing.T) {
+	repo, store := newTestRepo(t)
+	doc := testDocument(t)
+	expected := 7
+	store.mutateFn = func(_ context.Context, m *db.HashMutation) (db.HashMutationResult, error) {
+		if !m.Replace || m.ExpectedRevision == nil || *m.ExpectedRevision != 7 || m.Set["__content"] != "hello world" {
+			t.Fatalf("mutation %+v", m)
+		}
+		return db.HashMutationResult{Revision: 8, Created: false}, nil
+	}
+	created, err := repo.Upsert(domain.WithExpectedRevision(context.Background(), &expected), "notes", &doc)
+	if err != nil || created || doc.Revision() != 8 {
+		t.Fatalf("created=%t revision=%d err=%v", created, doc.Revision(), err)
+	}
+}
+func TestAtomicWriteErrors(t *testing.T) {
+	for _, writeErr := range []error{domain.NewRevisionConflict(4), domain.ErrDocumentNotFound, errors.New("OOM")} {
+		t.Run(writeErr.Error(), func(t *testing.T) {
+			repo, store := newTestRepo(t)
+			doc := testDocument(t)
+			store.hgetAllFn = func(context.Context, string) (map[string]string, error) { return buildHashFields(&doc), nil }
+			store.mutateFn = func(context.Context, *db.HashMutation) (db.HashMutationResult, error) {
+				return db.HashMutationResult{}, writeErr
+			}
+			if _, err := repo.Upsert(context.Background(), "notes", &doc); !errors.Is(err, writeErr) {
+				t.Fatalf("upsert error %v", err)
+			}
+			p, _ := patch.New(nil, map[string]*string{"language": nil}, nil)
+			revision := 1
+			if err := repo.Patch(
+				domain.WithExpectedRevision(context.Background(), &revision),
+				"notes",
+				"doc-1",
+				p,
+				nil,
+				nil,
+			); !errors.Is(
+				err,
+				writeErr,
+			) {
+				t.Fatalf("patch error %v", err)
+			}
+			if err := repo.Delete(context.Background(), "notes", "doc-1"); !errors.Is(err, writeErr) {
+				t.Fatalf("delete error %v", err)
+			}
+		})
+	}
+}
+func TestAtomicPatchRemovesFields(t *testing.T) {
+	repo, store := newTestRepo(t)
+	doc := testDocument(t)
+	store.hgetAllFn = func(context.Context, string) (map[string]string, error) {
+		fields := buildHashFields(&doc)
+		fields["__revision"] = "1"
+		return fields, nil
+	}
+	store.mutateFn = func(_ context.Context, m *db.HashMutation) (db.HashMutationResult, error) {
+		if !m.Replace || m.Set["language"] != "" || m.ExpectedRevision == nil || len(m.Children) != 1 {
+			t.Fatalf("mutation %+v", m)
+		}
+		return db.HashMutationResult{Revision: 2}, nil
+	}
+	p, _ := patch.New(nil, map[string]*string{"language": nil}, nil)
+	if err := repo.Patch(context.Background(), "notes", "doc-1", p, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBatchUsesAtomicReplacement(t *testing.T) {
+	repo, store := newTestRepo(t)
+	calls := 0
+	store.mutateFn = func(_ context.Context, m *db.HashMutation) (db.HashMutationResult, error) {
+		calls++
+		if !m.Replace {
+			t.Fatal("batch used additive write")
+		}
+		return db.HashMutationResult{Revision: 2}, nil
+	}
+	if err := repo.BatchUpsert(context.Background(), "notes", []domdoc.Document{testDocument(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d", calls)
+	}
+}
+func TestInvalidCursorRejectedBeforeStorage(t *testing.T) {
+	repo, store := newTestRepo(t)
+	store.catalogIDsFn = func(context.Context, string, string, int) ([]string, error) {
+		t.Fatal("invalid cursor reached backend")
+		return nil, nil
+	}
+	for _, cursor := range []string{"-1", "9223372036854775807", "bad"} {
+		if _, _, err := repo.List(context.Background(), "notes", cursor, 20); !errors.Is(err, domain.ErrInvalidSchema) {
+			t.Fatalf("cursor %s: %v", cursor, err)
+		}
+	}
+}
+
+func TestFragmentManifestPreservesExactSourceAndVectors(t *testing.T) {
+	doc := testDocument(t)
+	source := "Русский 中文\n\nsecond part"
+	doc = domdoc.Reconstruct(doc.ID(), source, doc.Tags(), doc.Numerics(), doc.Vector(), 1)
+	doc.SetFragments(
+		[]domdoc.Fragment{
+			{Content: "Русский 中文\n\n", Vector: doc.Vector()},
+			{Content: "second part", Vector: doc.Vector()},
+		},
+	)
+	fields, children, err := prepareFragmentFields(&doc, "base", "version")
+	if err != nil || len(children) != 2 {
+		t.Fatalf("children=%d err=%v", len(children), err)
+	}
+	restored := parseHashFields(doc.ID(), fields)
+	if err := hydrateFragments(&restored, fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Fragments()) != 2 || restored.Fragments()[0].Content+restored.Fragments()[1].Content != source {
+		t.Fatal("source changed")
+	}
+	for _, part := range restored.Fragments() {
+		if len(part.Vector) != len(doc.Vector()) || part.Vector[12] != doc.Vector()[12] {
+			t.Fatal("vector bits changed")
+		}
+	}
+}
+
+func TestCursorBoundToCollectionGeneration(t *testing.T) {
+	repo, store := newTestRepo(t)
+	store.catalogIDsFn = func(context.Context, string, string, int) ([]string, error) {
+		t.Fatal("stale cursor reached storage")
+		return nil, nil
+	}
+	cursor := encodeDocumentCursor(domain.CollectionDataBase("notes", "old-generation"), "doc-2")
+	ctx := domain.WithCollectionGeneration(context.Background(), "new-generation")
+	if _, _, err := repo.List(ctx, "notes", cursor, 20); !errors.Is(err, domain.ErrInvalidSchema) {
+		t.Fatalf("stale cursor accepted: %v", err)
+	}
+	if _, _, err := repo.List(context.Background(), "other", cursor, 20); !errors.Is(err, domain.ErrInvalidSchema) {
+		t.Fatalf("foreign cursor accepted: %v", err)
+	}
+}
+
+func TestListAdvancesPastConcurrentlyDeletedParent(t *testing.T) {
+	repo, store := newTestRepo(t)
+	store.catalogIDsFn = func(context.Context, string, string, int) ([]string, error) {
+		return []string{"a", "b", "c"}, nil
+	}
+	store.hgetAllMultiFn = func(context.Context, []string) ([]map[string]string, error) {
+		return []map[string]string{{}, {"__content": "survivor"}}, nil
+	}
+	docs, cursor, err := repo.List(context.Background(), "notes", "", 2)
+	if err != nil || len(docs) != 1 || docs[0].ID() != "b" {
+		t.Fatalf("delete during list: %v %v", docs, err)
+	}
+	if after, err := decodeDocumentCursor(domain.CollectionBase("notes"), cursor); err != nil || after != "b" {
+		t.Fatalf("non-progressing cursor %q %v", cursor, err)
 	}
 }

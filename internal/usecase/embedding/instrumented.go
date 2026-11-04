@@ -68,6 +68,7 @@ func (p *InstrumentedEmbedder) Embed(
 	result, err := p.inner.Embed(ctx, text)
 
 	duration := time.Since(start)
+	p.recordBatchBudget(result.TotalTokens)
 
 	if err != nil {
 		p.logger.Error("Embedding request failed",
@@ -76,15 +77,7 @@ func (p *InstrumentedEmbedder) Embed(
 			zap.Duration("duration", duration),
 			zap.Error(err),
 		)
-		return domain.EmbeddingResult{}, fmt.Errorf("embed: %w", err)
-	}
-
-	// Record token usage in budget
-	if p.budget != nil && result.TotalTokens > 0 {
-		p.budget.Record(int64(result.TotalTokens))
-		remaining := metrics.EmbeddingBudgetTokensRemaining
-		remaining.WithLabelValues(p.provider, "daily").Set(float64(p.budget.RemainingDaily()))
-		remaining.WithLabelValues(p.provider, "monthly").Set(float64(p.budget.RemainingMonthly()))
+		return result, fmt.Errorf("embed: %w", err)
 	}
 
 	p.logger.Debug("Embedding request completed",
@@ -123,11 +116,10 @@ func (p *InstrumentedEmbedder) BatchEmbed(
 
 	result, err := p.embedChunked(ctx, texts)
 	if err != nil {
-		return domain.BatchEmbeddingResult{}, err
+		return result, err
 	}
 
 	duration := time.Since(start)
-	p.recordBatchBudget(result.TotalTokens)
 
 	p.logger.Debug("Batch embedding completed",
 		zap.String("provider", p.provider),
@@ -147,11 +139,21 @@ func (p *InstrumentedEmbedder) embedChunked(
 ) (domain.BatchEmbeddingResult, error) {
 	var allEmbeddings [][]float32
 	var totalPrompt, totalTokens int
+	var unknown bool
 
 	for offset := 0; offset < len(texts); offset += DefaultMaxAPIBatchSize {
 		if p.budget != nil && offset > 0 {
 			if err := p.budget.Check(ctx); err != nil {
-				return domain.BatchEmbeddingResult{}, fmt.Errorf("budget check (chunk %d): %w", offset, err)
+				return domain.BatchEmbeddingResult{
+					Embeddings:   allEmbeddings,
+					PromptTokens: totalPrompt,
+					TotalTokens:  totalTokens,
+					UsageUnknown: unknown,
+				}, fmt.Errorf(
+					"budget check (chunk %d): %w",
+					offset,
+					err,
+				)
 			}
 		}
 
@@ -162,6 +164,11 @@ func (p *InstrumentedEmbedder) embedChunked(
 		chunk := texts[offset:end]
 
 		chunkResult, err := p.embedInner(ctx, chunk)
+		p.recordBatchBudget(chunkResult.TotalTokens)
+		totalPrompt += chunkResult.PromptTokens
+		totalTokens += chunkResult.TotalTokens
+		unknown = unknown || chunkResult.UsageUnknown
+		allEmbeddings = append(allEmbeddings, chunkResult.Embeddings...)
 		if err != nil {
 			p.logger.Error("Batch embedding request failed",
 				zap.String("provider", p.provider),
@@ -170,15 +177,21 @@ func (p *InstrumentedEmbedder) embedChunked(
 				zap.Int("chunk_size", len(chunk)),
 				zap.Error(err),
 			)
-			return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed: %w", err)
+			return domain.BatchEmbeddingResult{
+				Embeddings:   allEmbeddings,
+				PromptTokens: totalPrompt,
+				TotalTokens:  totalTokens,
+				UsageUnknown: unknown,
+			}, fmt.Errorf(
+				"batch embed: %w",
+				err,
+			)
 		}
 
-		allEmbeddings = append(allEmbeddings, chunkResult.Embeddings...)
-		totalPrompt += chunkResult.PromptTokens
-		totalTokens += chunkResult.TotalTokens
 	}
 
 	return domain.BatchEmbeddingResult{
+		UsageUnknown: unknown,
 		Embeddings:   allEmbeddings,
 		PromptTokens: totalPrompt,
 		TotalTokens:  totalTokens,
@@ -191,13 +204,13 @@ func (p *InstrumentedEmbedder) embedInner(
 	if be, ok := p.inner.(domain.BatchEmbedder); ok {
 		res, err := be.BatchEmbed(ctx, texts)
 		if err != nil {
-			return domain.BatchEmbeddingResult{}, fmt.Errorf("inner batch embed: %w", err)
+			return res, fmt.Errorf("inner batch embed: %w", err)
 		}
 		return res, nil
 	}
 	res, err := domain.BatchFallback(ctx, p.inner, texts)
 	if err != nil {
-		return domain.BatchEmbeddingResult{}, fmt.Errorf("inner batch fallback: %w", err)
+		return res, fmt.Errorf("inner batch fallback: %w", err)
 	}
 	return res, nil
 }
@@ -209,4 +222,14 @@ func (p *InstrumentedEmbedder) recordBatchBudget(totalTokens int) {
 		remaining.WithLabelValues(p.provider, "daily").Set(float64(p.budget.RemainingDaily()))
 		remaining.WithLabelValues(p.provider, "monthly").Set(float64(p.budget.RemainingMonthly()))
 	}
+}
+
+// HealthCheck forwards provider availability checks.
+func (p *InstrumentedEmbedder) HealthCheck(ctx context.Context) error {
+	if h, ok := p.inner.(domain.HealthChecker); ok {
+		if err := h.HealthCheck(ctx); err != nil {
+			return fmt.Errorf("embedding health: %w", err)
+		}
+	}
+	return nil
 }

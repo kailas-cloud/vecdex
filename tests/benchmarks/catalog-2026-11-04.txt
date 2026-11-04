@@ -1,0 +1,29 @@
+Command: VECDEX_TEST_VALKEY_ADDR=127.0.0.1:16379 go test ./internal/repository/document -run '^$' -bench BenchmarkDocumentCatalogLive -benchmem -benchtime=100x -count=1
+Backend: valkey/valkey:9.0.0-alpine in the local Docker VM.
+Fixture: 1k/100k parents, each with one fragment, 256 dimensions, 540-byte source.
+All fixture parents are written through the repository with 16 workers.
+Search indexing and embedding providers are excluded. 100 read samples per case.
+B/op measures Go allocations per query, not total Valkey resident memory.
+
+goos: darwin
+goarch: arm64
+pkg: github.com/kailas-cloud/vecdex/internal/repository/document
+cpu: Apple M3 Pro
+BenchmarkDocumentCatalogLive/documents=1000/page/offset=0/scan=true-12         	     100	  18019235 ns/op	        21.00 HGETALL/op	        20.00 SCAN/op	         0 ZCARD/op	         0 ZRANGEBYLEX/op	        24.08 p95-ms	        31.93 p99-ms	  335124 B/op	    1673 allocs/op
+BenchmarkDocumentCatalogLive/documents=1000/page/offset=0/scan=false-12        	     100	   1287358 ns/op	        20.00 HGETALL/op	         0 SCAN/op	         0 ZCARD/op	         1.000 ZRANGEBYLEX/op	         1.955 p95-ms	         2.788 p99-ms	  128879 B/op	     580 allocs/op
+BenchmarkDocumentCatalogLive/documents=1000/page/offset=500/scan=true-12       	     100	  19563322 ns/op	        21.00 HGETALL/op	        20.00 SCAN/op	         0 ZCARD/op	         0 ZRANGEBYLEX/op	        25.73 p95-ms	        31.90 p99-ms	  335045 B/op	    1674 allocs/op
+BenchmarkDocumentCatalogLive/documents=1000/page/offset=500/scan=false-12      	     100	   1535750 ns/op	        20.00 HGETALL/op	         0 SCAN/op	         0 ZCARD/op	         1.000 ZRANGEBYLEX/op	         2.240 p95-ms	         2.940 p99-ms	  129090 B/op	     585 allocs/op
+BenchmarkDocumentCatalogLive/documents=1000/page/offset=980/scan=true-12       	     100	  19059191 ns/op	        20.00 HGETALL/op	        20.00 SCAN/op	         0 ZCARD/op	         0 ZRANGEBYLEX/op	        20.83 p95-ms	        26.58 p99-ms	  330805 B/op	    1656 allocs/op
+BenchmarkDocumentCatalogLive/documents=1000/page/offset=980/scan=false-12      	     100	   1345968 ns/op	        20.00 HGETALL/op	         0 SCAN/op	         0 ZCARD/op	         1.000 ZRANGEBYLEX/op	         1.589 p95-ms	         2.054 p99-ms	  128570 B/op	     580 allocs/op
+BenchmarkDocumentCatalogLive/documents=1000/count/scan=true-12                 	     100	   9063525 ns/op	         0 HGETALL/op	        20.00 SCAN/op	         0 ZCARD/op	         0 ZRANGEBYLEX/op	         9.992 p95-ms	        10.51 p99-ms	  207296 B/op	    1128 allocs/op
+BenchmarkDocumentCatalogLive/documents=1000/count/scan=false-12                	     100	    398817 ns/op	         0 HGETALL/op	         0 SCAN/op	         1.000 ZCARD/op	         0 ZRANGEBYLEX/op	         0.4479 p95-ms	         0.4953 p99-ms	     256 B/op	       3 allocs/op
+BenchmarkDocumentCatalogLive/documents=100000/page/offset=0/scan=true-12       	     100	 917715222 ns/op	        21.00 HGETALL/op	      1944 SCAN/op	         0 ZCARD/op	         0 ZRANGEBYLEX/op	       975.3 p95-ms	      1065 p99-ms	24874259 B/op	  112466 allocs/op
+BenchmarkDocumentCatalogLive/documents=100000/page/offset=0/scan=false-12      	     100	   1380564 ns/op	        20.00 HGETALL/op	         0 SCAN/op	         0 ZCARD/op	         1.000 ZRANGEBYLEX/op	         1.705 p95-ms	         1.876 p99-ms	  128879 B/op	     580 allocs/op
+BenchmarkDocumentCatalogLive/documents=100000/page/offset=50000/scan=true-12   	     100	 914691932 ns/op	        21.00 HGETALL/op	      1944 SCAN/op	         0 ZCARD/op	         0 ZRANGEBYLEX/op	       960.8 p95-ms	       972.4 p99-ms	24873558 B/op	  112464 allocs/op
+BenchmarkDocumentCatalogLive/documents=100000/page/offset=50000/scan=false-12  	     100	   1329308 ns/op	        20.00 HGETALL/op	         0 SCAN/op	         0 ZCARD/op	         1.000 ZRANGEBYLEX/op	         1.540 p95-ms	         1.552 p99-ms	  129127 B/op	     585 allocs/op
+BenchmarkDocumentCatalogLive/documents=100000/page/offset=99980/scan=true-12   	     100	 913704168 ns/op	        20.00 HGETALL/op	      1944 SCAN/op	         0 ZCARD/op	         0 ZRANGEBYLEX/op	      1019 p95-ms	      1051 p99-ms	24869222 B/op	  112445 allocs/op
+BenchmarkDocumentCatalogLive/documents=100000/page/offset=99980/scan=false-12  	     100	   1370686 ns/op	        20.00 HGETALL/op	         0 SCAN/op	         0 ZCARD/op	         1.000 ZRANGEBYLEX/op	         1.740 p95-ms	         1.845 p99-ms	  128677 B/op	     581 allocs/op
+BenchmarkDocumentCatalogLive/documents=100000/count/scan=true-12               	     100	 880868892 ns/op	         0 HGETALL/op	      1944 SCAN/op	         0 ZCARD/op	         0 ZRANGEBYLEX/op	       950.2 p95-ms	      1052 p99-ms	24745776 B/op	  111927 allocs/op
+BenchmarkDocumentCatalogLive/documents=100000/count/scan=false-12              	     100	    424311 ns/op	         0 HGETALL/op	         0 SCAN/op	         1.000 ZCARD/op	         0 ZRANGEBYLEX/op	         0.5788 p95-ms	         0.6443 p99-ms	     300 B/op	       3 allocs/op
+PASS
+ok  	github.com/kailas-cloud/vecdex/internal/repository/document	432.521s

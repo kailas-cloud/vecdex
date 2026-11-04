@@ -135,3 +135,23 @@ func (s *Store) Scan(ctx context.Context, pattern string) ([]string, error) {
 
 	return keys, nil
 }
+
+// HGetFieldMulti reads one small field per key in a pipeline, avoiding full document hydration.
+func (s *Store) HGetFieldMulti(ctx context.Context, keys []string, field string) ([]string, error) {
+	commands := make([]rueidis.Completed, len(keys))
+	for i, key := range keys {
+		commands[i] = s.b().Hget().Key(key).Field(field).Build()
+	}
+	out := make([]string, len(keys))
+	for i, result := range s.client.DoMulti(ctx, commands...) {
+		value, err := result.ToString()
+		if rueidis.IsRedisNil(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read hash field %s: %w", field, err)
+		}
+		out[i] = value
+	}
+	return out, nil
+}

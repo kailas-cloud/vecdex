@@ -10,13 +10,17 @@ import (
 
 // mockStore implements the consumer interface for tests.
 type mockStore struct {
-	hsetFn       func(ctx context.Context, key string, fields map[string]string) error
-	hsetMultiFn  func(ctx context.Context, items []db.HashSetItem) error
-	hgetAllFn    func(ctx context.Context, key string) (map[string]string, error)
-	hdelFn       func(ctx context.Context, key string, fields ...string) error
-	delFn        func(ctx context.Context, key string) error
-	existsFn     func(ctx context.Context, key string) (bool, error)
-	searchListFn func(
+	catalogIDsFn   func(context.Context, string, string, int) ([]string, error)
+	catalogCountFn func(context.Context, string) (int, error)
+	hgetAllMultiFn func(context.Context, []string) ([]map[string]string, error)
+	mutateFn       func(context.Context, *db.HashMutation) (db.HashMutationResult, error)
+	hsetFn         func(ctx context.Context, key string, fields map[string]string) error
+	hsetMultiFn    func(ctx context.Context, items []db.HashSetItem) error
+	hgetAllFn      func(ctx context.Context, key string) (map[string]string, error)
+	hdelFn         func(ctx context.Context, key string, fields ...string) error
+	delFn          func(ctx context.Context, key string) error
+	existsFn       func(ctx context.Context, key string) (bool, error)
+	searchListFn   func(
 		ctx context.Context, index, query string, offset, limit int, fields []string,
 	) (*db.SearchResult, error)
 	searchCountFn func(ctx context.Context, index, query string) (int, error)
@@ -103,4 +107,38 @@ func testVector(dim int) []float32 {
 		vec[i] = float32(i) * 0.001
 	}
 	return vec
+}
+
+func (m *mockStore) MutateHash(ctx context.Context, mutation *db.HashMutation) (db.HashMutationResult, error) {
+	if m.mutateFn != nil {
+		return m.mutateFn(ctx, mutation)
+	}
+	return db.HashMutationResult{Revision: 1, Created: true}, nil
+}
+
+func (m *mockStore) CatalogIDs(ctx context.Context, key, after string, limit int) ([]string, error) {
+	if m.catalogIDsFn != nil {
+		return m.catalogIDsFn(ctx, key, after, limit)
+	}
+	return nil, nil
+}
+func (m *mockStore) CatalogCount(ctx context.Context, key string) (int, error) {
+	if m.catalogCountFn != nil {
+		return m.catalogCountFn(ctx, key)
+	}
+	return 0, nil
+}
+func (m *mockStore) HGetAllMulti(ctx context.Context, keys []string) ([]map[string]string, error) {
+	if m.hgetAllMultiFn != nil {
+		return m.hgetAllMultiFn(ctx, keys)
+	}
+	rows := make([]map[string]string, len(keys))
+	for i, key := range keys {
+		row, err := m.HGetAll(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		rows[i] = row
+	}
+	return rows, nil
 }

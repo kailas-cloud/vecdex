@@ -2,9 +2,9 @@ package document
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain"
@@ -13,17 +13,11 @@ import (
 )
 
 // store is the consumer interface for documents (ISP).
-//
-//nolint:interfacebloat,dupl // mirrors HashStore + search; splitting would add indirection without benefit
 type store interface {
-	HSet(ctx context.Context, key string, fields map[string]string) error
-	HSetMulti(ctx context.Context, items []db.HashSetItem) error
+	db.HashMutator
+	db.CatalogStore
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
-	HDel(ctx context.Context, key string, fields ...string) error
-	Del(ctx context.Context, key string) error
-	Exists(ctx context.Context, key string) (bool, error)
-	SearchList(ctx context.Context, index, query string, offset, limit int, fields []string) (*db.SearchResult, error)
-	SearchCount(ctx context.Context, index, query string) (int, error)
+	HGetAllMulti(ctx context.Context, keys []string) ([]map[string]string, error)
 }
 
 // Repo implements usecase/document.Repository.
@@ -37,53 +31,55 @@ func New(s store) *Repo {
 }
 
 // Upsert creates or updates a document. Returns true if created.
-// On update, DEL+HSET ensures removed fields don't linger (HSET is additive).
+// Replacement and revision comparison are atomic.
 func (r *Repo) Upsert(ctx context.Context, collectionName string, doc *domdoc.Document) (bool, error) {
-	key := docKey(collectionName, doc.ID())
-	fields := buildHashFields(doc)
-
-	exists, err := r.store.Exists(ctx, key)
+	base := domain.CollectionDataBase(collectionName, domain.CollectionGeneration(ctx))
+	fields, children, err := prepareFragmentFields(doc, base, rand.Text())
 	if err != nil {
-		return false, fmt.Errorf("check exists %s: %w", key, err)
+		return false, err
 	}
-
-	if exists {
-		if err := r.store.Del(ctx, key); err != nil {
-			return false, fmt.Errorf("del %s: %w", key, err)
-		}
+	result, err := r.store.MutateHash(ctx, &db.HashMutation{
+		Key:           documentKey(ctx, collectionName, doc.ID()),
+		CatalogKey:    domain.DocumentCatalogKey(collectionName, domain.CollectionGeneration(ctx)),
+		CatalogMember: doc.ID(),
+		StagingKey: domain.CollectionDataBase(
+			collectionName,
+			domain.CollectionGeneration(ctx),
+		) + ":pending:" + doc.ID(),
+		Set:              fields,
+		Children:         children,
+		Replace:          true,
+		ExpectedRevision: domain.ExpectedRevision(ctx),
+		GuardKey: domain.CollectionMetadataKey(
+			collectionName,
+		),
+		GuardGeneration: domain.CollectionGeneration(ctx),
+		GuardState:      "active",
+	})
+	if err != nil {
+		return false, fmt.Errorf("upsert document: %w", err)
 	}
-
-	if err := r.store.HSet(ctx, key, fields); err != nil {
-		return false, fmt.Errorf("hset %s: %w", key, err)
-	}
-
-	return !exists, nil
+	doc.SetRevision(result.Revision)
+	return result.Created, nil
 }
 
-// BatchUpsert stores multiple documents in a single pipelined round-trip.
-// Skips per-key existence checks — designed for bulk load.
+// BatchUpsert replaces each document atomically, including removed metadata.
 func (r *Repo) BatchUpsert(ctx context.Context, collectionName string, docs []domdoc.Document) error {
 	if len(docs) == 0 {
 		return nil
 	}
 
-	items := make([]db.HashSetItem, len(docs))
 	for i := range docs {
-		items[i] = db.HashSetItem{
-			Key:    docKey(collectionName, docs[i].ID()),
-			Fields: buildHashFields(&docs[i]),
+		if _, err := r.Upsert(ctx, collectionName, &docs[i]); err != nil {
+			return fmt.Errorf("batch upsert item %s: %w", docs[i].ID(), err)
 		}
-	}
-
-	if err := r.store.HSetMulti(ctx, items); err != nil {
-		return fmt.Errorf("hset multi: %w", err)
 	}
 	return nil
 }
 
 // Get returns a document by ID.
 func (r *Repo) Get(ctx context.Context, collectionName, id string) (domdoc.Document, error) {
-	key := docKey(collectionName, id)
+	key := documentKey(ctx, collectionName, id)
 	m, err := r.store.HGetAll(ctx, key)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("hgetall %s: %w", key, err)
@@ -91,153 +87,106 @@ func (r *Repo) Get(ctx context.Context, collectionName, id string) (domdoc.Docum
 	if len(m) == 0 {
 		return domdoc.Document{}, domain.ErrDocumentNotFound
 	}
-	return parseHashFields(id, m), nil
-}
-
-// List returns documents with cursor-based pagination via FT.SEARCH.
-func (r *Repo) List(ctx context.Context, collectionName, cursor string, limit int) (
-	[]domdoc.Document, string, error,
-) {
-	if limit <= 0 {
-		limit = 20
+	doc := parseHashFields(id, m)
+	if err := hydrateFragments(&doc, m); err != nil {
+		return domdoc.Document{}, err
 	}
-
-	offset := 0
-	if cursor != "" {
-		parsed, err := strconv.Atoi(cursor)
-		if err != nil {
-			return nil, "", fmt.Errorf("invalid cursor %q: %w: %w", cursor, domain.ErrInvalidSchema, err)
-		}
-		offset = parsed
-	}
-
-	idxName := indexName(collectionName)
-	fetchCount := limit + 1
-
-	result, err := r.store.SearchList(ctx, idxName, "*", offset, fetchCount, nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("search list %s: %w", collectionName, err)
-	}
-
-	if result == nil || result.Total == 0 {
-		return nil, "", nil
-	}
-
-	docs := parseListEntries(result.Entries, collectionName, limit)
-
-	var nextCursor string
-	if len(result.Entries) > limit {
-		nextCursor = strconv.Itoa(offset + limit)
-	}
-
-	return docs, nextCursor, nil
-}
-
-// Count returns the number of documents in a collection.
-func (r *Repo) Count(ctx context.Context, collectionName string) (int, error) {
-	n, err := r.store.SearchCount(ctx, indexName(collectionName), "*")
-	if err != nil {
-		return 0, fmt.Errorf("search count %s: %w", collectionName, err)
-	}
-	return n, nil
+	return doc, nil
 }
 
 // Delete removes a document.
 func (r *Repo) Delete(ctx context.Context, collectionName, id string) error {
-	key := docKey(collectionName, id)
-
-	exists, err := r.store.Exists(ctx, key)
+	_, err := r.store.MutateHash(ctx, &db.HashMutation{
+		Key: documentKey(
+			ctx,
+			collectionName,
+			id,
+		),
+		StagingKey: domain.CollectionDataBase(
+			collectionName,
+			domain.CollectionGeneration(ctx),
+		) + ":pending:" + id,
+		CatalogKey:       domain.DocumentCatalogKey(collectionName, domain.CollectionGeneration(ctx)),
+		CatalogMember:    id,
+		Delete:           true,
+		RequireExists:    true,
+		ExpectedRevision: domain.ExpectedRevision(ctx),
+		GuardKey: domain.CollectionMetadataKey(
+			collectionName,
+		),
+		GuardGeneration: domain.CollectionGeneration(ctx),
+		GuardState:      "active",
+	})
 	if err != nil {
-		return fmt.Errorf("check exists %s: %w", key, err)
-	}
-	if !exists {
-		return domain.ErrDocumentNotFound
-	}
-
-	if err := r.store.Del(ctx, key); err != nil {
-		return fmt.Errorf("del %s: %w", key, err)
+		return fmt.Errorf("delete document: %w", err)
 	}
 	return nil
 }
 
 // Patch performs a partial update: HDEL removed fields, HSET updated fields.
 // No full-key DEL — avoids race where concurrent Patch sees empty key.
-func (r *Repo) Patch(ctx context.Context, collectionName, id string, p patch.Patch, newVector []float32) error {
-	key := docKey(collectionName, id)
-
-	exists, err := r.store.Exists(ctx, key)
-	if err != nil {
-		return fmt.Errorf("exists %s: %w", key, err)
-	}
-	if !exists {
-		return domain.ErrDocumentNotFound
-	}
-
-	toSet, toDel := buildPatchOps(p, newVector)
-
-	if len(toDel) > 0 {
-		if err := r.store.HDel(ctx, key, toDel...); err != nil {
-			return fmt.Errorf("hdel %s: %w", key, err)
+func (r *Repo) Patch(
+	ctx context.Context,
+	collectionName, id string,
+	p patch.Patch,
+	newVector []float32,
+	fragments []domdoc.Fragment,
+) error {
+	for attempt := 0; attempt < 8; attempt++ {
+		current, err := r.Get(ctx, collectionName, id)
+		if err != nil {
+			return err
+		}
+		updated := applyPatch(current, p, newVector)
+		if p.HasContent() {
+			updated.SetFragments(fragments)
+		}
+		revision := current.Revision()
+		writeCtx := ctx
+		if domain.ExpectedRevision(ctx) == nil {
+			writeCtx = domain.WithExpectedRevision(ctx, &revision)
+		}
+		_, err = r.Upsert(writeCtx, collectionName, &updated)
+		if err == nil {
+			return nil
+		}
+		if domain.ExpectedRevision(ctx) != nil || !errors.Is(err, domain.ErrRevisionConflict) {
+			return err
 		}
 	}
-	if len(toSet) > 0 {
-		if err := r.store.HSet(ctx, key, toSet); err != nil {
-			return fmt.Errorf("hset %s: %w", key, err)
-		}
-	}
-	return nil
+	return fmt.Errorf("concurrent patch retry limit: %w", domain.ErrRevisionConflict)
 }
 
-func docKey(collection, id string) string {
-	return fmt.Sprintf("%s%s:%s", domain.KeyPrefix, collection, id)
-}
-
-func indexName(collection string) string {
-	return fmt.Sprintf("%s%s:idx", domain.KeyPrefix, collection)
-}
-
-func extractDocID(key, collection string) string {
-	prefix := fmt.Sprintf("%s%s:", domain.KeyPrefix, collection)
-	return strings.TrimPrefix(key, prefix)
-}
-
-// parseListEntries converts search entries into domain documents, capping at limit.
-func parseListEntries(entries []db.SearchEntry, collectionName string, limit int) []domdoc.Document {
-	docs := make([]domdoc.Document, 0, limit)
-	for i, entry := range entries {
-		if i >= limit {
-			break
-		}
-		docID := extractDocID(entry.Key, collectionName)
-		docs = append(docs, parseHashFields(docID, entry.Fields))
-	}
-	return docs
-}
-
-// buildPatchOps splits a patch into fields to set and fields to delete.
-func buildPatchOps(p patch.Patch, newVector []float32) (toSet map[string]string, toDel []string) {
-	toSet = make(map[string]string)
-
+func applyPatch(current domdoc.Document, p patch.Patch, newVector []float32) domdoc.Document {
+	content := current.Content()
 	if p.HasContent() {
-		toSet["__content"] = *p.Content()
+		content = *p.Content()
 	}
-	for k, v := range p.Tags() {
-		if v == nil {
-			toDel = append(toDel, k)
-		} else {
-			toSet[k] = *v
-		}
-	}
-	for k, v := range p.Numerics() {
-		prefixedKey := numericPrefix + k
-		if v == nil {
-			toDel = append(toDel, prefixedKey)
-		} else {
-			toSet[prefixedKey] = strconv.FormatFloat(*v, 'f', -1, 64)
-		}
-	}
+	tags := applyFieldPatch(current.Tags(), p.Tags())
+	numerics := applyFieldPatch(current.Numerics(), p.Numerics())
+	vector := current.Vector()
 	if newVector != nil {
-		toSet["__vector"] = vectorToBytes(newVector)
+		vector = newVector
 	}
-	return toSet, toDel
+	updated := domdoc.Reconstruct(current.ID(), content, tags, numerics, vector, current.Revision())
+	updated.SetFragments(current.Fragments())
+	return updated
+}
+
+func applyFieldPatch[T any](fields map[string]T, updates map[string]*T) map[string]T {
+	if fields == nil {
+		fields = map[string]T{}
+	}
+	for key, value := range updates {
+		if value == nil {
+			delete(fields, key)
+		} else {
+			fields[key] = *value
+		}
+	}
+	return fields
+}
+
+func documentKey(ctx context.Context, collection, id string) string {
+	return domain.GenerationDocumentPrefix(collection, domain.CollectionGeneration(ctx)) + id
 }

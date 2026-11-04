@@ -84,8 +84,8 @@ class TestLargeDocuments:
             f"/collections/{coll['name']}/documents/large-160k",
             json={"content": content},
         )
-        # Should be accepted (exactly at limit)
-        assert resp.status_code in (201, 400)
+        # Transport limit is independent of the embedding model context.
+        assert resp.status_code == 201
 
     def test_over_160kb_rejected(self, client, collection_factory):
         """Over 160KB — should be rejected."""

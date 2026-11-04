@@ -1,0 +1,34 @@
+Command: VECDEX_TEST_VALKEY_ADDR=127.0.0.1:16379 go test ./internal/repository/embcache -run '^$' -bench BenchmarkCacheLive -benchmem -benchtime=30x -count=3
+Backend: valkey/valkey:9.0.0-alpine, isolated container on the local Docker VM
+No parallel E2E workload. Model invocation uses a deterministic fixture.
+
+goos: darwin
+goarch: arm64
+pkg: github.com/kailas-cloud/vecdex/internal/repository/embcache
+cpu: Apple M3 Pro
+BenchmarkCacheLive/unique=96/warm=false/pipeline=false-12         	      30	  77390615 ns/op	        96.00 GET/op	        96.00 SET/op	       192.0 cache_batches/op	  829790 B/op	     689 allocs/op
+BenchmarkCacheLive/unique=96/warm=false/pipeline=false-12         	      30	  76324581 ns/op	        96.00 GET/op	        96.00 SET/op	       192.0 cache_batches/op	  829801 B/op	     689 allocs/op
+BenchmarkCacheLive/unique=96/warm=false/pipeline=false-12         	      30	  75454717 ns/op	        96.00 GET/op	        96.00 SET/op	       192.0 cache_batches/op	  829923 B/op	     689 allocs/op
+BenchmarkCacheLive/unique=96/warm=false/pipeline=true-12          	      30	   4551451 ns/op	        96.00 GET/op	        96.00 SET/op	         2.000 cache_batches/op	  864929 B/op	     710 allocs/op
+BenchmarkCacheLive/unique=96/warm=false/pipeline=true-12          	      30	   3192037 ns/op	        96.00 GET/op	        96.00 SET/op	         2.000 cache_batches/op	  864859 B/op	     710 allocs/op
+BenchmarkCacheLive/unique=96/warm=false/pipeline=true-12          	      30	   3473130 ns/op	        96.00 GET/op	        96.00 SET/op	         2.000 cache_batches/op	  864692 B/op	     709 allocs/op
+BenchmarkCacheLive/unique=96/warm=true/pipeline=false-12          	      30	  37172772 ns/op	        96.00 GET/op	         0 SET/op	        96.00 cache_batches/op	  817268 B/op	     578 allocs/op
+BenchmarkCacheLive/unique=96/warm=true/pipeline=false-12          	      30	  36916683 ns/op	        96.00 GET/op	         0 SET/op	        96.00 cache_batches/op	  817266 B/op	     578 allocs/op
+BenchmarkCacheLive/unique=96/warm=true/pipeline=false-12          	      30	  40662151 ns/op	        96.00 GET/op	         0 SET/op	        96.00 cache_batches/op	  817264 B/op	     578 allocs/op
+BenchmarkCacheLive/unique=96/warm=true/pipeline=true-12           	      30	   2805422 ns/op	        96.00 GET/op	         0 SET/op	         1.000 cache_batches/op	  839868 B/op	     593 allocs/op
+BenchmarkCacheLive/unique=96/warm=true/pipeline=true-12           	      30	   2317050 ns/op	        96.00 GET/op	         0 SET/op	         1.000 cache_batches/op	  839864 B/op	     593 allocs/op
+BenchmarkCacheLive/unique=96/warm=true/pipeline=true-12           	      30	   2412029 ns/op	        96.00 GET/op	         0 SET/op	         1.000 cache_batches/op	  839518 B/op	     592 allocs/op
+BenchmarkCacheLive/unique=32/warm=false/pipeline=false-12         	      30	  76926633 ns/op	        96.00 GET/op	        96.00 SET/op	       192.0 cache_batches/op	  829734 B/op	     689 allocs/op
+BenchmarkCacheLive/unique=32/warm=false/pipeline=false-12         	      30	  75230167 ns/op	        96.00 GET/op	        96.00 SET/op	       192.0 cache_batches/op	  829736 B/op	     689 allocs/op
+BenchmarkCacheLive/unique=32/warm=false/pipeline=false-12         	      30	  75663638 ns/op	        96.00 GET/op	        96.00 SET/op	       192.0 cache_batches/op	  829734 B/op	     689 allocs/op
+BenchmarkCacheLive/unique=32/warm=false/pipeline=true-12          	      30	   1904088 ns/op	        32.00 GET/op	        32.00 SET/op	         2.000 cache_batches/op	  294848 B/op	     256 allocs/op
+BenchmarkCacheLive/unique=32/warm=false/pipeline=true-12          	      30	   1748811 ns/op	        32.00 GET/op	        32.00 SET/op	         2.000 cache_batches/op	  294770 B/op	     255 allocs/op
+BenchmarkCacheLive/unique=32/warm=false/pipeline=true-12          	      30	   1914912 ns/op	        32.00 GET/op	        32.00 SET/op	         2.000 cache_batches/op	  294813 B/op	     255 allocs/op
+BenchmarkCacheLive/unique=32/warm=true/pipeline=false-12          	      30	  38689974 ns/op	        96.00 GET/op	         0 SET/op	        96.00 cache_batches/op	  817264 B/op	     578 allocs/op
+BenchmarkCacheLive/unique=32/warm=true/pipeline=false-12          	      30	  40028117 ns/op	        96.00 GET/op	         0 SET/op	        96.00 cache_batches/op	  817264 B/op	     578 allocs/op
+BenchmarkCacheLive/unique=32/warm=true/pipeline=false-12          	      30	  38895962 ns/op	        96.00 GET/op	         0 SET/op	        96.00 cache_batches/op	  817264 B/op	     578 allocs/op
+BenchmarkCacheLive/unique=32/warm=true/pipeline=true-12           	      30	   1081082 ns/op	        32.00 GET/op	         0 SET/op	         1.000 cache_batches/op	  287298 B/op	     207 allocs/op
+BenchmarkCacheLive/unique=32/warm=true/pipeline=true-12           	      30	   1072203 ns/op	        32.00 GET/op	         0 SET/op	         1.000 cache_batches/op	  287335 B/op	     207 allocs/op
+BenchmarkCacheLive/unique=32/warm=true/pipeline=true-12           	      30	   1050964 ns/op	        32.00 GET/op	         0 SET/op	         1.000 cache_batches/op	  287333 B/op	     207 allocs/op
+PASS
+ok  	github.com/kailas-cloud/vecdex/internal/repository/embcache	33.845s
