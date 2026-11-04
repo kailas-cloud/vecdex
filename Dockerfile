@@ -30,7 +30,7 @@ RUN set -eux; \
     ln -s "/opt/onnxruntime/${ort_pkg}" /opt/onnxruntime/current; \
     rm /tmp/onnxruntime.tgz
 
-FROM golang:1.25 AS go-base
+FROM golang:1.27.3 AS go-base
 
 COPY --from=onnxruntime /opt/onnxruntime /opt/onnxruntime
 

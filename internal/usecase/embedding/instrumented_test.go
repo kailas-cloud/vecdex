@@ -265,3 +265,28 @@ func (m *plainMockEmbedder) Embed(_ context.Context, _ string) (domain.Embedding
 	m.calls++
 	return m.result, m.err
 }
+
+type lateFailEmbedder struct{ calls int }
+
+func (e *lateFailEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResult, error) {
+	return domain.EmbeddingResult{}, nil
+}
+func (e *lateFailEmbedder) BatchEmbed(_ context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
+	e.calls++
+	if e.calls == 2 {
+		return domain.BatchEmbeddingResult{TotalTokens: 3, PromptTokens: 3}, errors.New("late failure")
+	}
+	return domain.BatchEmbeddingResult{
+		Embeddings:   make([][]float32, len(texts)),
+		TotalTokens:  10,
+		PromptTokens: 10,
+	}, nil
+}
+func TestPartialBatchUsageSurvivesFailure(t *testing.T) {
+	budget := NewBudgetTracker("partial", 1000, 1000, BudgetActionWarn, zap.NewNop())
+	p := NewInstrumentedEmbedder(&lateFailEmbedder{}, "partial", "model", budget, zap.NewNop())
+	r, err := p.BatchEmbed(context.Background(), make([]string, 257))
+	if err == nil || r.TotalTokens != 13 || budget.DailyUsed() != 13 {
+		t.Fatalf("result=%+v err=%v budget=%d", r, err, budget.DailyUsed())
+	}
+}

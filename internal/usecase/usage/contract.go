@@ -1,11 +1,14 @@
 package usage
 
-// BudgetReader provides read-only access to token budget state.
+import (
+	"context"
+
+	domusage "github.com/kailas-cloud/vecdex/internal/domain/usage"
+)
+
+// BudgetReader provides current shared usage independently of configured limits.
 type BudgetReader interface {
 	DailyLimit() int64
 	MonthlyLimit() int64
-	DailyUsed() int64
-	MonthlyUsed() int64
-	RemainingDaily() int64
-	RemainingMonthly() int64
+	Snapshot(ctx context.Context) (domusage.Snapshot, error)
 }

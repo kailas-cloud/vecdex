@@ -22,16 +22,17 @@ const (
 )
 
 // BudgetStore is the persistence interface for budget counters.
-// Implementations must be idempotent (IncrBy can be called repeatedly).
+// IncrBy is additive, not idempotent. Production uses AccountingStore instead.
 type BudgetStore interface {
 	IncrBy(ctx context.Context, key string, val int64) error
 	Get(ctx context.Context, key string) (int64, error)
 }
 
-// BudgetTracker is an in-memory token budget tracker with optional persistence.
-// Hot path (Check) is in-memory only, no round-trip.
-// Record updates in-memory first, then write-behind to store.
+// BudgetTracker coordinates shared invocation accounting when AccountingStore is set.
+// It also supports local counters for embedded users and legacy unit fixtures.
 type BudgetTracker struct {
+	accounting     AccountingStore
+	maxInputTokens int64
 	mu             sync.Mutex
 	dailyUsed      int64
 	monthlyUsed    int64
@@ -104,8 +105,22 @@ func (b *BudgetTracker) monthlyKey(t time.Time) string {
 	return fmt.Sprintf("%sbudget:%s:monthly:%s", domain.KeyPrefix, b.provider, t.Format("2006-01"))
 }
 
-// Check verifies the budget allows a new request. In-memory only (hot path).
-func (b *BudgetTracker) Check(_ context.Context) error {
+// Check reads shared availability when accounting is configured. Begin also reserves
+// the model upper bound atomically; callers must use Begin before invoking a model.
+func (b *BudgetTracker) Check(ctx context.Context) error {
+	if b.accounting != nil {
+		snap, err := b.Snapshot(ctx)
+		if err != nil {
+			return err
+		}
+		dailyExceeded := b.dailyLimit > 0 && snap.Day.Tokens+snap.Day.Reserved >= b.dailyLimit
+		monthlyExceeded := b.monthlyLimit > 0 && snap.Month.Tokens+snap.Month.Reserved >= b.monthlyLimit
+		if b.action == BudgetActionReject && (dailyExceeded || monthlyExceeded) {
+			return domain.ErrEmbeddingQuotaExceeded
+		}
+
+		return nil
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

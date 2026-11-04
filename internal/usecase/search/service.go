@@ -22,11 +22,12 @@ type asyncSearchResult struct {
 
 // Service handles document search across semantic, keyword, and hybrid modes.
 type Service struct {
-	repo  Repository
-	colls CollectionReader
-	embed Embedder
-	docs  DocumentReader
-	cfg   Config
+	embeddingSpace string
+	repo           Repository
+	colls          CollectionReader
+	embed          Embedder
+	docs           DocumentReader
+	cfg            Config
 }
 
 // New creates a search service.
@@ -61,6 +62,12 @@ func (s *Service) Search(
 		return nil, 0, fmt.Errorf("get collection: %w", err)
 	}
 
+	if req.Mode() != mode.Keyword {
+		if err := col.CheckEmbeddingSpace(s.embeddingSpace); err != nil {
+			return nil, 0, fmt.Errorf("search embedding space: %w", err)
+		}
+	}
+	ctx = collectionSearchContext(ctx, col)
 	if err = validateFiltersAgainstSchema(req.Filters(), col); err != nil {
 		return nil, 0, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
 	}
@@ -120,12 +127,21 @@ func filterByScore(results []result.Result, minScore float64) []result.Result {
 func (s *Service) Similar(
 	ctx context.Context, collectionName, documentID string, req *request.SimilarRequest,
 ) ([]result.Result, int, error) {
+	col, err := s.colls.Get(ctx, collectionName)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get collection: %w", err)
+	}
+	if err := col.CheckEmbeddingSpace(s.embeddingSpace); err != nil {
+		return nil, 0, fmt.Errorf("similar embedding space: %w", err)
+	}
+	ctx = collectionSearchContext(ctx, col)
 	vector, err := s.loadDocumentVector(ctx, collectionName, documentID, req.Filters())
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Reuse stored vector — zero embedding cost. TopK+1 to compensate for source exclusion.
+	ctx = domain.WithExcludedDocument(ctx, documentID)
+	// Reuse stored vector — zero embedding cost. Exclude every source fragment in the backend.
 	results, err := s.repo.SearchKNN(
 		ctx, collectionName, vector, req.Filters(), req.TopK()+1, req.IncludeVectors(),
 	)
@@ -137,6 +153,7 @@ func (s *Service) Similar(
 		return results[i].Score() > results[j].Score()
 	})
 
+	results = aggregateToDocuments(results, req.TopK()+1)
 	results = excludeByID(results, documentID)
 	out, total := applyPostFilters(results, req.MinScore(), req.Limit())
 	return out, total, nil
@@ -184,7 +201,7 @@ func (s *Service) searchSemantic(
 		return nil, fmt.Errorf("vectorize query: %w", err)
 	}
 
-	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
+	domain.UsageFromContext(ctx).AddEmbedding(embResult.TotalTokens, embResult.UsageUnknown)
 
 	results, err := s.repo.SearchKNN(
 		ctx, collectionName, embResult.Embedding, req.Filters(),
@@ -289,7 +306,7 @@ func (s *Service) runHybridSemantic(
 		return
 	}
 
-	domain.UsageFromContext(ctx).AddTokens(embResult.TotalTokens)
+	domain.UsageFromContext(ctx).AddEmbedding(embResult.TotalTokens, embResult.UsageUnknown)
 
 	results, err := s.repo.SearchKNN(
 		ctx, collectionName, embResult.Embedding, req.Filters(), candidateK, req.IncludeVectors(),
@@ -359,4 +376,22 @@ func validateFiltersAgainstSchema(expr filter.Expression, col domcol.Collection)
 		}
 	}
 	return nil
+}
+
+// WithEmbeddingSpace binds vector operations to the configured embedding space.
+func (s *Service) WithEmbeddingSpace(fingerprint string) *Service {
+	s.embeddingSpace = fingerprint
+	return s
+}
+
+func collectionSearchContext(ctx context.Context, col domcol.Collection) context.Context {
+	fields := make([]string, 0, len(col.Fields()))
+	for _, item := range col.Fields() {
+		name := item.Name()
+		if item.FieldType() == field.Numeric {
+			name = "__n:" + name
+		}
+		fields = append(fields, name)
+	}
+	return domain.WithSearchMetadataFields(domain.WithCollectionGeneration(ctx, col.Generation()), fields)
 }

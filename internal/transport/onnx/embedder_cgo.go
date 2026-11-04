@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	domusage "github.com/kailas-cloud/vecdex/internal/domain/usage"
 	"github.com/kailas-cloud/vecdex/internal/metrics"
 )
 
@@ -25,6 +26,7 @@ var (
 
 // Embedder runs local ONNX embedding inference on CPU.
 type Embedder struct {
+	observer           domusage.InvocationObserver
 	sessions           chan *ort.DynamicAdvancedSession
 	tokenizer          textTokenizer
 	modelPath          string
@@ -39,6 +41,7 @@ type Embedder struct {
 
 // Config holds the ONNX embedding provider settings.
 type Config struct {
+	Observer          domusage.InvocationObserver
 	ModelDir          string
 	Model             string
 	Dimensions        int
@@ -89,6 +92,7 @@ func NewEmbedder(cfg *Config) (*Embedder, error) {
 
 	return &Embedder{
 		sessions:           sessions,
+		observer:           cfg.Observer,
 		tokenizer:          resources.tokenizer,
 		modelPath:          resources.paths.modelPath,
 		maxLength:          cfg.MaxLength,
@@ -123,7 +127,14 @@ func (e *Embedder) BatchEmbed(ctx context.Context, texts []string) (domain.Batch
 		return domain.BatchEmbeddingResult{}, nil
 	}
 
+	complete, err := domusage.BeginInvocation(ctx, e.observer, len(texts))
+	if err != nil {
+		return domain.BatchEmbeddingResult{}, fmt.Errorf("onnx accounting: %w", err)
+	}
+	tokens := 0
+	defer func() { complete(tokens, false) }()
 	encoded, embeddings, duration, err := e.runBatch(ctx, texts)
+	tokens = encoded.totalTokens
 	if err != nil {
 		return domain.BatchEmbeddingResult{}, err
 	}

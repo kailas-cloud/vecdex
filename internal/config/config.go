@@ -72,8 +72,9 @@ type StorageConfig struct {
 
 // EmbeddingConfig holds embedding settings.
 type EmbeddingConfig struct {
-	Providers   map[string]ProviderConfig   `yaml:"providers"`
-	Vectorizers map[string]VectorizerConfig `yaml:"vectorizers"`
+	ActiveVectorizer string                      `yaml:"active_vectorizer"`
+	Providers        map[string]ProviderConfig   `yaml:"providers"`
+	Vectorizers      map[string]VectorizerConfig `yaml:"vectorizers"`
 }
 
 // BudgetConfig holds token budget settings.
@@ -86,6 +87,10 @@ type BudgetConfig struct {
 
 // ProviderConfig holds embedding provider settings.
 type ProviderConfig struct {
+	CacheTTLSec       int          `yaml:"cache_ttl_sec"`
+	Region            string       `yaml:"region"`
+	TimeoutSec        int          `yaml:"timeout_sec"`
+	MaxConcurrency    int          `yaml:"max_concurrency"`
 	Backend           string       `yaml:"backend"`
 	APIKey            string       `yaml:"api_key"`
 	BaseURL           string       `yaml:"base_url"`
@@ -158,7 +163,7 @@ func (c *Config) applyScalarDefaults() {
 		c.HTTP.ReadTimeoutSec = 10
 	}
 	if c.HTTP.WriteTimeoutSec <= 0 {
-		c.HTTP.WriteTimeoutSec = 10
+		c.HTTP.WriteTimeoutSec = 310
 	}
 	if c.HTTP.ShutdownSec <= 0 {
 		c.HTTP.ShutdownSec = 10
@@ -201,6 +206,9 @@ func (c *Config) applyScalarDefaults() {
 func (c *Config) applyProviderDefaults() {
 	for name := range c.Embedding.Providers {
 		provider := c.Embedding.Providers[name]
+		if provider.CacheTTLSec == 0 {
+			provider.CacheTTLSec = 7 * 24 * 60 * 60
+		}
 		if provider.Backend == "" {
 			provider.Backend = "openai"
 		}
@@ -227,7 +235,10 @@ func (c *Config) Validate() error {
 	if err := c.validateSearch(); err != nil {
 		return err
 	}
-	return c.validateEmbeddingProviders()
+	if err := c.validateEmbeddingProviders(); err != nil {
+		return err
+	}
+	return c.validateVectorizers()
 }
 
 func (c *Config) validateHTTP() error {
@@ -283,15 +294,24 @@ func (c *Config) validateEmbeddingProviders() error {
 }
 
 func validateProviderConfig(name string, p *ProviderConfig) error {
+	if p.CacheTTLSec < 0 {
+		return fmt.Errorf("embedding.providers.%s.cache_ttl_sec must be positive", name)
+	}
 	switch p.Backend {
-	case "", "openai", "onnx":
+	case "", "openai", "onnx", "bedrock":
 		// ok
 	default:
 		return fmt.Errorf(
-			"embedding.providers.%s.backend must be \"openai\" or \"onnx\", got %q",
+			"embedding.providers.%s.backend must be \"openai\", \"onnx\" or \"bedrock\", got %q",
 			name, p.Backend,
 		)
 	}
+	if p.Backend == "bedrock" {
+		if err := validateBedrockProvider(name, p); err != nil {
+			return err
+		}
+	}
+
 	if p.Backend == "onnx" {
 		if p.ModelDir == "" {
 			return fmt.Errorf("embedding.providers.%s.model_dir is required for onnx backend", name)
@@ -362,4 +382,63 @@ func expandEnvVars(data []byte) []byte {
 		}
 		return []byte(val)
 	})
+}
+
+// ActiveVectorizer resolves the configured vectorizer without map-order selection.
+func (c *Config) ActiveVectorizer() (string, VectorizerConfig, error) {
+	name := c.Embedding.ActiveVectorizer
+	if name == "" && len(c.Embedding.Vectorizers) == 1 {
+		for key := range c.Embedding.Vectorizers {
+			name = key
+		}
+	}
+	v, ok := c.Embedding.Vectorizers[name]
+	if !ok {
+		return "", VectorizerConfig{}, fmt.Errorf("embedding.active_vectorizer must select an existing vectorizer")
+	}
+	return name, v, nil
+}
+
+func (c *Config) validateVectorizers() error {
+	// Empty maps are permitted for partial config validation; startup requires a selection.
+	if len(c.Embedding.Vectorizers) == 0 {
+		return nil
+	}
+	if _, _, err := c.ActiveVectorizer(); err != nil {
+		return err
+	}
+	for name, v := range c.Embedding.Vectorizers {
+		p, ok := c.Embedding.Providers[v.Provider]
+		if !ok {
+			return fmt.Errorf("embedding.vectorizers.%s references unknown provider %q", name, v.Provider)
+		}
+		if p.Backend == "bedrock" {
+			switch v.Model {
+			case "cohere.embed-v4:0", "eu.cohere.embed-v4:0", "us.cohere.embed-v4:0", "global.cohere.embed-v4:0":
+			default:
+				return fmt.Errorf("embedding.vectorizers.%s requires Cohere Embed v4", name)
+			}
+			switch v.Dimensions {
+			case 256, 512, 1024, 1536:
+			default:
+				return fmt.Errorf("embedding.vectorizers.%s requires dimensions 256, 512, 1024 or 1536", name)
+			}
+		}
+	}
+	return nil
+}
+
+func validateBedrockProvider(name string, p *ProviderConfig) error {
+
+	if strings.TrimSpace(p.APIKey) == "" || strings.ContainsAny(p.APIKey, "\r\n") {
+		return fmt.Errorf("embedding.providers.%s.api_key must be a nonempty single-line token", name)
+	}
+	if !regexp.MustCompile(`^[a-z]{2}(?:-[a-z]+)+-\d+$`).MatchString(p.Region) {
+		return fmt.Errorf("embedding.providers.%s.region is required and must be an AWS region", name)
+	}
+	if p.TimeoutSec < 0 || p.MaxConcurrency < 0 {
+		return fmt.Errorf("embedding.providers.%s timeout and concurrency must be positive", name)
+	}
+
+	return nil
 }

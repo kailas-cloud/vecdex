@@ -92,7 +92,8 @@ info:
     | Batch upsert | N | One per document |
     | GET, DELETE, list | 0 | Never |
 
-    Budgets are enforced **per API key**, optionally **per collection**.
+    Usage and budgets are shared by all API keys and collections using the active
+    embedding provider. Collection filtering is not supported.
     The budget unit is **tokens** (not requests, not USD) — the only
     invariant across embedding providers.
 
@@ -255,8 +256,11 @@ paths:
       description: |
         Returns documents in the collection with cursor-based pagination.
         Use `next_cursor` from the response to fetch the next page.
-        Ordering is stable (by internal key order) as long as no documents
-        are inserted or deleted between pages.
+        Documents are ordered lexicographically by source ID. A cursor is bound to
+        the collection generation and advances after its last ID. Pagination is
+        not a snapshot: inserts before that ID are not visited, and concurrent
+        deletes can shorten a page. A cursor from a deleted/recreated collection
+        returns 400.
       operationId: listDocuments
       parameters:
         - $ref: '#/components/parameters/CollectionName'
@@ -748,15 +752,17 @@ paths:
     get:
       summary: Get embedding usage and budget
       description: |
-        Returns embedding usage metrics and budget status for the current API key.
-        Optionally filter by collection. Use `period` to select the aggregation window.
+        Returns shared embedding usage metrics and budget status for the active provider.
+        Use `period` to select the aggregation window. Collection filtering returns 400.
+        Usage is tracked even when no budget limits are configured. Unknown usage is
+        reported in `unknown_requests`; `tokens` contains only measured consumption.
       operationId: getUsage
       parameters:
         - $ref: '#/components/parameters/XRequestID'
         - name: collection
           in: query
           required: false
-          description: Filter usage by collection name. If omitted, returns global usage.
+          description: Unsupported; supplying this parameter returns 400.
           schema:
             type: string
             pattern: '^[a-zA-Z0-9_-]+$'
@@ -787,6 +793,7 @@ paths:
                 period_end_at: "2025-03-01T00:00:00Z"
                 usage:
                   embedding_requests: 1542
+                  unknown_requests: 0
                   tokens: 384200
                   cost_millidollars: 38
                 budget:
@@ -794,6 +801,8 @@ paths:
                   tokens_remaining: 615800
                   is_exhausted: false
                   resets_at: "2025-03-01T00:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '429':
           $ref: '#/components/responses/RateLimited'
 
@@ -936,13 +945,13 @@ components:
       in: header
       required: false
       description: |
-        Revision-based optimistic concurrency control. Pass the `revision`
-        value from a previous GET response. If the current revision doesn't
-        match, the server returns 409 with `code: revision_conflict`.
-        If omitted, the write proceeds unconditionally (no conflict check).
+        Revision-based optimistic concurrency control. Pass the quoted ETag from
+        a previous response, or its numeric revision for compatibility. A stale
+        revision returns 409 with code revision_conflict. Weak validators and
+        validator lists are not supported. Omit for an unconditional write.
       schema:
-        type: integer
-      example: 3
+        type: string
+      example: '"3"'
 
     XRequestID:
       name: X-Request-ID
@@ -1030,9 +1039,13 @@ components:
         document_count:
           type: integer
           description: |
-            Approximate number of documents. May lag behind recent
-            batch operations by a few seconds.
+            Number of source documents observed when the catalog is read.
+            Internal fragments are excluded. Concurrent writes can change this
+            count between requests.
           example: 1337
+        embedding_space:
+          type: string
+          description: Fingerprint of the vectorizer used by this collection. Changing it requires reindexing.
         vector_dimensions:
           type: integer
           description: Vector dimensions (set automatically by the platform)
@@ -1610,6 +1623,7 @@ components:
             - document_not_found
             - collection_already_exists
             - revision_conflict
+            - embedding_space_mismatch
             - rate_limited
             - embedding_quota_exceeded
             - not_implemented
@@ -1669,7 +1683,7 @@ components:
           example: "2025-03-01T00:00:00Z"
         collection:
           type: string
-          description: Collection name if filtered, absent for global usage.
+          description: Reserved for collection-level accounting; absent in current responses.
           example: code-chunks
         usage:
           $ref: '#/components/schemas/UsageMetrics'
@@ -1681,14 +1695,19 @@ components:
       required:
         - embedding_requests
         - tokens
+        - unknown_requests
       properties:
         embedding_requests:
           type: integer
           description: Number of embedding API calls in this period
           example: 1542
+        unknown_requests:
+          type: integer
+          description: Invocations whose token usage is unknown; tokens is a lower bound when nonzero.
+          example: 0
         tokens:
           type: integer
-          description: Total embedding tokens consumed in this period
+          description: Measured embedding tokens consumed in this period
           example: 384200
         cost_millidollars:
           type: integer

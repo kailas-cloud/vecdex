@@ -6,6 +6,10 @@ import (
 )
 
 var (
+	// ErrEmbeddingSpaceMismatch requires recreating a collection after changing its vectorizer.
+	ErrEmbeddingSpaceMismatch = errors.New(
+		"embedding configuration changed; create a new collection and reindex its source documents",
+	)
 	// ErrNotFound signals a missing resource.
 	ErrNotFound = errors.New("not found")
 	// ErrAlreadyExists signals a duplicate resource.
@@ -23,6 +27,8 @@ var (
 	ErrRateLimited = errors.New("rate limited")
 	// ErrEmbeddingQuotaExceeded signals an exhausted embedding budget.
 	ErrEmbeddingQuotaExceeded = errors.New("embedding quota exceeded")
+	// ErrEmbeddingInputTooLong identifies an explicit model context-limit rejection.
+	ErrEmbeddingInputTooLong = errors.New("embedding input exceeds model context")
 	// ErrEmbeddingProviderError signals an embedding provider failure.
 	ErrEmbeddingProviderError = errors.New("embedding provider error")
 	// ErrNotImplemented signals an unimplemented feature.

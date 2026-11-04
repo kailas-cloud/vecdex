@@ -5,6 +5,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir fastapi uvicorn
 
 COPY server.py .
+COPY testdata/ testdata/
 
 EXPOSE 9999
 

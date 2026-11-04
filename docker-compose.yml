@@ -1,6 +1,6 @@
 services:
   valkey:
-    image: valkey/valkey-bundle:unstable
+    image: valkey/valkey-bundle:9.1.2@sha256:1c39295cd8e3a34fc33fb46de235cf5e7bad530525b1a697eaf9f49e1c42747c
     profiles: [valkey]
     ports:
       - "6379:6379"

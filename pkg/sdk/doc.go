@@ -36,5 +36,5 @@
 // # Health and Usage
 //
 //	status := client.Health(ctx)
-//	report := client.Usage(ctx, vecdex.PeriodDay)
+//	report, err := client.Usage(ctx, vecdex.PeriodDay)
 package vecdex

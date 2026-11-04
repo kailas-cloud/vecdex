@@ -76,11 +76,8 @@ class TestUsageCollection:
     def test_usage_with_collection_filter(self, client, collection_factory):
         coll = collection_factory()
         resp = client.get("/usage", params={"collection": coll["name"]})
-        assert resp.status_code == 200
-        data = resp.json()
-        # Collection should be echoed back
-        coll_field = data.get("collection") or data.get("Collection")
-        assert coll_field == coll["name"]
+        assert resp.status_code == 400
+        assert resp.json()["code"] == "validation_failed"
 
 
 class TestUsageAfterOperations:
@@ -109,7 +106,7 @@ class TestUsageAfterOperations:
             after.get("usage", {}).get("tokens")
             or after.get("usage", {}).get("Tokens", 0)
         )
-        assert after_tokens >= before_tokens
+        assert after_tokens > before_tokens
 
 
 @pytest.mark.p0
@@ -234,3 +231,24 @@ class TestUsageBudgetUnlimited:
         # Config-dependent — just verify the field exists and is numeric
         assert tokens_limit is not None
         assert isinstance(tokens_limit, (int, float))
+
+
+class TestUsageAccounting:
+    def test_cache_hit_does_not_increment_upstream_counters(self, client, collection_factory):
+        coll = collection_factory()
+        content = f"unique usage text for {coll['name']}"
+        baseline = client.get("/usage", params={"period": "total"}).json()["usage"]
+        path = f"/collections/{coll['name']}/documents"
+        first = client.put(f"{path}/first", json={"content": content})
+        assert first.status_code == 201
+        after_miss = client.get("/usage", params={"period": "total"}).json()["usage"]
+        assert after_miss["tokens"] > baseline["tokens"]
+        assert after_miss["embedding_requests"] >= baseline["embedding_requests"] + 1
+        assert "unknown_requests" in after_miss
+        second = client.put(f"{path}/second", json={"content": content})
+        assert second.status_code == 201
+        after_hit = client.get("/usage", params={"period": "total"}).json()["usage"]
+        # Health probes can add their own measured calls between snapshots.
+        assert second.headers["x-embedding-tokens"] == "0"
+        assert after_hit["tokens"] >= after_miss["tokens"]
+        assert after_hit["embedding_requests"] >= after_miss["embedding_requests"]

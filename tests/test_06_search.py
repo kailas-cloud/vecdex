@@ -364,3 +364,19 @@ class TestSearchMalformedBody:
             headers={"content-type": "application/json"},
         )
         assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("mode", ["semantic", "keyword", "hybrid"])
+def test_projection_preserves_unindexed_metadata(client, collection_factory, mode):
+    name = collection_factory(fields=[{"name": "priority", "type": "numeric"}])["name"]
+    base = f"/collections/{name}/documents"
+    created = client.put(f"{base}/metadata", json={
+        "content": "projectedmetadatakeep", "tags": {"not_indexed": "retained"}, "numerics": {"priority": 1.25},
+    })
+    assert created.status_code == 201, created.text
+    response = client.post(f"{base}/search", json={"query": "projectedmetadatakeep", "mode": mode, "include_vectors": False})
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["tags"]["not_indexed"] == "retained"
+    assert item["numerics"]["priority"] == 1.25
+    assert "vector" not in item

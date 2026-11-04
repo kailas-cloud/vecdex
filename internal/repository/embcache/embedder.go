@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
@@ -16,7 +17,7 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain"
 )
 
-var cacheKeyPrefix = domain.KeyPrefix + "emb_cache:"
+var cacheKeyPrefix = domain.KeyPrefix + "v2:emb_cache:"
 
 // store is the consumer interface for the embedding cache (ISP).
 type store interface {
@@ -26,6 +27,9 @@ type store interface {
 
 // CachedEmbedder caches embeddings in a key-value store.
 type CachedEmbedder struct {
+	ttl        time.Duration
+	dimensions int
+	namespace  string
 	inner      domain.Embedder
 	store      store
 	cacheTotal *prometheus.CounterVec
@@ -42,6 +46,7 @@ func New(
 ) *CachedEmbedder {
 	return &CachedEmbedder{
 		inner:      inner,
+		ttl:        7 * 24 * time.Hour,
 		store:      s,
 		cacheTotal: cacheTotal,
 		logger:     logger,
@@ -63,79 +68,30 @@ func (c *CachedEmbedder) Embed(ctx context.Context, text string) (domain.Embeddi
 
 	result, err := c.inner.Embed(ctx, text)
 	if err != nil {
-		return domain.EmbeddingResult{}, fmt.Errorf("embed text: %w", err)
+		return result, fmt.Errorf("embed text: %w", err)
 	}
 
+	if err := domain.ValidateVector(result.Embedding, c.dimensions); err != nil {
+		result.Embedding = nil
+		return result, fmt.Errorf("invalid embedding: %w", err)
+	}
 	c.putToCache(ctx, key, result.Embedding)
 	return result, nil
 }
 
-// BatchEmbed проверяет кеш для всех текстов, эмбедит только промахи, мержит результат.
-func (c *CachedEmbedder) BatchEmbed(ctx context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
-	if len(texts) == 0 {
-		return domain.BatchEmbeddingResult{}, nil
-	}
-
-	keys := make([]string, len(texts))
-	for i, t := range texts {
-		keys[i] = c.cacheKey(t)
-	}
-
-	embeddings, missTexts, missIdx := c.partitionByCache(ctx, texts, keys)
-
-	if len(missTexts) == 0 {
-		return domain.BatchEmbeddingResult{Embeddings: embeddings}, nil
-	}
-
-	missResult, err := c.embedMisses(ctx, missTexts)
-	if err != nil {
-		return domain.BatchEmbeddingResult{}, err
-	}
-
-	for j, idx := range missIdx {
-		embeddings[idx] = missResult.Embeddings[j]
-		c.putToCache(ctx, keys[idx], missResult.Embeddings[j])
-	}
-
-	return domain.BatchEmbeddingResult{
-		Embeddings:   embeddings,
-		PromptTokens: missResult.PromptTokens,
-		TotalTokens:  missResult.TotalTokens,
-	}, nil
-}
-
-// partitionByCache разделяет тексты на cache hits и misses.
-func (c *CachedEmbedder) partitionByCache(
-	ctx context.Context, texts, keys []string,
-) (embeddings [][]float32, missTexts []string, missIdx []int) {
-	embeddings = make([][]float32, len(texts))
-	for i, key := range keys {
-		if vec, ok := c.getFromCache(ctx, key); ok {
-			c.incCache("hit")
-			embeddings[i] = vec
-		} else {
-			c.incCache("miss")
-			missTexts = append(missTexts, texts[i])
-			missIdx = append(missIdx, i)
-		}
-	}
-	return embeddings, missTexts, missIdx
-}
-
-// embedMisses batch-эмбедит промахи через inner (или fallback на поштучный Embed).
 func (c *CachedEmbedder) embedMisses(
 	ctx context.Context, texts []string,
 ) (domain.BatchEmbeddingResult, error) {
 	if be, ok := c.inner.(domain.BatchEmbedder); ok {
 		res, err := be.BatchEmbed(ctx, texts)
 		if err != nil {
-			return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed misses: %w", err)
+			return res, fmt.Errorf("batch embed misses: %w", err)
 		}
 		return res, nil
 	}
 	res, err := domain.BatchFallback(ctx, c.inner, texts)
 	if err != nil {
-		return domain.BatchEmbeddingResult{}, fmt.Errorf("batch embed misses fallback: %w", err)
+		return res, fmt.Errorf("batch embed misses fallback: %w", err)
 	}
 	return res, nil
 }
@@ -147,7 +103,7 @@ func (c *CachedEmbedder) incCache(result string) {
 }
 
 func (c *CachedEmbedder) cacheKey(text string) string {
-	h := sha256.Sum256([]byte(text))
+	h := sha256.Sum256([]byte(c.namespace + "\x00" + text))
 	return cacheKeyPrefix + hex.EncodeToString(h[:])
 }
 
@@ -169,12 +125,23 @@ func (c *CachedEmbedder) getFromCache(ctx context.Context, key string) ([]float3
 		return nil, false
 	}
 
+	if err := domain.ValidateVector(vec, c.dimensions); err != nil {
+		return nil, false
+	}
 	return vec, true
 }
 
 func (c *CachedEmbedder) putToCache(ctx context.Context, key string, vec []float32) {
 	data := vectorToCacheBytes(vec)
-	if err := c.store.Set(ctx, key, data); err != nil {
+	var err error
+	if store, ok := c.store.(interface {
+		SetWithTTL(context.Context, string, []byte, time.Duration) error
+	}); ok {
+		err = store.SetWithTTL(ctx, key, data, c.ttl)
+	} else {
+		err = c.store.Set(ctx, key, data)
+	}
+	if err != nil {
 		c.logger.Warn("Failed to cache embedding", zap.String("key", key), zap.Error(err))
 	}
 }
@@ -196,4 +163,34 @@ func bytesToVector(data []byte) ([]float32, error) {
 		vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:]))
 	}
 	return vec, nil
+}
+
+// WithNamespace separates incompatible embedding spaces in the cache.
+func (c *CachedEmbedder) WithNamespace(namespace string) *CachedEmbedder {
+	c.namespace = namespace
+	return c
+}
+
+// HealthCheck forwards provider availability checks.
+func (c *CachedEmbedder) HealthCheck(ctx context.Context) error {
+	if h, ok := c.inner.(domain.HealthChecker); ok {
+		if err := h.HealthCheck(ctx); err != nil {
+			return fmt.Errorf("embedding health: %w", err)
+		}
+	}
+	return nil
+}
+
+// WithTTL sets cache retention; the default is seven days.
+func (c *CachedEmbedder) WithTTL(ttl time.Duration) *CachedEmbedder {
+	if ttl > 0 {
+		c.ttl = ttl
+	}
+	return c
+}
+
+// WithDimensions treats incompatible cached values as misses.
+func (c *CachedEmbedder) WithDimensions(dimensions int) *CachedEmbedder {
+	c.dimensions = dimensions
+	return c
 }

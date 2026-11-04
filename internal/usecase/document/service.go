@@ -9,10 +9,12 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
+	"github.com/kailas-cloud/vecdex/internal/usecase/ingestion"
 )
 
 // Service handles document CRUD with automatic vectorization.
 type Service struct {
+	embeddingSpace  string
 	repo            Repository
 	colls           CollectionReader
 	docEmbedder     Embedder
@@ -47,11 +49,17 @@ func (s *Service) WithPagination(defaultPageSize, maxPageSize int) *Service {
 // Upsert creates or updates a document with automatic vectorization.
 // Returns true if the document was created, false if updated.
 func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc.Document) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, ingestion.DocumentTimeout)
+	defer cancel()
 	col, err := s.colls.Get(ctx, collectionName)
 	if err != nil {
 		return false, fmt.Errorf("get collection: %w", err)
 	}
 
+	if err := col.CheckEmbeddingSpace(s.embeddingSpace); err != nil {
+		return false, fmt.Errorf("upsert embedding space: %w", err)
+	}
+	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
 	if err := s.validateDocFields(doc, col); err != nil {
 		return false, err
 	}
@@ -60,21 +68,14 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc
 		return false, fmt.Errorf("content is required: %w", domain.ErrInvalidSchema)
 	}
 
-	result, err := s.docEmbedder.Embed(ctx, doc.Content())
+	prepared, err := ingestion.Prepare(ctx, s.docEmbedder, doc.Content(), col.VectorDim())
+	domain.UsageFromContext(ctx).AddEmbedding(prepared.TotalTokens, prepared.UsageUnknown)
 	if err != nil {
-		return false, fmt.Errorf("vectorize document: %w", err)
+		return false, fmt.Errorf("prepare document: %w", err)
 	}
+	doc.SetVector(prepared.Vector)
+	doc.SetFragments(prepared.Fragments)
 
-	domain.UsageFromContext(ctx).AddTokens(result.TotalTokens)
-
-	if col.VectorDim() > 0 && len(result.Embedding) != col.VectorDim() {
-		return false, fmt.Errorf(
-			"vector dimension mismatch: got %d, want %d: %w",
-			len(result.Embedding), col.VectorDim(), domain.ErrVectorDimMismatch,
-		)
-	}
-
-	doc.SetVector(result.Embedding)
 	created, err := s.repo.Upsert(ctx, collectionName, doc)
 	if err != nil {
 		return false, fmt.Errorf("upsert document: %w", err)
@@ -85,10 +86,12 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc
 
 // Get retrieves a document by collection and ID.
 func (s *Service) Get(ctx context.Context, collectionName, id string) (domdoc.Document, error) {
-	if _, err := s.colls.Get(ctx, collectionName); err != nil {
+	col, err := s.colls.Get(ctx, collectionName)
+	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("get collection: %w", err)
 	}
 
+	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
 	doc, err := s.repo.Get(ctx, collectionName, id)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("get document: %w", err)
@@ -100,10 +103,12 @@ func (s *Service) Get(ctx context.Context, collectionName, id string) (domdoc.Do
 func (s *Service) List(
 	ctx context.Context, collectionName, cursor string, limit int,
 ) ([]domdoc.Document, string, error) {
-	if _, err := s.colls.Get(ctx, collectionName); err != nil {
+	col, err := s.colls.Get(ctx, collectionName)
+	if err != nil {
 		return nil, "", fmt.Errorf("get collection: %w", err)
 	}
 
+	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
 	if limit <= 0 {
 		limit = s.defaultPageSize
 	}
@@ -120,10 +125,12 @@ func (s *Service) List(
 
 // Delete removes a document.
 func (s *Service) Delete(ctx context.Context, collectionName, id string) error {
-	if _, err := s.colls.Get(ctx, collectionName); err != nil {
+	col, err := s.colls.Get(ctx, collectionName)
+	if err != nil {
 		return fmt.Errorf("get collection: %w", err)
 	}
 
+	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
 	if err := s.repo.Delete(ctx, collectionName, id); err != nil {
 		return fmt.Errorf("delete document: %w", err)
 	}
@@ -132,11 +139,14 @@ func (s *Service) Delete(ctx context.Context, collectionName, id string) error {
 
 // Patch applies a partial update to a document.
 func (s *Service) Patch(ctx context.Context, collectionName, id string, p patch.Patch) (domdoc.Document, error) {
+	ctx, cancel := context.WithTimeout(ctx, ingestion.DocumentTimeout)
+	defer cancel()
 	col, err := s.colls.Get(ctx, collectionName)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("get collection: %w", err)
 	}
 
+	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
 	// Validate patched fields against collection schema
 	if err := s.validatePatchFields(p, col); err != nil {
 		return domdoc.Document{}, err
@@ -144,16 +154,21 @@ func (s *Service) Patch(ctx context.Context, collectionName, id string, p patch.
 
 	// Re-vectorize when content changes.
 	var newVector []float32
+	var fragments []domdoc.Fragment
 	if p.HasContent() {
-		result, embedErr := s.docEmbedder.Embed(ctx, *p.Content())
-		if embedErr != nil {
-			return domdoc.Document{}, fmt.Errorf("vectorize updated content: %w", embedErr)
+		if err := col.CheckEmbeddingSpace(s.embeddingSpace); err != nil {
+			return domdoc.Document{}, fmt.Errorf("patch embedding space: %w", err)
 		}
-		newVector = result.Embedding
-		domain.UsageFromContext(ctx).AddTokens(result.TotalTokens)
+		prepared, err := ingestion.Prepare(ctx, s.docEmbedder, *p.Content(), col.VectorDim())
+		domain.UsageFromContext(ctx).AddEmbedding(prepared.TotalTokens, prepared.UsageUnknown)
+		if err != nil {
+			return domdoc.Document{}, fmt.Errorf("prepare updated document: %w", err)
+		}
+		newVector = prepared.Vector
+		fragments = prepared.Fragments
 	}
 
-	if err := s.repo.Patch(ctx, collectionName, id, p, newVector); err != nil {
+	if err := s.repo.Patch(ctx, collectionName, id, p, newVector, fragments); err != nil {
 		return domdoc.Document{}, fmt.Errorf("patch document: %w", err)
 	}
 
@@ -167,9 +182,11 @@ func (s *Service) Patch(ctx context.Context, collectionName, id string, p patch.
 
 // Count returns the number of documents in a collection.
 func (s *Service) Count(ctx context.Context, collectionName string) (int, error) {
-	if _, err := s.colls.Get(ctx, collectionName); err != nil {
+	col, err := s.colls.Get(ctx, collectionName)
+	if err != nil {
 		return 0, fmt.Errorf("get collection: %w", err)
 	}
+	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
 	count, err := s.repo.Count(ctx, collectionName)
 	if err != nil {
 		return 0, fmt.Errorf("count documents: %w", err)
@@ -207,6 +224,9 @@ func validateSchemaFields(
 	}
 
 	for _, k := range tagKeys {
+		if field.IsInternalName(k) {
+			return fmt.Errorf("field %q is reserved: %w", k, domain.ErrInvalidSchema)
+		}
 		ft, ok := fieldTypes[k]
 		if !ok {
 			continue // stored (non-indexed) field, allowed
@@ -220,6 +240,9 @@ func validateSchemaFields(
 	}
 
 	for _, k := range numericKeys {
+		if field.IsInternalName(k) {
+			return fmt.Errorf("field %q is reserved: %w", k, domain.ErrInvalidSchema)
+		}
 		ft, ok := fieldTypes[k]
 		if !ok {
 			return fmt.Errorf(
@@ -268,4 +291,10 @@ func keysPtrFloat(m map[string]*float64) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// WithEmbeddingSpace binds vector operations to the configured embedding space.
+func (s *Service) WithEmbeddingSpace(fingerprint string) *Service {
+	s.embeddingSpace = fingerprint
+	return s
 }

@@ -28,6 +28,9 @@ func (s *Store) SearchKNN(ctx context.Context, q *db.KNNQuery) (*db.SearchResult
 	}
 
 	filterStr := buildFilter(q.Filters)
+	if q.ExcludeParentID != "" {
+		filterStr = strings.TrimSpace(filterStr + " -" + buildTagFilter("__parent_id", q.ExcludeParentID))
+	}
 
 	knnPart := fmt.Sprintf("[KNN %d @vector $BLOB]", q.K)
 	var queryStr string
@@ -152,6 +155,9 @@ func (s *Store) SearchCount(ctx context.Context, index, query string) (int, erro
 func (s *Store) scanList(
 	ctx context.Context, index string, offset, limit int, _ []string,
 ) (*db.SearchResult, error) {
+	if offset < 0 || limit < 0 {
+		return nil, fmt.Errorf("invalid pagination bounds")
+	}
 	prefix := indexToKeyPrefix(index)
 	keys, err := s.Scan(ctx, prefix+"*")
 	if err != nil {
@@ -165,7 +171,10 @@ func (s *Store) scanList(
 		return &db.SearchResult{Total: total}, nil
 	}
 
-	end := offset + limit
+	end := total
+	if limit < total-offset {
+		end = offset + limit
+	}
 	if end > total {
 		end = total
 	}
@@ -198,6 +207,9 @@ func (s *Store) scanCount(ctx context.Context, index string) (int, error) {
 // indexToKeyPrefix converts index name to a SCAN prefix.
 // "vecdex:myCollection:idx" -> "vecdex:myCollection:"
 func indexToKeyPrefix(index string) string {
+	if strings.HasPrefix(index, "vecdex:v2:") && strings.HasSuffix(index, ":index") {
+		return strings.TrimSuffix(index, ":index") + ":doc:"
+	}
 	if strings.HasSuffix(index, ":idx") {
 		return index[:len(index)-3]
 	}

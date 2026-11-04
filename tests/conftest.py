@@ -27,7 +27,7 @@ def client() -> httpx.Client:
     c = httpx.Client(
         base_url=VECDEX_BASE_URL,
         headers={"Authorization": f"Bearer {VECDEX_API_KEY}"},
-        timeout=30.0,
+        timeout=330.0,
     )
     yield c
     c.close()
@@ -36,7 +36,7 @@ def client() -> httpx.Client:
 @pytest.fixture(scope="session")
 def raw_client() -> httpx.Client:
     """Unauthenticated httpx client for 401 tests."""
-    c = httpx.Client(base_url=VECDEX_BASE_URL, timeout=30.0)
+    c = httpx.Client(base_url=VECDEX_BASE_URL, timeout=330.0)
     yield c
     c.close()
 
@@ -44,7 +44,7 @@ def raw_client() -> httpx.Client:
 @pytest.fixture(scope="session")
 def health_client() -> httpx.Client:
     """Client without /api/v1 prefix for /health and /metrics."""
-    c = httpx.Client(base_url=VECDEX_BASE_URL, timeout=30.0)
+    c = httpx.Client(base_url=VECDEX_BASE_URL, timeout=330.0)
     yield c
     c.close()
 

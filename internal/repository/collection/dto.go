@@ -17,6 +17,9 @@ type fieldRow struct {
 
 // collectionToHash converts a domain Collection to a map for HSET.
 func collectionToHash(col collection.Collection) (map[string]string, error) {
+	if col.Generation() == "" {
+		return nil, fmt.Errorf("collection generation is required")
+	}
 	rows := make([]fieldRow, len(col.Fields()))
 	for i, f := range col.Fields() {
 		rows[i] = fieldRow{Name: f.Name(), Type: string(f.FieldType())}
@@ -27,6 +30,9 @@ func collectionToHash(col collection.Collection) (map[string]string, error) {
 	}
 	return map[string]string{
 		"name":            col.Name(),
+		"generation":      col.Generation(),
+		"embedding_space": col.EmbeddingSpace(),
+		"state":           "active",
 		"type":            "json",
 		"collection_type": string(col.Type()),
 		"fields_json":     string(fieldsJSON),
@@ -38,6 +44,9 @@ func collectionToHash(col collection.Collection) (map[string]string, error) {
 
 // collectionFromHash hydrates a domain Collection from an HGETALL result map.
 func collectionFromHash(m map[string]string, defaultVectorDim int) (collection.Collection, error) {
+	if m["generation"] == "" {
+		return collection.Collection{}, fmt.Errorf("collection generation is missing; recreate this test collection")
+	}
 	name := m["name"]
 	createdAtStr := m["created_at"]
 	fieldsJSON := m["fields_json"]
@@ -74,5 +83,7 @@ func collectionFromHash(m map[string]string, defaultVectorDim int) (collection.C
 	}
 
 	colType := collection.Type(m["collection_type"])
-	return collection.Reconstruct(name, colType, fields, vectorDim, createdAt, revision), nil
+	return collection.Reconstruct(name, colType, fields, vectorDim, createdAt, revision).
+			WithGeneration(m["generation"]).WithEmbeddingSpace(m["embedding_space"]),
+		nil
 }

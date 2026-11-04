@@ -1,10 +1,12 @@
 package collection
 
 import (
+	"crypto/rand"
 	"fmt"
 	"regexp"
 	"time"
 
+	"github.com/kailas-cloud/vecdex/internal/domain"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 )
 
@@ -35,6 +37,7 @@ func (t Type) IsValid() bool {
 // Collection is the document collection aggregate (immutable value object).
 type Collection struct {
 	name           string
+	identity       *collectionIdentity
 	collectionType Type
 	fields         []field.Field
 	vectorDim      int
@@ -97,6 +100,7 @@ func New(name string, colType Type, fields []field.Field, vectorDim int) (Collec
 		fields:         fields,
 		vectorDim:      vectorDim,
 		createdAt:      time.Now().UnixMilli(),
+		identity:       &collectionIdentity{generation: rand.Text()},
 		revision:       1,
 	}, nil
 }
@@ -184,4 +188,45 @@ func SystemFieldByName(name string) (field.Field, bool) {
 func IsSystemField(name string) bool {
 	_, ok := SystemFieldByName(name)
 	return ok
+}
+
+type collectionIdentity struct{ generation, embeddingSpace string }
+
+// Generation identifies this incarnation independently of its public name.
+func (c Collection) Generation() string {
+	if c.identity == nil {
+		return ""
+	}
+	return c.identity.generation
+}
+
+// WithGeneration restores the persisted identity during hydration.
+func (c Collection) WithGeneration(generation string) Collection {
+	identity := collectionIdentity{generation: generation, embeddingSpace: c.EmbeddingSpace()}
+	c.identity = &identity
+	return c
+}
+
+// EmbeddingSpace identifies the vectorizer configuration used by this collection.
+func (c Collection) EmbeddingSpace() string {
+	if c.identity == nil {
+		return ""
+	}
+	return c.identity.embeddingSpace
+}
+
+// WithEmbeddingSpace binds a new collection or restores its persisted vectorizer identity.
+func (c Collection) WithEmbeddingSpace(fingerprint string) Collection {
+	identity := collectionIdentity{generation: c.Generation(), embeddingSpace: fingerprint}
+	c.identity = &identity
+	return c
+}
+
+// CheckEmbeddingSpace prevents mixing incompatible vectors. An empty expected
+// identity supports embedded clients that supply their own embedder.
+func (c Collection) CheckEmbeddingSpace(expected string) error {
+	if expected != "" && c.EmbeddingSpace() != expected {
+		return domain.ErrEmbeddingSpaceMismatch
+	}
+	return nil
 }

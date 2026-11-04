@@ -541,7 +541,10 @@ func TestClient_Usage(t *testing.T) {
 	}
 
 	c := &Client{usageSvc: mock}
-	report := c.Usage(context.Background(), PeriodDay)
+	report, err := c.Usage(context.Background(), PeriodDay)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if report.Period != PeriodDay {
 		t.Errorf("Period = %q, want day", report.Period)

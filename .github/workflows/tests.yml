@@ -9,6 +9,7 @@ on:
       - 'go.sum'
       - 'Dockerfile'
       - 'config/**'
+      - 'api/**'
       - 'models/**'
       - 'tests/**'
       - '.gitattributes'
@@ -22,6 +23,7 @@ on:
       - 'go.sum'
       - 'Dockerfile'
       - 'config/**'
+      - 'api/**'
       - 'models/**'
       - 'tests/**'
       - '.gitattributes'
@@ -38,12 +40,12 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.25.7'
+          go-version: '1.27.3'
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
-          version: v2.8.0
+          version: v2.15.0
           args: --timeout=5m
 
   unit-tests:
@@ -60,9 +62,23 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.25.7'
+          go-version: '1.27.3'
+
+      - name: Start Valkey for native storage regressions
+        run: |
+          docker run -d --name vecdex-unit-valkey -p 127.0.0.1:16379:6379 \
+            valkey/valkey-bundle:9.1.2@sha256:1c39295cd8e3a34fc33fb46de235cf5e7bad530525b1a697eaf9f49e1c42747c \
+            --protected-mode no
+          for valkey_attempt in {1..30}; do
+            if docker exec vecdex-unit-valkey valkey-cli ping | grep -q PONG; then exit 0; fi
+            sleep 1
+          done
+          docker logs vecdex-unit-valkey
+          exit 1
 
       - name: Run unit tests with coverage
+        env:
+          VECDEX_TEST_VALKEY_ADDR: 127.0.0.1:16379
         run: go test $(go list ./... | grep -v /examples/) -short -coverprofile=coverage.out -covermode=atomic
 
       - name: Convert coverage to Cobertura
@@ -90,6 +106,10 @@ jobs:
         with:
           file-path: .coverage-report.md
           comment-tag: coverage-report
+
+      - name: Cleanup native storage fixture
+        if: always()
+        run: docker rm -f vecdex-unit-valkey
 
   e2e-pytest:
     runs-on: ubuntu-latest
@@ -138,3 +158,26 @@ jobs:
         if: always()
         working-directory: ./tests
         run: docker compose --profile valkey-onnx down -v
+
+  e2e-pytest-bedrock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Run pytest E2E (Bedrock TLS mock, two replicas)
+        working-directory: ./tests
+        run: |
+          docker compose --profile valkey-bedrock up \
+            --build --abort-on-container-exit \
+            --exit-code-from pytest-valkey-bedrock
+
+      - name: Show logs on failure
+        if: failure()
+        working-directory: ./tests
+        run: docker compose --profile valkey-bedrock logs
+
+      - name: Cleanup
+        if: always()
+        working-directory: ./tests
+        run: docker compose --profile valkey-bedrock down -v

@@ -1,11 +1,13 @@
 package onnx
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kailas-cloud/vecdex/internal/domain"
 	hftokenizer "github.com/sugarme/tokenizer"
 )
 
@@ -273,4 +275,18 @@ func writeTestModelDir(t *testing.T) string {
 		t.Fatalf("write model: %v", err)
 	}
 	return modelDir
+}
+
+func TestRealTokenizerRejectsOverflow(t *testing.T) {
+	tokenizer, err := loadTokenizer("../../../models/all-MiniLM-L6-v2/tokenizer.json", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = encodeTexts(tokenizer, []string{strings.Repeat("hello world ", 20)})
+	if !errors.Is(err, domain.ErrEmbeddingInputTooLong) {
+		t.Fatalf("truncated input was accepted: %v", err)
+	}
+	if _, err := encodeTexts(tokenizer, []string{"hello"}); err != nil {
+		t.Fatal(err)
+	}
 }

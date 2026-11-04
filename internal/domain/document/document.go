@@ -15,12 +15,13 @@ const MaxContentSize = 163840 // 160KB
 
 // Document is the document aggregate (immutable value object).
 type Document struct {
-	id       string
-	content  string
-	tags     map[string]string
-	numerics map[string]float64
-	vector   []float32
-	revision int
+	id        string
+	content   string
+	tags      map[string]string
+	numerics  map[string]float64
+	vector    []float32
+	revision  int
+	fragments *[]Fragment
 }
 
 // New validates and creates a Document.
@@ -81,10 +82,9 @@ func (d *Document) Revision() int { return d.revision }
 
 // WithVector returns a copy with the given vector set.
 func (d *Document) WithVector(v []float32) Document {
-	return Document{
-		id: d.id, content: d.content, tags: d.tags, numerics: d.numerics,
-		vector: v, revision: d.revision,
-	}
+	updated := *d
+	updated.vector = v
+	return updated
 }
 
 // SetVector sets the vector in place (mutation).
@@ -111,3 +111,23 @@ func cloneFloat64Map(m map[string]float64) map[string]float64 {
 	}
 	return c
 }
+
+// SetRevision sets the revision returned by an atomic storage commit.
+func (d *Document) SetRevision(revision int) { d.revision = revision }
+
+// Fragment is one exact source span with its document embedding.
+type Fragment struct {
+	Content string
+	Vector  []float32
+}
+
+// Fragments returns prepared search spans; a normal document contains one.
+func (d *Document) Fragments() []Fragment {
+	if d.fragments == nil {
+		return nil
+	}
+	return *d.fragments
+}
+
+// SetFragments attaches a complete preparation result before atomic replacement.
+func (d *Document) SetFragments(parts []Fragment) { d.fragments = &parts }

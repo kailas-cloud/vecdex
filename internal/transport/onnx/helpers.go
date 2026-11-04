@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/kailas-cloud/vecdex/internal/domain"
 	hftokenizer "github.com/sugarme/tokenizer"
 	"github.com/sugarme/tokenizer/pretrained"
 )
@@ -126,6 +127,9 @@ func flattenEncodings(encodings []hftokenizer.Encoding) (encodedBatch, error) {
 
 	for i := range encodings {
 		encoding := &encodings[i]
+		if len(encoding.Overflowing) > 0 {
+			return encodedBatch{}, fmt.Errorf("onnx input truncated: %w", domain.ErrEmbeddingInputTooLong)
+		}
 		if len(encoding.Ids) != seqLen || len(encoding.AttentionMask) != seqLen {
 			return encodedBatch{}, fmt.Errorf("encoding %d has inconsistent sequence length", i)
 		}

@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	domusage "github.com/kailas-cloud/vecdex/internal/domain/usage"
+	"go.uber.org/zap"
 )
 
 // Embedder is a stub used when CGO is disabled.
@@ -14,6 +16,8 @@ type Embedder struct{}
 
 // Config holds the ONNX embedding provider settings.
 type Config struct {
+	Observer          domusage.InvocationObserver
+	Logger            *zap.Logger
 	ModelDir          string
 	Model             string
 	Dimensions        int

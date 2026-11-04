@@ -33,7 +33,7 @@ func (s *Store) Set(ctx context.Context, key string, value []byte) error {
 
 // SetWithTTL stores a value with an expiration.
 func (s *Store) SetWithTTL(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	cmd := s.b().Set().Key(key).Value(string(value)).Ex(ttl).Build()
+	cmd := s.b().Set().Key(key).Value(string(value)).Px(ttl).Build()
 	if err := s.do(ctx, cmd).Error(); err != nil {
 		return &db.Error{Op: db.OpSet, Err: err}
 	}

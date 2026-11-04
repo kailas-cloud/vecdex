@@ -1,7 +1,7 @@
 services:
   valkey:
-    image: valkey/valkey-bundle:unstable
-    profiles: [valkey, valkey-onnx]
+    image: valkey/valkey-bundle:9.1.2@sha256:1c39295cd8e3a34fc33fb46de235cf5e7bad530525b1a697eaf9f49e1c42747c
+    profiles: [valkey, valkey-onnx, valkey-bedrock]
     command: ["--protected-mode", "no", "--appendonly", "yes"]
     volumes:
       - valkey-data-tests:/data
@@ -44,6 +44,13 @@ services:
       retries: 15
       start_period: 5s
 
+  vecdex-incompatible:
+    extends:
+      service: vecdex-valkey
+    profiles: [valkey]
+    volumes:
+      - ./config/incompatible.yaml:/app/config/docker.yaml:ro
+
   pytest-valkey:
     profiles: [valkey]
     build:
@@ -51,9 +58,12 @@ services:
       dockerfile: Dockerfile.pytest
     environment:
       - VECDEX_BASE_URL=http://vecdex-valkey:8080
+      - VECDEX_INCOMPATIBLE_URL=http://vecdex-incompatible:8080
       - VECDEX_API_KEY=test-api-key
     depends_on:
       vecdex-valkey:
+        condition: service_healthy
+      vecdex-incompatible:
         condition: service_healthy
     volumes:
       - ./reports:/reports
@@ -87,11 +97,82 @@ services:
       - VECDEX_BASE_URL=http://vecdex-valkey-onnx:8080
       - VECDEX_API_KEY=test-api-key
       - VECDEX_VECTOR_DIM=384
+      - VECDEX_EMBEDDING_BACKEND=onnx
     depends_on:
       vecdex-valkey-onnx:
         condition: service_healthy
     volumes:
       - ./reports:/reports
 
+  mock-bedrock:
+    profiles: [valkey-bedrock]
+    build:
+      context: ./mock_embedder
+      dockerfile: Dockerfile
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "443", "--ssl-certfile", "/app/testdata/mock-bedrock.pem", "--ssl-keyfile", "/app/testdata/mock-bedrock-key.pem"]
+    networks:
+      default:
+        aliases: [bedrock-runtime.us-east-1.amazonaws.com]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 443), 1).close()"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  vecdex-valkey-bedrock:
+    profiles: [valkey-bedrock]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        ONNXRUNTIME_VERSION: ${ONNXRUNTIME_VERSION:-1.24.4}
+    environment:
+      - ENV=docker
+      - SSL_CERT_FILE=/app/test-certs/mock-bedrock.pem
+      - NO_PROXY=bedrock-runtime.us-east-1.amazonaws.com,valkey,localhost,127.0.0.1
+    volumes:
+      - ./config/bedrock.yaml:/app/config/docker.yaml:ro
+      - ./mock_embedder/testdata/mock-bedrock.pem:/app/test-certs/mock-bedrock.pem:ro
+    depends_on:
+      valkey:
+        condition: service_healthy
+      mock-bedrock:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  vecdex-bedrock-peer:
+    extends:
+      service: vecdex-valkey-bedrock
+    profiles: [valkey-bedrock]
+
+  pytest-valkey-bedrock:
+    profiles: [valkey-bedrock]
+    build:
+      context: .
+      dockerfile: Dockerfile.pytest
+    environment:
+      - VECDEX_BASE_URL=http://vecdex-valkey-bedrock:8080
+      - VECDEX_PEER_URL=http://vecdex-bedrock-peer:8080
+      - VECDEX_API_KEY=test-api-key
+      - VECDEX_BEDROCK_MOCK_URL=https://bedrock-runtime.us-east-1.amazonaws.com
+      - SSL_CERT_FILE=/tests/mock_embedder/testdata/mock-bedrock.pem
+      - NO_PROXY=bedrock-runtime.us-east-1.amazonaws.com,vecdex-valkey-bedrock,vecdex-bedrock-peer,localhost,127.0.0.1
+    depends_on:
+      vecdex-valkey-bedrock:
+        condition: service_healthy
+      vecdex-bedrock-peer:
+        condition: service_healthy
+    volumes:
+      - ./reports:/reports
+
 volumes:
   valkey-data-tests:
+
+networks:
+  default:
+    internal: true

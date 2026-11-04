@@ -13,6 +13,7 @@ const testVectorDim = 1024
 
 // mockStore implements the consumer interface for tests.
 type mockStore struct {
+	mutateFn           func(context.Context, *db.HashMutation) (db.HashMutationResult, error)
 	hsetFn             func(ctx context.Context, key string, fields map[string]string) error
 	hgetAllFn          func(ctx context.Context, key string) (map[string]string, error)
 	hgetAllMultiFn     func(ctx context.Context, keys []string) ([]map[string]string, error)
@@ -111,5 +112,12 @@ func testCollection(t *testing.T) domcol.Collection {
 		1024,
 		1700000000000,
 		1,
-	)
+	).WithGeneration("fixture")
+}
+
+func (m *mockStore) MutateHash(ctx context.Context, mutation *db.HashMutation) (db.HashMutationResult, error) {
+	if m.mutateFn != nil {
+		return m.mutateFn(ctx, mutation)
+	}
+	return db.HashMutationResult{Revision: 1, Created: true}, nil
 }

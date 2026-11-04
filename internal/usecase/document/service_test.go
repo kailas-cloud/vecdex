@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
@@ -40,7 +41,7 @@ func (m *mockDocRepo) List(_ context.Context, _, _ string, _ int) ([]domdoc.Docu
 func (m *mockDocRepo) Delete(_ context.Context, _, _ string) error {
 	return m.deleteErr
 }
-func (m *mockDocRepo) Patch(_ context.Context, _, _ string, _ patch.Patch, _ []float32) error {
+func (m *mockDocRepo) Patch(_ context.Context, _, _ string, _ patch.Patch, _ []float32, _ []domdoc.Fragment) error {
 	return m.patchErr
 }
 func (m *mockDocRepo) Count(_ context.Context, _ string) (int, error) {
@@ -57,11 +58,15 @@ func (m *mockCollReader) Get(_ context.Context, _ string) (domcol.Collection, er
 }
 
 type mockEmbedder struct {
-	result domain.EmbeddingResult
-	err    error
+	observeContext func(context.Context)
+	result         domain.EmbeddingResult
+	err            error
 }
 
-func (m *mockEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResult, error) {
+func (m *mockEmbedder) Embed(ctx context.Context, _ string) (domain.EmbeddingResult, error) {
+	if m.observeContext != nil {
+		m.observeContext(ctx)
+	}
 	if m.err != nil {
 		return domain.EmbeddingResult{}, m.err
 	}
@@ -477,5 +482,43 @@ func TestCount_CollectionNotFound(t *testing.T) {
 	_, err := svc.Count(context.Background(), "nonexistent")
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestReservedFieldsRejectedOnUpsertAndPatch(t *testing.T) {
+	svc := New(&mockDocRepo{}, &mockCollReader{col: makeCollection(t, nil)}, &mockEmbedder{}, &mockEmbedder{})
+	for _, key := range []string{"__content", "__vector", "__revision", "__n:priority"} {
+		doc := makeDocWithTags(t, "doc", "text", map[string]string{key: "overwrite"})
+		if _, err := svc.Upsert(context.Background(), "test-col", &doc); !errors.Is(err, domain.ErrInvalidSchema) {
+			t.Fatalf("upsert %s: %v", key, err)
+		}
+		p, _ := patch.New(nil, map[string]*string{key: nil}, nil)
+		if _, err := svc.Patch(context.Background(), "test-col", "doc", p); !errors.Is(err, domain.ErrInvalidSchema) {
+			t.Fatalf("patch %s: %v", key, err)
+		}
+	}
+}
+
+func TestIngestionDeadlineReachesProvider(t *testing.T) {
+	for _, callerTimeout := range []time.Duration{time.Hour, time.Second} {
+		ctx, cancel := context.WithTimeout(context.Background(), callerTimeout)
+		parentDeadline, _ := ctx.Deadline()
+		start := time.Now()
+		observed := false
+		embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{1, 0, 0}}}
+		embed.observeContext = func(ctx context.Context) {
+			observed = true
+			deadline, ok := ctx.Deadline()
+			if !ok || deadline.After(start.Add(121*time.Second)) || deadline.After(parentDeadline) {
+				t.Fatalf("missing or extended deadline: %v", deadline)
+			}
+		}
+		svc := New(&mockDocRepo{}, &mockCollReader{col: makeCollection(t, nil)}, embed, embed)
+		doc := makeDoc(t, "deadline", "complete source")
+		_, err := svc.Upsert(ctx, "test-col", &doc)
+		cancel()
+		if err != nil || !observed {
+			t.Fatalf("provider not reached: %v", err)
+		}
 	}
 }

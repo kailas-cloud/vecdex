@@ -2,6 +2,7 @@ package metrics
 
 // Metrics holds embedding API usage for a time period.
 type Metrics struct {
+	unknownRequests   int
 	embeddingRequests int
 	tokens            int
 	costMillidollars  int
@@ -20,3 +21,9 @@ func (m Metrics) Tokens() int { return m.tokens }
 
 // CostMillidollars returns cost in millicents (1 USD = 1000).
 func (m Metrics) CostMillidollars() int { return m.costMillidollars }
+
+// WithUnknownRequests includes calls whose usage could not be measured.
+func (m Metrics) WithUnknownRequests(count int) Metrics { m.unknownRequests = count; return m }
+
+// UnknownRequests counts invocations with unknown usage; Tokens is a lower bound if nonzero.
+func (m Metrics) UnknownRequests() int { return m.unknownRequests }

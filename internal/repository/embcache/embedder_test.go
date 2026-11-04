@@ -218,3 +218,40 @@ func TestBatchEmbed_Empty(t *testing.T) {
 		t.Errorf("expected nil for empty input")
 	}
 }
+
+func TestCacheNamespaceSeparatesEmbeddingSpaces(t *testing.T) {
+	ce, _ := newTestCachedEmbedder(t, &mockEmbedder{})
+	keys := map[string]bool{}
+	namespaces := []string{
+		"bedrock|v4|1024|document", "bedrock|v4|1024|query",
+		"bedrock|v4|1536|document", "openai|other|1024|document",
+	}
+	for _, namespace := range namespaces {
+		key := ce.WithNamespace(namespace).cacheKey("same text")
+		if keys[key] {
+			t.Fatal("embedding spaces share cache key")
+		}
+		keys[key] = true
+	}
+}
+
+func TestPartialBatchKeepsCachedAndMissVectorOrder(t *testing.T) {
+	inner := &mockEmbedder{
+		batchResult: domain.BatchEmbeddingResult{Embeddings: [][]float32{{2, 2}}, TotalTokens: 3},
+		batchErr:    domain.ErrEmbeddingInputTooLong,
+	}
+	cached, store := newTestCachedEmbedder(t, inner)
+	store.getFn = func(_ context.Context, key string) ([]byte, error) {
+		if key == cached.cacheKey("cached") {
+			return vectorToCacheBytes([]float32{1, 1}), nil
+		}
+		return nil, db.ErrKeyNotFound
+	}
+	result, err := cached.BatchEmbed(context.Background(), []string{"cached", "completed miss", "failed miss"})
+	if !errors.Is(err, domain.ErrEmbeddingInputTooLong) || len(result.Embeddings) != 2 ||
+		result.Embeddings[0][0] != 1 ||
+		result.Embeddings[1][0] != 2 ||
+		result.TotalTokens != 3 {
+		t.Fatalf("result %+v err %v", result, err)
+	}
+}

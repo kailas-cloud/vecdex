@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
@@ -16,11 +17,15 @@ import (
 // --- Mocks ---
 
 type mockDocUpserter struct {
+	fn        func(*domdoc.Document) (bool, error)
 	upsertErr error
 	callCount int
 }
 
-func (m *mockDocUpserter) Upsert(_ context.Context, _ string, _ *domdoc.Document) (bool, error) {
+func (m *mockDocUpserter) Upsert(_ context.Context, _ string, doc *domdoc.Document) (bool, error) {
+	if m.fn != nil {
+		return m.fn(doc)
+	}
 	m.callCount++
 	return true, m.upsertErr
 }
@@ -62,10 +67,12 @@ func (m *mockCollReader) Get(_ context.Context, _ string) (domcol.Collection, er
 }
 
 type mockEmbedder struct {
-	result    domain.EmbeddingResult
-	err       error
-	callCount int
-	failAfter int // fail after N successful calls; 0=always succeed (unless err set)
+	observeContext func(context.Context)
+	fn             func(string) (domain.EmbeddingResult, error)
+	result         domain.EmbeddingResult
+	err            error
+	callCount      int
+	failAfter      int // fail after N successful calls; 0=always succeed (unless err set)
 
 	// Batch support
 	batchResult domain.BatchEmbeddingResult
@@ -73,7 +80,10 @@ type mockEmbedder struct {
 	batchCalls  int
 }
 
-func (m *mockEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResult, error) {
+func (m *mockEmbedder) Embed(_ context.Context, text string) (domain.EmbeddingResult, error) {
+	if m.fn != nil {
+		return m.fn(text)
+	}
 	m.callCount++
 	if m.failAfter > 0 && m.callCount > m.failAfter {
 		return domain.EmbeddingResult{}, m.err
@@ -84,10 +94,13 @@ func (m *mockEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResul
 	return m.result, nil
 }
 
-func (m *mockEmbedder) BatchEmbed(_ context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
+func (m *mockEmbedder) BatchEmbed(ctx context.Context, texts []string) (domain.BatchEmbeddingResult, error) {
+	if m.observeContext != nil {
+		m.observeContext(ctx)
+	}
 	m.batchCalls++
 	if m.batchErr != nil {
-		return domain.BatchEmbeddingResult{}, m.batchErr
+		return m.batchResult, m.batchErr
 	}
 	if m.batchResult.Embeddings != nil {
 		return m.batchResult, nil
@@ -498,5 +511,118 @@ func TestUpsert_AllValidEmbedded(t *testing.T) {
 	// BatchEmbed вызван с 3 текстами (все валидные)
 	if embed.batchCalls != 1 {
 		t.Errorf("expected 1 batch call, got %d", embed.batchCalls)
+	}
+}
+
+func TestBatchRejectsMalformedVectorsBeforeWriting(t *testing.T) {
+	for _, vectors := range [][][]float32{{{1, 2, 3}}, {{1}, {1, 2, 3}}} {
+		repo := &mockBatchUpserter{}
+		embed := &mockEmbedder{batchResult: domain.BatchEmbeddingResult{Embeddings: vectors}}
+		svc := New(
+			&mockDocUpserter{},
+			repo,
+			&mockDocDeleter{},
+			&mockCollReader{col: makeCollection(t, nil)},
+			embed,
+			embed,
+		)
+		results := svc.Upsert(context.Background(), "test-col", []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")})
+		for _, result := range results {
+			if result.Err() == nil {
+				t.Fatal("invalid embedding accepted")
+			}
+		}
+	}
+}
+
+func TestContextFallbackAndPerParentWriteErrors(t *testing.T) {
+	stored := map[string]int{}
+	repo := &mockDocUpserter{fn: func(doc *domdoc.Document) (bool, error) {
+		if doc.ID() == "writefail" {
+			return false, errors.New("write failed")
+		}
+		stored[doc.ID()] = len(doc.Fragments())
+		return true, nil
+	}}
+	embed := &mockEmbedder{
+		batchErr: domain.ErrEmbeddingInputTooLong,
+		fn: func(text string) (domain.EmbeddingResult, error) {
+			if len(text) > 8 {
+				return domain.EmbeddingResult{}, domain.ErrEmbeddingInputTooLong
+			}
+			if text == "bad" {
+				return domain.EmbeddingResult{}, domain.ErrEmbeddingProviderError
+			}
+			return domain.EmbeddingResult{Embedding: []float32{1, 0, 0}}, nil
+		},
+	}
+	svc := New(
+		repo,
+		&mockBatchUpserter{},
+		&mockDocDeleter{},
+		&mockCollReader{col: makeCollection(t, nil)},
+		embed,
+		embed,
+	)
+	large, _ := domdoc.New("large", "long text that requires splitting", nil, nil)
+	small, _ := domdoc.New("small", "okay", nil, nil)
+	bad, _ := domdoc.New("bad", "bad", nil, nil)
+	writefail, _ := domdoc.New("writefail", "okay", nil, nil)
+	results := svc.Upsert(context.Background(), "test-col", []domdoc.Document{large, small, bad, writefail})
+	if results[0].Err() != nil || results[1].Err() != nil || results[2].Err() == nil || results[3].Err() == nil {
+		t.Fatalf("results %+v", results)
+	}
+	if stored["large"] < 2 || stored["small"] != 1 || len(stored) != 2 {
+		t.Fatalf("stored %+v", stored)
+	}
+}
+
+func TestBatchDeadlineReachesProvider(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	observed := false
+	start := time.Now()
+	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{1, 0, 0}}}
+	embed.observeContext = func(ctx context.Context) {
+		observed = true
+		deadline, ok := ctx.Deadline()
+		if !ok || deadline.After(start.Add(301*time.Second)) {
+			t.Fatalf("missing batch deadline: %v", deadline)
+		}
+	}
+	svc := New(
+		&mockDocUpserter{},
+		&mockBatchUpserter{},
+		&mockDocDeleter{},
+		&mockCollReader{col: makeCollection(t, nil)},
+		embed,
+		embed,
+	)
+	results := svc.Upsert(ctx, "test-col", []domdoc.Document{makeDoc(t, "deadline")})
+	if !observed || len(results) != 1 || results[0].Err() != nil {
+		t.Fatalf("batch provider not reached: %v", results)
+	}
+}
+
+func TestUpsertKeepsCompletedEmbeddingPrefixOnLaterFailure(t *testing.T) {
+	docs := &mockDocUpserter{}
+	embed := &mockEmbedder{batchResult: domain.BatchEmbeddingResult{Embeddings: [][]float32{{1, 0, 0}}, TotalTokens: 7},
+		batchErr: domain.ErrEmbeddingProviderError}
+	service := New(
+		docs,
+		&mockBatchUpserter{},
+		&mockDocDeleter{},
+		&mockCollReader{col: makeCollection(t, nil)},
+		embed,
+		embed,
+	)
+	ctx, usage := domain.NewContextWithUsage(context.Background())
+	results := service.Upsert(ctx, "test-col", []domdoc.Document{makeDoc(t, "completed"), makeDoc(t, "failed")})
+	if results[0].Err() != nil || !errors.Is(results[1].Err(), domain.ErrEmbeddingProviderError) ||
+		docs.callCount != 1 {
+		t.Fatalf("successful prefix discarded: %v calls %d", results, docs.callCount)
+	}
+	if usage.TotalTokens != 7 {
+		t.Fatalf("completed usage lost: %+v", usage)
 	}
 }

@@ -9,6 +9,10 @@ import (
 //
 //nolint:interfacebloat // facade by design -- consumers use narrow sub-interfaces (ISP)
 type Store interface {
+	HashMutator
+	CatalogStore
+	BudgetStore
+	KVBatchStore
 	Pinger
 	HashStore
 	KVStore
@@ -33,6 +37,7 @@ type HashSetItem struct {
 //
 //nolint:interfacebloat // absorbs Del/Exists/Scan from removed JSONStore
 type HashStore interface {
+	HGetFieldMulti(ctx context.Context, keys []string, field string) ([]string, error)
 	HSet(ctx context.Context, key string, fields map[string]string) error
 	HSetMulti(ctx context.Context, items []HashSetItem) error
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
