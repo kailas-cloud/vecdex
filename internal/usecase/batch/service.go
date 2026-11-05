@@ -7,10 +7,10 @@ import (
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
-	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/usecase/ingestion"
+	"github.com/kailas-cloud/vecdex/internal/usecase/write"
 )
 
 // MaxBatchSize is the maximum number of items per batch request.
@@ -50,15 +50,15 @@ func (s *Service) WithMaxBatchSize(size int) *Service {
 }
 
 // Upsert creates or updates documents in batch.
-func (s *Service) Upsert(ctx context.Context, collectionName string, items []domdoc.Document) []dombatch.Result {
+func (s *Service) Upsert(ctx context.Context, collectionName string, items []dombatch.UpsertItem) []dombatch.Result {
 	ctx, cancel := context.WithTimeout(ctx, ingestion.BatchTimeout)
 	defer cancel()
 	results := make([]dombatch.Result, len(items))
 
 	if len(items) > s.maxBatchSize {
-		for i, item := range items {
+		for i := range items {
 			results[i] = dombatch.NewError(
-				item.ID(),
+				items[i].ID(),
 				fmt.Errorf("batch size exceeds %d: %w", s.maxBatchSize, domain.ErrInvalidSchema),
 			)
 		}
@@ -67,68 +67,50 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 
 	col, err := s.colls.Get(ctx, collectionName)
 	if err != nil {
-		for i, item := range items {
-			results[i] = dombatch.NewError(item.ID(), fmt.Errorf("get collection: %w", err))
+		for i := range items {
+			results[i] = dombatch.NewError(items[i].ID(), fmt.Errorf("get collection: %w", err))
 		}
 		return results
 	}
 
-	if err := col.CheckEmbeddingSpace(s.embeddingSpace); err != nil {
-		for i, item := range items {
-			results[i] = dombatch.NewError(item.ID(), fmt.Errorf("batch embedding space: %w", err))
-		}
-		return results
-	}
-	fieldTypes := make(map[string]field.Type, len(col.Fields())+len(domcol.SystemFields()))
+	fieldTypes := make(map[string]field.Type, len(col.Fields()))
 	for _, f := range col.Fields() {
-		fieldTypes[f.Name()] = f.FieldType()
-	}
-	for _, f := range domcol.SystemFields() {
 		fieldTypes[f.Name()] = f.FieldType()
 	}
 
 	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
-	return s.upsertTextBatch(ctx, collectionName, items, fieldTypes, col.VectorDim())
+	spaceErr := col.CheckEmbeddingSpace(s.embeddingSpace)
+	return s.upsertTextBatch(ctx, collectionName, items, fieldTypes, col.VectorDim(), spaceErr)
 }
 
 // upsertTextBatch validates all docs first, then batch-embeds, then bulk upserts.
 func (s *Service) upsertTextBatch(
 	ctx context.Context,
 	collectionName string,
-	items []domdoc.Document,
+	items []dombatch.UpsertItem,
 	fieldTypes map[string]field.Type,
 	dimensions int,
+	spaceErr error,
 ) []dombatch.Result {
 	results := make([]dombatch.Result, len(items))
 
-	// Фаза 1: валидация — отсеиваем невалидные ДО эмбеддинга
-	var validItems []domdoc.Document
-	var validIdx []int
-
-	for i := range items {
-		if items[i].Content() == "" {
-			results[i] = dombatch.NewError(
-				items[i].ID(),
-				fmt.Errorf("content is required: %w", domain.ErrInvalidSchema),
-			)
-			continue
-		}
-		if err := validateItemFields(&items[i], fieldTypes); err != nil {
-			results[i] = dombatch.NewError(items[i].ID(), err)
-			continue
-		}
-		validItems = append(validItems, items[i])
-		validIdx = append(validIdx, i)
+	prepared := s.claimBatchItems(ctx, collectionName, items, fieldTypes, results)
+	defer prepared.release()
+	validIdx := prepared.indices
+	if len(validIdx) == 0 {
+		return results
 	}
-
-	if len(validItems) == 0 {
+	if spaceErr != nil {
+		for _, idx := range validIdx {
+			results[idx] = dombatch.NewError(items[idx].ID(), fmt.Errorf("batch embedding space: %w", spaceErr))
+		}
 		return results
 	}
 
 	// Фаза 2: batch embed
-	texts := make([]string, len(validItems))
-	for j, item := range validItems {
-		texts[j] = item.Content()
+	texts := make([]string, len(validIdx))
+	for j, idx := range validIdx {
+		texts[j] = items[idx].Content()
 	}
 
 	embResult, err := s.doBatchEmbed(ctx, texts)
@@ -148,7 +130,8 @@ func (s *Service) upsertTextBatch(
 			return results
 		}
 	}
-	s.storePreparedItems(ctx, collectionName, items, validIdx, embResult.Embeddings, dimensions, results, err)
+	s.storePreparedItems(ctx, collectionName, items, validIdx,
+		embResult.Embeddings, dimensions, results, err, prepared.contexts)
 
 	return results
 }
@@ -170,13 +153,13 @@ func (s *Service) doBatchEmbed(ctx context.Context, texts []string) (domain.Batc
 }
 
 // Delete removes documents by ID in batch.
-func (s *Service) Delete(ctx context.Context, collectionName string, ids []string) []dombatch.Result {
-	results := make([]dombatch.Result, len(ids))
+func (s *Service) Delete(ctx context.Context, collectionName string, items []dombatch.DeleteItem) []dombatch.Result {
+	results := make([]dombatch.Result, len(items))
 
-	if len(ids) > s.maxBatchSize {
-		for i, id := range ids {
+	if len(items) > s.maxBatchSize {
+		for i, item := range items {
 			results[i] = dombatch.NewError(
-				id,
+				item.ID,
 				fmt.Errorf("batch size exceeds %d: %w", s.maxBatchSize, domain.ErrInvalidSchema),
 			)
 		}
@@ -185,19 +168,39 @@ func (s *Service) Delete(ctx context.Context, collectionName string, ids []strin
 
 	col, err := s.colls.Get(ctx, collectionName)
 	if err != nil {
-		for i, id := range ids {
-			results[i] = dombatch.NewError(id, fmt.Errorf("get collection: %w", err))
+		for i, item := range items {
+			results[i] = dombatch.NewError(item.ID, fmt.Errorf("get collection: %w", err))
 		}
 		return results
 	}
 
 	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
-	for i, id := range ids {
-		if err := s.del.Delete(ctx, collectionName, id); err != nil {
-			results[i] = dombatch.NewError(id, fmt.Errorf("delete: %w", err))
+	for i, item := range items {
+		if err := validateDeleteItem(item); err != nil {
+			results[i] = dombatch.NewError(item.ID, err)
 			continue
 		}
-		results[i] = dombatch.NewOK(id)
+		itemCtx, err := batchContext(ctx, item.IfVersion, item.IdempotencyKey)
+		if err != nil {
+			results[i] = dombatch.NewError(item.ID, err)
+			continue
+		}
+		claimed, replay, done, err := write.Delete(itemCtx, s.del, collectionName, item.ID)
+		if err != nil {
+			results[i] = dombatch.NewError(item.ID, err)
+			continue
+		}
+		if replay != nil {
+			results[i] = dombatch.NewOK(item.ID)
+			continue
+		}
+		err = s.del.Delete(claimed, collectionName, item.ID)
+		done()
+		if err != nil {
+			results[i] = dombatch.NewError(item.ID, fmt.Errorf("delete: %w", err))
+			continue
+		}
+		results[i] = dombatch.NewOK(item.ID)
 	}
 
 	return results
@@ -246,15 +249,16 @@ func validateBatchVectors(vectors [][]float32, count, dimensions int) error {
 func (s *Service) storePreparedItems(
 	ctx context.Context,
 	collectionName string,
-	items []domdoc.Document,
+	items []dombatch.UpsertItem,
 	validIdx []int,
 	vectors [][]float32,
 	dimensions int,
 	results []dombatch.Result,
 	embeddingErr error,
+	itemContexts []context.Context,
 ) {
 	for j, idx := range validIdx {
-		doc := &items[idx]
+		doc := &items[idx].Document
 		if j < len(vectors) {
 			if err := domain.ValidateVector(vectors[j], dimensions); err != nil {
 				results[idx] = dombatch.NewError(doc.ID(), err)
@@ -276,16 +280,104 @@ func (s *Service) storePreparedItems(
 			doc.SetVector(prepared.Vector)
 			doc.SetFragments(prepared.Fragments)
 		}
-		if _, writeErr := s.docs.Upsert(ctx, collectionName, doc); writeErr != nil {
+		itemCtx := itemContexts[idx]
+		if _, writeErr := s.docs.Upsert(itemCtx, collectionName, doc); writeErr != nil {
 			results[idx] = dombatch.NewError(doc.ID(), fmt.Errorf("upsert batch item: %w", writeErr))
 			continue
 		}
-		results[idx] = dombatch.NewOK(doc.ID())
+		results[idx] = dombatch.NewWritten(doc.ID(), doc.Version())
 	}
+}
+
+func validateDeleteItem(item dombatch.DeleteItem) error {
+	if err := domain.ValidateExpectedVersion(item.IfVersion); err != nil {
+		return fmt.Errorf("batch delete condition: %w", err)
+	}
+	if _, err := domdoc.New(item.ID, "", nil, nil); err != nil {
+		return fmt.Errorf("invalid batch delete ID: %w: %w", domain.ErrInvalidSchema, err)
+	}
+	return nil
+}
+
+func batchContext(ctx context.Context, version, key *string) (context.Context, error) {
+	if err := domain.ValidateExpectedVersion(version); err != nil {
+		return ctx, fmt.Errorf("batch condition: %w", err)
+	}
+	value := ""
+	if key != nil {
+		value = *key
+		if err := domain.ValidateIdempotencyKey(value); err != nil {
+			return ctx, fmt.Errorf("batch request key: %w", err)
+		}
+	}
+	return domain.WithIdempotencyKey(domain.WithExpectedVersion(ctx, version), value), nil
 }
 
 // WithEmbeddingSpace binds vector operations to the configured embedding space.
 func (s *Service) WithEmbeddingSpace(fingerprint string) *Service {
 	s.embeddingSpace = fingerprint
 	return s
+}
+
+func metadataIndexFields(types map[string]field.Type) []field.Field {
+	fields := make([]field.Field, 0, len(types))
+	for name, kind := range types {
+		fields = append(fields, field.Reconstruct(name, kind))
+	}
+	return fields
+}
+
+type preparedBatch struct {
+	indices  []int
+	contexts []context.Context
+	releases []func()
+}
+
+func (p *preparedBatch) release() {
+	for _, done := range p.releases {
+		done()
+	}
+}
+func (s *Service) claimBatchItems(
+	ctx context.Context, collectionName string, items []dombatch.UpsertItem,
+	fieldTypes map[string]field.Type, results []dombatch.Result,
+) *preparedBatch {
+	prepared := &preparedBatch{contexts: make([]context.Context, len(items))}
+	metadataFields := metadataIndexFields(fieldTypes)
+	for i := range items {
+		itemCtx, err := batchContext(ctx, items[i].IfVersion, items[i].IdempotencyKey)
+		if err != nil {
+			results[i] = dombatch.NewError(items[i].ID(), err)
+			continue
+		}
+		if items[i].Content() == "" {
+			results[i] = dombatch.NewError(
+				items[i].ID(),
+				fmt.Errorf("content is required: %w", domain.ErrInvalidSchema),
+			)
+			continue
+		}
+		if err := items[i].ProjectMetadata(metadataFields); err != nil {
+			results[i] = dombatch.NewError(items[i].ID(), err)
+			continue
+		}
+		if err := validateItemFields(&items[i].Document, fieldTypes); err != nil {
+			results[i] = dombatch.NewError(items[i].ID(), err)
+			continue
+		}
+		claimed, replay, done, err := write.Upsert(itemCtx, s.docs, collectionName, &items[i].Document)
+		if err != nil {
+			results[i] = dombatch.NewError(items[i].ID(), err)
+			continue
+		}
+		prepared.releases = append(prepared.releases, done)
+		if replay != nil {
+			results[i] = dombatch.NewWritten(items[i].ID(), replay.Version)
+			continue
+		}
+		prepared.contexts[i] = claimed
+		prepared.indices = append(prepared.indices, i)
+	}
+
+	return prepared
 }

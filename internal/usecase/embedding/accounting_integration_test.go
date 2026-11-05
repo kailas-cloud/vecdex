@@ -61,12 +61,21 @@ func TestSharedBudgetLive(t *testing.T) {
 }
 
 func budgetTestOwnKey(provider, key string) bool {
-	return strings.HasPrefix(key, fmt.Sprintf("vecdex:v2:budget:{%x}:", sha256.Sum256([]byte(provider))))
+	digest := sha256.Sum256([]byte(provider))
+	for _, prefix := range []string{fmt.Sprintf("vecdex:v2:budget:{%x}:", digest),
+		fmt.Sprintf("vecdex:v3:credits:{%x}:", digest), fmt.Sprintf("vecdex:v3:usage:{%x:", digest),
+		fmt.Sprintf("vecdex:v3:credit-usage:{%x:", digest)} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanupBudgetTest(t *testing.T, store *valkey.Store, provider string) {
 	t.Helper()
-	keys, err := store.Scan(context.Background(), "vecdex:v2:budget:*")
+	pattern := fmt.Sprintf("vecdex:v*:*:{%x*", sha256.Sum256([]byte(provider)))
+	keys, err := store.ScanForTest(context.Background(), pattern)
 	if err != nil {
 		t.Error(err)
 		return

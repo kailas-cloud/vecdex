@@ -3,6 +3,10 @@ package document
 import (
 	"fmt"
 	"regexp"
+	"unicode/utf8"
+
+	"github.com/kailas-cloud/vecdex/internal/domain"
+	"github.com/kailas-cloud/vecdex/internal/domain/metadata"
 )
 
 var (
@@ -15,11 +19,14 @@ const MaxContentSize = 163840 // 160KB
 
 // Document is the document aggregate (immutable value object).
 type Document struct {
+	metadata  metadata.Object
 	id        string
 	content   string
 	tags      map[string]string
 	numerics  map[string]float64
 	vector    []float32
+	version   string
+	expiresAt int64
 	revision  int
 	fragments *[]Fragment
 }
@@ -40,6 +47,9 @@ func New(id, content string, tags map[string]string, numerics map[string]float64
 	}
 	if reservedIDs[id] {
 		return Document{}, fmt.Errorf("document ID %q is reserved", id)
+	}
+	if !utf8.ValidString(content) {
+		return Document{}, fmt.Errorf("content must be valid UTF-8: %w", domain.ErrInvalidSchema)
 	}
 	if len(content) > MaxContentSize {
 		return Document{}, fmt.Errorf("content too large (max %d bytes)", MaxContentSize)
@@ -131,3 +141,9 @@ func (d *Document) Fragments() []Fragment {
 
 // SetFragments attaches a complete preparation result before atomic replacement.
 func (d *Document) SetFragments(parts []Fragment) { d.fragments = &parts }
+
+// Version identifies this exact committed source incarnation and revision.
+func (d *Document) Version() string { return d.version }
+
+// SetVersion attaches the opaque version returned by storage.
+func (d *Document) SetVersion(version string) { d.version = version }

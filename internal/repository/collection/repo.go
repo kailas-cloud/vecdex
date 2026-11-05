@@ -6,36 +6,34 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
+	"github.com/kailas-cloud/vecdex/internal/domain/storage"
 )
 
-// store is the consumer interface for collections (ISP).
-//
-//nolint:interfacebloat // collection repo needs hash + index management operations
+//nolint:interfacebloat // lifecycle spans metadata, catalogs, work and index operations
 type store interface {
 	db.HashMutator
-	HSet(ctx context.Context, key string, fields map[string]string) error
-	HGetAll(ctx context.Context, key string) (map[string]string, error)
-	HGetAllMulti(ctx context.Context, keys []string) ([]map[string]string, error)
-	Del(ctx context.Context, key string) error
-	Exists(ctx context.Context, key string) (bool, error)
-	Scan(ctx context.Context, pattern string) ([]string, error)
-	CreateIndex(ctx context.Context, def *db.IndexDefinition) error
-	DropIndex(ctx context.Context, name string) error
-	IndexExists(ctx context.Context, name string) (bool, error)
-	SupportsTextSearch(ctx context.Context) bool
+	db.CatalogStore
+	db.PartitionCatalogStore
+	db.MutationWorkStore
+	HGetAll(context.Context, string) (map[string]string, error)
+	HGetAllMulti(context.Context, []string) ([]map[string]string, error)
+	Expire(context.Context, string, time.Duration, bool) error
+	CreateIndex(context.Context, *db.IndexDefinition) error
+	DropIndex(context.Context, string) error
+	IndexExists(context.Context, string) (bool, error)
+	WaitForIndex(context.Context, string) error
+	SupportsTextSearch(context.Context) bool
 }
 
-// HNSWConfig HNSW index parameters.
-type HNSWConfig struct {
-	M           int
-	EFConstruct int
-}
+// HNSWConfig contains index construction settings.
+type HNSWConfig struct{ M, EFConstruct int }
 
-// Repo implements usecase/collection.Repository.
+// Repo stores recoverable collection lifecycle operations in control catalogs.
 type Repo struct {
 	store            store
 	defaultVectorDim int
@@ -43,11 +41,11 @@ type Repo struct {
 }
 
 // New creates a collection repository.
-func New(s store, defaultVectorDim int) *Repo {
-	return &Repo{store: s, defaultVectorDim: defaultVectorDim, hnsw: HNSWConfig{M: 32, EFConstruct: 400}}
+func New(s store, dimensions int) *Repo {
+	return &Repo{store: s, defaultVectorDim: dimensions, hnsw: HNSWConfig{M: 32, EFConstruct: 400}}
 }
 
-// WithHNSW configures HNSW index parameters.
+// WithHNSW overrides index construction defaults.
 func (r *Repo) WithHNSW(cfg HNSWConfig) *Repo {
 	if cfg.M > 0 {
 		r.hnsw.M = cfg.M
@@ -58,188 +56,153 @@ func (r *Repo) WithHNSW(cfg HNSWConfig) *Repo {
 	return r
 }
 
-// Create stores a collection: HSET metadata then FT.CREATE index.
-// On FT.CREATE failure, rolls back the HSET via DEL.
+// Create reserves a name and persists its recovery job before external index work.
+// Cancellation leaves the registered operation for a background reconciler.
 func (r *Repo) Create(ctx context.Context, col domcol.Collection) error {
-	name := col.Name()
-
-	// Prepare index definition and hash data before writes
-	indexDef, err := buildIndex(name, col.Fields(), col.VectorDim(), r.store.SupportsTextSearch(ctx), r.hnsw)
-	if err != nil {
-		return fmt.Errorf("build index: %w", err)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	if _, err := storage.NewCollection(col.Name(), col.Generation()); err != nil {
+		return lifecycleError("collection repo", err)
 	}
-	hashData, err := collectionToHash(col)
+	fields, err := collectionToHash(col)
 	if err != nil {
-		return err
+		return lifecycleError("collection repo", err)
 	}
-
-	indexDef.Name = domain.GenerationIndexName(name, col.Generation())
-	indexDef.Prefixes = []string{domain.CollectionDataBase(name, col.Generation()) + ":chunk:"}
-	hashData["state"] = "creating"
-	reserved, err := r.store.MutateHash(ctx, &db.HashMutation{
-		Key: metaKey(
-			name,
-		),
-		StagingKey:    domain.CollectionBase(name) + ":meta-pending",
-		Set:           hashData,
-		Replace:       true,
-		RequireAbsent: true,
-	})
-	if err != nil {
+	fields["state"], fields["layout_version"] = "creating", "3"
+	fields["partition_count"] = strconv.Itoa(storage.PartitionCount)
+	m := controlMutation(col.Name(), col.Generation(), "creating")
+	m.Set, m.Replace, m.RequireAbsent = fields, true, true
+	if _, err := r.store.MutateHash(ctx, m); err != nil {
 		return fmt.Errorf("reserve collection: %w", err)
 	}
-	if err := r.store.CreateIndex(ctx, indexDef); err != nil {
-		return r.rollbackCreate(ctx, name, col.Generation(), reserved.Revision, err)
-	}
-	_, err = r.store.MutateHash(ctx, &db.HashMutation{
-		Key: metaKey(
-			name,
-		),
-		StagingKey:       domain.CollectionBase(name) + ":meta-pending",
-		Set:              map[string]string{"state": "active"},
-		RequireExists:    true,
-		ExpectedRevision: &reserved.Revision,
-		GuardKey:         metaKey(name),
-		GuardGeneration:  col.Generation(),
-		GuardState:       "creating",
-	})
-	if err != nil {
-		return r.rollbackCreate(ctx, name, col.Generation(), reserved.Revision, err)
-	}
-	return nil
+	return r.finishCreate(ctx, col)
 }
 
-// Get retrieves a collection by name.
-func (r *Repo) Get(ctx context.Context, name string) (domcol.Collection, error) {
-	m, err := r.store.HGetAll(ctx, metaKey(name))
-	if err != nil {
-		return domcol.Collection{}, fmt.Errorf("hgetall collection %s: %w", name, err)
+func controlMutation(name, generation, state string) *db.HashMutation {
+	p := storage.ControlPartition(name)
+	key := storage.Metadata(name)
+	return &db.HashMutation{
+		Key: key, StagingKey: key + ":pending", CatalogKey: storage.CollectionCatalog(p), CatalogMember: name,
+		LifecycleKey: storage.LifecycleQueue(p), LifecycleMember: name, LifecyclePending: state != "active",
+		Set: map[string]string{"state": state, "generation": generation},
 	}
-	if len(m) == 0 || (m["state"] != "" && m["state"] != "active") {
+}
+
+// Get returns active collections. Lifecycle recovery reads metadata directly.
+func (r *Repo) Get(ctx context.Context, name string) (domcol.Collection, error) {
+	row, err := r.store.HGetAll(ctx, storage.Metadata(name))
+	if err != nil {
+		return domcol.Collection{}, fmt.Errorf("read collection: %w", err)
+	}
+	if len(row) == 0 || row["state"] != "active" {
 		return domcol.Collection{}, domain.ErrNotFound
 	}
-
-	return collectionFromHash(m, r.defaultVectorDim)
+	return collectionFromHash(row, r.defaultVectorDim)
 }
 
-// List returns all collections sorted by CreatedAt.
+// List reads bounded control-catalog pages, never the backend keyspace.
 func (r *Repo) List(ctx context.Context) ([]domcol.Collection, error) {
-	keys, err := r.store.Scan(ctx, metaKey("*"))
-	if err != nil {
-		return nil, fmt.Errorf("scan collections: %w", err)
+	catalogs := make([]string, storage.ControlPartitionCount)
+	for p := range catalogs {
+		catalogs[p] = storage.CollectionCatalog(p)
 	}
-	if len(keys) == 0 {
-		return []domcol.Collection{}, nil
-	}
-
-	results, err := r.store.HGetAllMulti(ctx, keys)
-	if err != nil {
-		return nil, fmt.Errorf("hgetall multi collections: %w", err)
-	}
-
-	collections := make([]domcol.Collection, 0, len(results))
-	for i, m := range results {
-		if len(m) == 0 || (m["state"] != "" && m["state"] != "active") {
-			continue
-		}
-		col, err := collectionFromHash(m, r.defaultVectorDim)
+	out := []domcol.Collection{}
+	after := ""
+	for {
+		names, err := db.ReadCatalogPage(ctx, r.store, catalogs, after, 100)
 		if err != nil {
-			return nil, fmt.Errorf("parse collection %s: %w", keys[i], err)
+			return nil, lifecycleError("collection repo", err)
 		}
-		collections = append(collections, col)
+		if len(names) == 0 {
+			break
+		}
+		keys := make([]string, len(names))
+		for i, name := range names {
+			keys[i] = storage.Metadata(name)
+		}
+		rows, err := r.store.HGetAllMulti(ctx, keys)
+		if err != nil {
+			return nil, fmt.Errorf("read collection page: %w", err)
+		}
+		if len(rows) != len(keys) {
+			return nil, fmt.Errorf("collection page count mismatch")
+		}
+		for _, row := range rows {
+			if row["state"] != "active" {
+				continue
+			}
+			col, err := collectionFromHash(row, r.defaultVectorDim)
+			if err != nil {
+				return nil, lifecycleError("collection repo", err)
+			}
+			out = append(out, col)
+		}
+		after = names[len(names)-1]
 	}
-
-	sort.Slice(collections, func(i, j int) bool {
-		return collections[i].CreatedAt() < collections[j].CreatedAt()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt() != out[j].CreatedAt() {
+			return out[i].CreatedAt() < out[j].CreatedAt()
+		}
+		return out[i].Name() < out[j].Name()
 	})
-
-	return collections, nil
+	return out, nil
 }
 
-// Delete removes a collection: backup metadata, DEL hash, FT.DROPINDEX (rollback HSET on error).
+// Delete establishes a metadata barrier and registers recoverable generation cleanup.
 func (r *Repo) Delete(ctx context.Context, name string) error {
-	metadata, err := r.store.HGetAll(ctx, metaKey(name))
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	row, err := r.store.HGetAll(ctx, storage.Metadata(name))
 	if err != nil {
 		return fmt.Errorf("read collection for deletion: %w", err)
 	}
-	if len(metadata) == 0 {
+	if len(row) == 0 {
 		return domain.ErrNotFound
 	}
-	generation := metadata["generation"]
-	if generation == "" {
-		return fmt.Errorf("collection generation is missing: %w", domain.ErrInvalidSchema)
-	}
-	if metadata["state"] != "deleting" {
-		revision, _ := strconv.Atoi(metadata["__revision"])
-		_, err = r.store.MutateHash(ctx, &db.HashMutation{
-			Key: metaKey(
-				name,
-			),
-			StagingKey:       domain.CollectionBase(name) + ":meta-pending",
-			Set:              map[string]string{"state": "deleting"},
-			RequireExists:    true,
-			ExpectedRevision: &revision,
-			GuardKey:         metaKey(name),
-			GuardGeneration:  generation,
-		})
-		if err != nil {
-			return fmt.Errorf("mark collection deleting: %w", err)
-		}
-	}
-	keys, err := r.store.Scan(ctx, domain.CollectionDataBase(name, generation)+":*")
+	generation := row["generation"]
+	layout, err := storage.NewCollection(name, generation)
 	if err != nil {
-		return fmt.Errorf("scan collection data: %w", err)
+		return lifecycleError("collection repo", err)
 	}
-	for _, key := range keys {
-		if key == metaKey(name) || key == domain.CollectionBase(name)+":meta-pending" {
-			continue
-		}
-		if err := r.store.Del(ctx, key); err != nil {
-			return fmt.Errorf("delete collection data: %w", err)
-		}
+	present, err := r.markDeleting(ctx, name, generation, row)
+	if err != nil {
+		return err
 	}
-	if err := r.store.DropIndex(
-		ctx,
-		domain.GenerationIndexName(name, generation),
-	); err != nil &&
-		!errors.Is(err, db.ErrIndexNotFound) {
-		return fmt.Errorf("drop collection index: %w", err)
-	}
-	_, err = r.store.MutateHash(ctx, &db.HashMutation{
-		Key: metaKey(name), StagingKey: domain.CollectionBase(name) + ":meta-pending", Delete: true,
-		GuardKey: metaKey(name), GuardGeneration: generation, GuardState: "deleting",
-	})
-	if errors.Is(err, domain.ErrNotFound) {
+	if !present {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("finish collection deletion: %w", err)
+	return r.finishDelete(ctx, name, generation, layout)
+}
+
+func (r *Repo) markDeleting(ctx context.Context, name, generation string, row map[string]string) (bool, error) {
+	for range 8 {
+		if len(row) == 0 || row["generation"] != generation {
+			return false, nil
+		}
+		if row["state"] == "deleting" {
+			return true, nil
+		}
+		revision, err := strconv.Atoi(row["__revision"])
+		if err != nil {
+			return false, fmt.Errorf("read lifecycle revision: %w", err)
+		}
+		m := controlMutation(name, generation, "deleting")
+		m.RequireExists, m.ExpectedRevision = true, &revision
+		m.GuardKey, m.GuardGeneration = storage.Metadata(name), generation
+		if _, err := r.store.MutateHash(ctx, m); err == nil {
+			return true, nil
+		} else if !errors.Is(err, domain.ErrRevisionConflict) &&
+			!errors.Is(err, domain.ErrNotFound) && !errors.Is(err, domain.ErrDocumentNotFound) {
+			return false, lifecycleError("mark collection deleting", err)
+		}
+		row, err = r.store.HGetAll(ctx, storage.Metadata(name))
+		if err != nil {
+			return false, lifecycleError("read concurrent lifecycle state", err)
+		}
 	}
-	return nil
+	return false, fmt.Errorf("collection lifecycle changed repeatedly")
 }
 
-// Valkey key patterns: vecdex:collection:{name}, vecdex:{name}:idx, vecdex:{name}:
-
-func metaKey(name string) string {
-	return domain.CollectionMetadataKey(name)
-}
-
-func indexName(name string) string {
-	return domain.CollectionIndexName(name)
-}
-
-func collectionPrefix(name string) string {
-	return domain.DocumentPrefix(name)
-}
-
-func (r *Repo) rollbackCreate(ctx context.Context, name, generation string, revision int, cause error) error {
-	dropErr := r.store.DropIndex(ctx, domain.GenerationIndexName(name, generation))
-	if errors.Is(dropErr, db.ErrIndexNotFound) {
-		dropErr = nil
-	}
-	_, cleanupErr := r.store.MutateHash(ctx, &db.HashMutation{
-		Key: metaKey(name), StagingKey: domain.CollectionBase(name) + ":meta-pending", Delete: true,
-		ExpectedRevision: &revision, GuardKey: metaKey(name), GuardGeneration: generation, GuardState: "creating",
-	})
-	return errors.Join(cause, dropErr, cleanupErr)
-}
+// These initial names are replaced with generation-bound names before FT.CREATE.
+func indexName(name string) string        { return "vecdex:v3:index:" + name }
+func collectionPrefix(name string) string { return "vecdex:v3:c:" + name + ":" }

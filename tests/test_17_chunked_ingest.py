@@ -1,4 +1,4 @@
-"""E2E tests for chunk-style ingest metadata and document-level retrieval."""
+"""Former chunk metadata names are ordinary explicitly declared indexes."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -15,6 +15,23 @@ from conftest import (
 pytestmark = pytest.mark.p0
 
 
+def test_undeclared_chunk_metadata_has_no_index_or_grouping_behavior(client, collection_factory):
+    name = collection_factory()["name"]
+    metadata = {"parent_doc_id": {"arbitrary": [True, None]}, "chunk_index": [1, 2]}
+    response = client.post(f"/api/v2/collections/{name}/documents/batch-upsert", json={"documents": [
+        {"id": "source-a", "content": "SciFact ordinary metadata source", "metadata": metadata},
+        {"id": "source-b", "content": "SciFact ordinary metadata source", "metadata": metadata},
+    ]})
+    assert response.status_code == 200 and response.json()["succeeded"] == 2, response.text
+    found = search_with_retry(client, name, query="SciFact", mode="keyword", limit=10)
+    assert {item["id"] for item in found.json()["items"]} == {"source-a", "source-b"}
+    assert all(item["metadata"] == metadata for item in found.json()["items"])
+    rejected = client.post(f"/api/v2/collections/{name}/search", json={
+        "query": "SciFact", "filters": {"must": [{"key": "parent_doc_id", "match": "anything"}]},
+    })
+    assert rejected.status_code == 400 and rejected.json()["code"] == "validation_failed"
+
+
 def make_client() -> httpx.Client:
     return httpx.Client(
         base_url=VECDEX_BASE_URL,
@@ -24,35 +41,35 @@ def make_client() -> httpx.Client:
 
 
 class TestChunkedDocumentSearch:
-    def test_search_by_document_without_declared_system_fields(
+    def test_group_metadata_keeps_independent_document_ids(
         self, client, collection_factory
     ):
-        coll = collection_factory()
+        coll = collection_factory(fields=[
+            {"name": "parent_doc_id", "type": "tag"},
+            {"name": "chunk_index", "type": "numeric"},
+        ])
         name = coll["name"]
 
         docs = [
             {
                 "id": "paper-a-chunk-0001",
                 "content": "scifact evidence chunk one with retrieval signal",
-                "tags": {"parent_doc_id": "paper-a"},
-                "numerics": {"chunk_index": 1},
+                "metadata": {"parent_doc_id": "paper-a", "chunk_index": 1},
             },
             {
                 "id": "paper-a-chunk-0002",
                 "content": "scifact evidence chunk two with retrieval signal",
-                "tags": {"parent_doc_id": "paper-a"},
-                "numerics": {"chunk_index": 2},
+                "metadata": {"parent_doc_id": "paper-a", "chunk_index": 2},
             },
             {
                 "id": "paper-b-chunk-0001",
                 "content": "another paper chunk unrelated to paper a",
-                "tags": {"parent_doc_id": "paper-b"},
-                "numerics": {"chunk_index": 1},
+                "metadata": {"parent_doc_id": "paper-b", "chunk_index": 1},
             },
         ]
 
         resp = client.post(
-            f"/collections/{name}/documents/batch-upsert",
+            f"/api/v2/collections/{name}/documents/batch-upsert",
             json={"documents": docs},
         )
         assert resp.status_code == 200
@@ -63,21 +80,19 @@ class TestChunkedDocumentSearch:
             name,
             query="scifact evidence retrieval",
             mode="keyword",
-            top_k=10,
             limit=10,
             filters={"must": [{"key": "parent_doc_id", "match": "paper-a"}]},
         )
         items = resp.json()["items"]
-        assert [item["id"] for item in items] == ["paper-a"]
-        assert items[0]["tags"]["parent_doc_id"] == "paper-a"
-        assert items[0]["numerics"]["chunk_index"] >= 1
+        assert {item["id"] for item in items} == {"paper-a-chunk-0001", "paper-a-chunk-0002"}
+        assert items[0]["metadata"]["parent_doc_id"] == "paper-a"
+        assert items[0]["metadata"]["chunk_index"] >= 1
 
         resp = search_with_retry(
             client,
             name,
             query="scifact evidence retrieval",
             mode="keyword",
-            top_k=10,
             limit=10,
             filters={
                 "must": [
@@ -87,13 +102,16 @@ class TestChunkedDocumentSearch:
             },
         )
         items = resp.json()["items"]
-        assert [item["id"] for item in items] == ["paper-a"]
-        assert items[0]["numerics"]["chunk_index"] == 2
+        assert [item["id"] for item in items] == ["paper-a-chunk-0002"]
+        assert items[0]["metadata"]["chunk_index"] == 2
 
     def test_parallel_batch_ingest_preserves_document_lookup(
         self, client, collection_factory
     ):
-        coll = collection_factory()
+        coll = collection_factory(fields=[
+            {"name": "parent_doc_id", "type": "tag"},
+            {"name": "chunk_index", "type": "numeric"},
+        ])
         name = coll["name"]
         batches = 4
         batch_size = 25
@@ -112,12 +130,11 @@ class TestChunkedDocumentSearch:
                                 f"parallel ingest scifact chunk {chunk_index} "
                                 "with repeated retrieval phrase"
                             ),
-                            "tags": {"parent_doc_id": "paper-par"},
-                            "numerics": {"chunk_index": chunk_index},
+                            "metadata": {"parent_doc_id": "paper-par", "chunk_index": chunk_index},
                         }
                     )
                 resp = c.post(
-                    f"/collections/{name}/documents/batch-upsert",
+                    f"/api/v2/collections/{name}/documents/batch-upsert",
                     json={"documents": documents},
                 )
                 return resp.status_code, resp.json()
@@ -136,12 +153,17 @@ class TestChunkedDocumentSearch:
             name,
             query="parallel ingest scifact chunk",
             mode="keyword",
-            top_k=100,
             limit=100,
             filters={"must": [{"key": "parent_doc_id", "match": "paper-par"}]},
         )
         items = resp.json()["items"]
-        assert len(items) == 1
-        assert items[0]["id"] == "paper-par"
-        assert items[0]["tags"]["parent_doc_id"] == "paper-par"
-        assert items[0]["numerics"]["chunk_index"] >= 1
+        assert len(items) == batches * batch_size
+        assert len({item["id"] for item in items}) == batches * batch_size
+        assert items[0]["metadata"]["parent_doc_id"] == "paper-par"
+        assert items[0]["metadata"]["chunk_index"] >= 1
+
+        for item in items:
+            source = client.get(f"/api/v2/collections/{name}/documents/{item['id']}")
+            assert source.status_code == 200
+            assert source.json()["version"] == item["version"]
+            assert source.json()["content"] == item["snippet"]

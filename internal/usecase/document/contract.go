@@ -23,7 +23,7 @@ type Repository interface {
 		p patch.Patch,
 		newVector []float32,
 		fragments []domdoc.Fragment,
-	) error
+	) (domdoc.WriteResult, error)
 	Count(ctx context.Context, collectionName string) (int, error)
 }
 

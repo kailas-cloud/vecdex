@@ -41,8 +41,10 @@ func (m *mockDocRepo) List(_ context.Context, _, _ string, _ int) ([]domdoc.Docu
 func (m *mockDocRepo) Delete(_ context.Context, _, _ string) error {
 	return m.deleteErr
 }
-func (m *mockDocRepo) Patch(_ context.Context, _, _ string, _ patch.Patch, _ []float32, _ []domdoc.Fragment) error {
-	return m.patchErr
+func (m *mockDocRepo) Patch(
+	_ context.Context, _, id string, _ patch.Patch, _ []float32, _ []domdoc.Fragment,
+) (domdoc.WriteResult, error) {
+	return domdoc.WriteResult{ID: id, Version: "committed-version"}, m.patchErr
 }
 func (m *mockDocRepo) Count(_ context.Context, _ string) (int, error) {
 	return m.countResult, m.countErr
@@ -180,17 +182,19 @@ func TestUpsert_UnknownTagAllowed(t *testing.T) {
 	}
 }
 
-func TestUpsert_SystemFieldsAllowedWithoutSchema(t *testing.T) {
-	col := makeCollection(t, nil)
+func TestUpsert_ExplicitFormerChunkFields(t *testing.T) {
+	col := makeCollection(t, []field.Field{
+		makeField(t, "parent_doc_id", field.Tag), makeField(t, "chunk_index", field.Numeric),
+	})
 	repo := &mockDocRepo{}
 	colls := &mockCollReader{col: col}
 	embed := &mockEmbedder{result: domain.EmbeddingResult{Embedding: []float32{0.1, 0.2, 0.3}}}
 
 	svc := New(repo, colls, embed, embed)
 	doc, err := domdoc.New("doc-1", "content", map[string]string{
-		domcol.SystemParentDocID: "doc-1",
+		"parent_doc_id": "doc-1",
 	}, map[string]float64{
-		domcol.SystemChunkIndex: 1,
+		"chunk_index": 1,
 	})
 	if err != nil {
 		t.Fatalf("domdoc.New: %v", err)
@@ -198,7 +202,7 @@ func TestUpsert_SystemFieldsAllowedWithoutSchema(t *testing.T) {
 
 	_, err = svc.Upsert(context.Background(), "test-col", &doc)
 	if err != nil {
-		t.Fatalf("unexpected error for system fields: %v", err)
+		t.Fatalf("unexpected error for explicitly declared fields: %v", err)
 	}
 }
 
@@ -414,8 +418,8 @@ func TestPatch_MetadataOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if doc.ID() != "doc-1" {
-		t.Errorf("expected ID 'doc-1', got %q", doc.ID())
+	if doc.ID != "doc-1" {
+		t.Errorf("expected ID 'doc-1', got %q", doc.ID)
 	}
 }
 
@@ -434,8 +438,8 @@ func TestPatch_WithContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if doc.Content() != "new content" {
-		t.Errorf("expected 'new content', got %q", doc.Content())
+	if doc.Version != "committed-version" {
+		t.Errorf("expected committed receipt, got %q", doc.Version)
 	}
 }
 

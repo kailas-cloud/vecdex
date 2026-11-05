@@ -34,7 +34,7 @@ class TestConcurrentWrites:
             c = make_client()
             try:
                 resp = c.put(
-                    f"/collections/{name}/documents/par-{i}",
+                    f"/api/v2/collections/{name}/documents/par-{i}",
                     json={"content": f"parallel doc number {i}"},
                 )
                 return resp.status_code
@@ -49,7 +49,7 @@ class TestConcurrentWrites:
 
         # Verify all docs exist
         for i in range(n):
-            resp = client.get(f"/collections/{name}/documents/par-{i}")
+            resp = client.get(f"/api/v2/collections/{name}/documents/par-{i}")
             assert resp.status_code == 200
 
     def test_concurrent_upsert_same_doc(self, client, collection_factory):
@@ -61,7 +61,7 @@ class TestConcurrentWrites:
             c = make_client()
             try:
                 resp = c.put(
-                    f"/collections/{name}/documents/race-1",
+                    f"/api/v2/collections/{name}/documents/race-1",
                     json={"content": f"version {i}"},
                 )
                 return resp.status_code
@@ -75,7 +75,7 @@ class TestConcurrentWrites:
         assert all(s in (200, 201) for s in statuses)
 
         # Doc should exist with one of the versions
-        resp = client.get(f"/collections/{name}/documents/race-1")
+        resp = client.get(f"/api/v2/collections/{name}/documents/race-1")
         assert resp.status_code == 200
         assert "version" in resp.json()["content"]
 
@@ -91,7 +91,7 @@ class TestConcurrentSearch:
             c = make_client()
             try:
                 resp = c.post(
-                    f"/collections/{coll}/documents/search",
+                    f"/api/v2/collections/{coll}/search",
                     json={"query": query, "mode": "semantic"},
                 )
                 return resp.status_code
@@ -123,7 +123,7 @@ class TestConcurrentMixed:
 
         # Seed one doc
         client.put(
-            f"/collections/{name}/documents/seed",
+            f"/api/v2/collections/{name}/documents/seed",
             json={"content": "initial seed document for concurrent test"},
         )
         time.sleep(0.3)
@@ -134,7 +134,7 @@ class TestConcurrentMixed:
             c = make_client()
             try:
                 resp = c.put(
-                    f"/collections/{name}/documents/w-{i}",
+                    f"/api/v2/collections/{name}/documents/w-{i}",
                     json={"content": f"written by thread {i}"},
                 )
                 if resp.status_code not in (200, 201):
@@ -145,7 +145,7 @@ class TestConcurrentMixed:
         def reader():
             c = make_client()
             try:
-                resp = c.get(f"/collections/{name}/documents/seed")
+                resp = c.get(f"/api/v2/collections/{name}/documents/seed")
                 if resp.status_code != 200:
                     errors.append(f"read seed: {resp.status_code}")
             finally:
@@ -155,7 +155,7 @@ class TestConcurrentMixed:
             c = make_client()
             try:
                 resp = c.post(
-                    f"/collections/{name}/documents/search",
+                    f"/api/v2/collections/{name}/search",
                     json={"query": "seed document", "mode": "semantic"},
                 )
                 if resp.status_code != 200:
@@ -191,16 +191,16 @@ class TestConcurrentPatch:
         name = coll["name"]
 
         client.put(
-            f"/collections/{name}/documents/patch-race",
-            json={"content": "concurrent patch test", "tags": {"a": "1", "b": "2"}},
+            f"/api/v2/collections/{name}/documents/patch-race",
+            json={"content": "concurrent patch test", "metadata": {"a": "1", "b": "2"}},
         )
 
         def patch_a():
             c = make_client()
             try:
                 return c.patch(
-                    f"/collections/{name}/documents/patch-race",
-                    json={"tags": {"a": "updated-a"}},
+                    f"/api/v2/collections/{name}/documents/patch-race",
+                    json={"metadata": {"a": "updated-a"}},
                 ).status_code
             finally:
                 c.close()
@@ -209,8 +209,8 @@ class TestConcurrentPatch:
             c = make_client()
             try:
                 return c.patch(
-                    f"/collections/{name}/documents/patch-race",
-                    json={"tags": {"b": "updated-b"}},
+                    f"/api/v2/collections/{name}/documents/patch-race",
+                    json={"metadata": {"b": "updated-b"}},
                 ).status_code
             finally:
                 c.close()
@@ -222,7 +222,7 @@ class TestConcurrentPatch:
             assert f2.result() == 200
 
         # Doc should exist and have the content intact
-        doc = client.get(f"/collections/{name}/documents/patch-race").json()
+        doc = client.get(f"/api/v2/collections/{name}/documents/patch-race").json()
         assert doc["content"] == "concurrent patch test"
 
 
@@ -237,7 +237,7 @@ class TestConcurrentSearchHighLoad:
             c = make_client()
             try:
                 resp = c.post(
-                    f"/collections/{coll}/documents/search",
+                    f"/api/v2/collections/{coll}/search",
                     json={"query": f"search query {i}", "mode": "semantic"},
                 )
                 return resp.status_code

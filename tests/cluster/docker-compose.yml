@@ -1,0 +1,24 @@
+services:
+  search-cluster:
+    image: valkey/valkey-bundle:9.1.2@sha256:1c39295cd8e3a34fc33fb46de235cf5e7bad530525b1a697eaf9f49e1c42747c
+    entrypoint: ["/bin/sh", "/tests/start.sh"]
+    # Expected native engine aborts already save backtraces in server.log.
+    # Avoid multi-gigabyte core files exhausting the disposable fixture disk.
+    ulimits:
+      core: 0
+    volumes:
+      - ./:/tests:ro
+    ports:
+      - "127.0.0.1:17389:17389"
+      - "127.0.0.1:17390:17390"
+      - "127.0.0.1:17391:17391"
+      - "127.0.0.1:17392:17392"
+      - "127.0.0.1:17393:17393"
+      - "127.0.0.1:17394:17394"
+      - "127.0.0.1:17395:17395"
+      - "127.0.0.1:17396:17396"
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/cluster-ready && valkey-cli -p 17389 cluster info | grep -q cluster_state:ok"]
+      interval: 1s
+      timeout: 1s
+      retries: 30

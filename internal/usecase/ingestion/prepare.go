@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 	"unicode"
 
@@ -48,7 +47,7 @@ func Prepare(ctx context.Context, embedder Embedder, text string, dimensions int
 		return prepared, err
 	}
 	prepared.Fragments = fragments
-	prepared.Vector = representativeVector(fragments)
+	prepared.Vector = domdoc.RepresentativeVector(fragments)
 	return prepared, nil
 }
 
@@ -144,30 +143,4 @@ func sentenceEnd(r rune) bool {
 	default:
 		return false
 	}
-}
-
-func representativeVector(parts []Fragment) []float32 {
-	if len(parts) == 1 {
-		return parts[0].Vector
-	}
-	sum := make([]float64, len(parts[0].Vector))
-	for _, part := range parts {
-		weight := float64(len([]rune(part.Content)))
-		for i, value := range part.Vector {
-			sum[i] += float64(value) * weight
-		}
-	}
-	var norm float64
-	for _, value := range sum {
-		norm += value * value
-	}
-	norm = math.Sqrt(norm)
-	if norm == 0 {
-		return parts[0].Vector
-	}
-	vector := make([]float32, len(sum))
-	for i, value := range sum {
-		vector[i] = float32(value / norm)
-	}
-	return vector
 }

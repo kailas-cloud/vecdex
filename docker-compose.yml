@@ -4,7 +4,16 @@ services:
     profiles: [valkey]
     ports:
       - "6379:6379"
-    command: ["--protected-mode", "no", "--appendonly", "yes"]
+    # Public Search 1.2.1 settings: bounded MULTI ingestion and fork-safe workers.
+    command:
+      - --protected-mode
+      - "no"
+      - --appendonly
+      - "yes"
+      - --search.writer-threads
+      - "1"
+      - --search.max-worker-suspension-secs
+      - "0"
     volumes:
       - valkey-data:/data
     healthcheck:

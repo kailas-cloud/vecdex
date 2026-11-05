@@ -139,3 +139,24 @@ func TestFuseRRF_ScoreFormula(t *testing.T) {
 		t.Errorf("expected score %f, got %f", expected, results[0].Score())
 	}
 }
+
+func TestFuseRRF_DuplicateFragments(t *testing.T) {
+	knn := []result.Result{
+		result.New("a", .99, "best", nil, nil, nil),
+		result.New("a", .95, "second", nil, nil, nil),
+		result.New("b", .90, "other", nil, nil, nil),
+		result.New("a", .50, "worst", nil, nil, nil),
+	}
+	bm25 := []result.Result{makeResult("b"), makeResult("b"), makeResult("a")}
+	got := fuseRRF(knn, bm25, 10)
+	if len(got) != 2 || got[0].ID() != "a" || got[0].Content() != "best" {
+		t.Fatalf("unexpected document ranking/snippet: %+v", got)
+	}
+	// Dense document ranks are a,b in KNN and b,a in BM25.
+	want := 1.0/61 + 1.0/62
+	for _, hit := range got {
+		if math.Abs(hit.Score()-want) > 1e-10 {
+			t.Fatalf("score for %s = %f, want %f", hit.ID(), hit.Score(), want)
+		}
+	}
+}

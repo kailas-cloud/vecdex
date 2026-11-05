@@ -38,7 +38,7 @@ func TestNativeMutationsWithScriptingDeniedLive(t *testing.T) {
 	}
 	defer restricted.Close()
 	defer func() {
-		keys, err := admin.Scan(ctx, base+"*")
+		keys, err := admin.ScanForTest(ctx, base+"*")
 		if err != nil {
 			t.Error(err)
 			return
@@ -96,5 +96,9 @@ func verifyNoScriptingBudget(t *testing.T, store *Store, base string) {
 	snapshot, err := store.Budget(ctx, command)
 	if err != nil || snapshot.Day.Tokens != 4 || snapshot.Day.Reserved != 0 || snapshot.Total.Requests != 1 {
 		t.Fatalf("native accounting: %+v %v", snapshot, err)
+	}
+	read, err := store.BudgetSnapshots(ctx, [][]string{command.Keys[:3]})
+	if err != nil || len(read) != 1 || read[0] != snapshot {
+		t.Fatalf("native accounting snapshot: %+v %v", read, err)
 	}
 }

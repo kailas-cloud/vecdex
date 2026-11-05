@@ -74,11 +74,35 @@ func main() {
         Do(ctx)
 
     for _, h := range hits {
-        fmt.Printf("%.2f  %s\n", h.Score, h.Item.Content)
+        fmt.Printf("%.2f  %s\n", h.Score, h.Snippet)
     }
 }
 ```
 
+
+### Go client over HTTP
+
+Use the same SDK types and methods through the server API:
+
+```go
+client, err := vecdex.NewHTTP("http://localhost:8080", apiKey)
+if err != nil {
+    return err
+}
+defer client.Close()
+
+response, err := client.Search("articles").Query(ctx, "HNSW performance",
+    &vecdex.SearchOptions{Limit: 5, MaxContentBytes: 2048})
+```
+
+Embedding and storage recovery run on the server. The HTTP client preserves JSON
+metadata, source versions, per-item batch errors and SDK error sentinels.
+`errors.As` can also inspect `HTTPError` for the HTTP status and request ID.
+`WithHTTPClient` supplies a custom transport and timeout. Requests use the caller's
+context. Redirects are returned to the caller. The SDK adds no retry loop;
+the HTTP transport may retry replayable requests with an idempotency key.
+Both HTTP and embedded clients work with `NewIndex[T]` and `NewTextIngestor`.
+Typed index `Upsert` and `Delete` also accept `IfVersion` and `IdempotencyKey`.
 
 ### Low-level API
 
@@ -101,8 +125,7 @@ client.Collections().Create(ctx, "articles",
 client.Documents("articles").Upsert(ctx, vecdex.Document{
     ID:       "article-1",
     Content:  "Vector search with HNSW indexes in Valkey",
-    Tags:     map[string]string{"author": "alice"},
-    Numerics: map[string]float64{"year": 2025},
+    Metadata: map[string]any{"author": "alice", "year": 2025},
 })
 
 // Hybrid search (vector KNN + BM25 fused via RRF)
@@ -112,7 +135,7 @@ resp, _ := client.Search("articles").Query(ctx, "HNSW performance", &vecdex.Sear
 })
 
 for _, r := range resp.Results {
-    fmt.Printf("%.2f  %s\n", r.Score, r.Content)
+    fmt.Printf("%.2f  %s\n", r.Score, r.Snippet)
 }
 ```
 
@@ -146,6 +169,19 @@ for _, r := range resp.Results {
 | AWS ElastiCache | Planned | |
 | PostgreSQL + pgvector | Planned | |
 
+Use official public Valkey/Search images. Search 1.2.1 has confirmed cluster
+defects: small transactional writes can be omitted from search with multiple
+writer threads, and consistent queries can abort a participant during topology
+changes. The fixture tests the supported one-writer configuration as a workaround
+for the first defect. Readiness requires one writer and
+`search.max-worker-suspension-secs=0` on every participating Search 1.2.1 node,
+including standalone deployments. Vecdex checks settings without changing server
+configuration. See the [operations runbook](docs/operations.md) for node settings,
+alert activation, capacity thresholds, expansion and the current scale-in restriction.
+Online scaling is still under acceptance testing. See
+[native reproducers and evidence](tests/cluster/KNOWN_FAILURES.md); Vecdex does
+not require or ship a patched engine.
+
 ## Key features
 
 | Feature | Description |
@@ -161,6 +197,44 @@ for _, r := range resp.Results {
 | **Cursor pagination** | Stable, opaque-cursor pagination for collections and documents |
 | **Embedding cache** | SHA256-keyed cache in Valkey — identical content is never re-embedded |
 | **Prometheus metrics** | Request latency, embedding tokens, budget, cache hit/miss |
+
+## JSON document metadata
+
+Documents accept a `metadata` JSON object, up to 64 KiB encoded. Nested objects,
+arrays, booleans and null values are stored with the source document. Only
+top-level fields declared in the collection schema are indexed as string tags or
+numbers. Missing or null indexed values have no index entry. Other metadata is
+returned by get, list and all three search modes, including hybrid ranking.
+
+```json
+{
+  "content": "The agent learned that this service uses PostgreSQL.",
+  "metadata": {
+    "agent_id": "agent-1",
+    "confidence": 0.95,
+    "source": {"conversation": "chat-42", "message": 17},
+    "labels": ["database", "infrastructure"]
+  }
+}
+```
+
+Send this body to `PUT /api/v2/collections/{collection}/documents/{id}`. Declare
+`agent_id` as a tag and `confidence` as numeric to filter on them; `source` and
+`labels` need no schema declaration. Document writes use only `metadata`; the
+`tags` and `numerics` request fields were removed. Indexed numeric values use floating-point
+index semantics; unindexed JSON numbers retain their precision. The Go SDK
+returns metadata numbers as `json.Number`.
+
+PATCH merges metadata using JSON Merge Patch semantics. Unmentioned members are
+preserved, nested objects merge, arrays replace arrays and null members remove
+keys. `{"metadata": null}` clears the complete object. Omitting metadata keeps it
+unchanged. A metadata-only patch does not call the embedding provider. Use the
+document's opaque version/ETag for conditional updates.
+
+The embedded SDK exposes `Document.Metadata` as `map[string]any` and
+`DocumentPatch.Metadata` as an optional pointer to that map. A pointer to a nil
+map clears metadata; a nil pointer leaves it unchanged. Complete metadata is
+stored once on the source, rather than copied into every search fragment.
 
 ## Architecture
 
@@ -211,25 +285,122 @@ go get github.com/kailas-cloud/vecdex
 
 Struct tag format: `vecdex:"name,modifier"` — modifiers: `id`, `content`, `tag`, `numeric`, `stored`.
 
+Metadata fields are indexed only when declared in the collection schema. Names
+such as `parent_doc_id` and `chunk_index` have no special meaning and do not
+change source IDs or combine independent documents.
+
+Both SDK transports return an opaque `Document.Version` from `Get` and `List`;
+search results also carry the source version.
+Use `IfVersion` with `Upsert`, `Patch`, or `Delete` to require that exact source
+version. A stale condition returns `ErrRevisionConflict`, including after the
+same ID has been deleted and recreated. `VersionConflictError.CurrentVersion`
+contains the current token when the source still exists.
+
+```go
+current, err := client.Documents("articles").Get(ctx, "article-1")
+if err != nil {
+    return err
+}
+text := "Updated source text"
+_, err = client.Documents("articles").Patch(ctx, current.ID,
+    vecdex.DocumentPatch{Content: &text}, vecdex.IfVersion(current.Version))
+```
+
+`Upsert` and `Patch` return a compact `WriteResult` with `ID`, `Version` and
+`Created`. HTTP PUT and PATCH return `{id, version, created}` plus a quoted
+`ETag`; use `Get` to read the full committed source. GET document responses
+include the same opaque `version` and ETag.
+Send that ETag as `If-Match` on PUT, PATCH, or DELETE. Stale conditions return
+409 `version_conflict`, with `current_version` and ETag when the document exists.
+Batch upsert and delete accept `documents` arrays. Each item can include an
+unquoted `if_version` token; omitted or null conditions are unconditional.
+A conflict affects that item only and returns `version_conflict` plus
+`current_version` when the source exists. A successful upsert returns its new
+`version`. A batch is a sequence of independent source commits, with HTTP 200
+and per-item statuses after the request body has been accepted.
+
+```go
+response, err := client.Documents("articles").BatchUpsert(ctx, []vecdex.BatchUpsertItem{
+    {ID: current.ID, Content: "Updated source", Metadata: current.Metadata, IfVersion: current.Version},
+    {ID: "new-source", Content: "A new source"},
+})
+```
+
+The SDK uses `[]BatchUpsertItem` for `BatchUpsert` and `TextIngestor.Upsert`, and
+`[]BatchDeleteItem` for `BatchDelete`. Both embedded and HTTP clients preserve
+per-item conflict details and successful source versions.
+
+Use `IdempotencyKey` when retrying a write after losing its response:
+
+```go
+written, err := client.Documents("articles").Upsert(ctx,
+    vecdex.Document{ID: "article-1", Content: "A source document"},
+    vecdex.IdempotencyKey("operation-123"))
+```
+
+The same key and input return the original successful outcome for 24 hours,
+without embedding or committing again. Keep the original `IfVersion` on retries.
+Keys belong to a source ID within one collection generation. Reusing a key with
+another operation or payload returns `ErrIdempotencyConflict`; an active attempt
+returns `ErrIdempotencyInProgress`. Failed attempts release their reservation.
+An interrupted reservation expires after its bounded lease. After 24 hours,
+the key can start a new write.
+
+HTTP PUT, PATCH and DELETE accept `Idempotency-Key` (1–128 printable ASCII
+characters, without spaces). Batch requests use each item's `idempotency_key`
+or SDK `IdempotencyKey` field. A batch has independent source commits, so it
+rejects the request-level header. Successful items replay independently;
+failed items can be retried with the same input and key.
+
+Sources can have an absolute `expires_at` deadline in UTC Unix milliseconds.
+PUT and batch upsert accept a positive integer; omission or JSON null makes the
+source persistent. PATCH preserves an omitted deadline and clears it with JSON
+null. The Go SDK uses `Document.ExpiresAt` and `BatchUpsertItem.ExpiresAt`; for
+`DocumentPatch.ExpiresAt`, nil preserves the deadline and a pointer to zero clears
+it. A deadline change updates the source version without calling the embedder.
+
+```go
+deadline := time.Now().Add(24 * time.Hour).UnixMilli()
+written, err := client.Documents("articles").Upsert(ctx, vecdex.Document{
+    ID: "temporary", Content: "A temporary source", ExpiresAt: &deadline,
+}, vecdex.IdempotencyKey("create-temporary"))
+```
+
+Keep the original absolute deadline when retrying an idempotent request. Reads,
+search, similar-source lookup, and counts exclude expired sources immediately;
+search filters expiry before its candidate limit. Background maintenance removes
+their stored text, fragments and index entries and resumes after restart. A list
+page can be empty while still carrying a cursor past expired IDs. Continue until
+the cursor is absent. Recreating an expired ID starts a new incarnation, so its
+former version cannot authorize a write or cleanup. A past deadline is accepted
+and makes the committed source immediately invisible; its successful idempotency
+receipt remains available for the normal 24 hours.
+
 ### REST API
+
+Search returns ranked source IDs, opaque versions, JSON metadata and `snippet`.
+Use `Get` for the full source text. `limit` defaults to 10 (maximum 100);
+`max_content_bytes` bounds the combined UTF-8 snippet bytes, defaults to 16 KiB,
+and has a maximum of 160 KiB. Small text budgets keep all ranked IDs.
+Candidate expansion for fragments is internal; `top_k` is no longer accepted.
 
 Full OpenAPI 3.0 specification: [`api/openapi.yaml`](api/openapi.yaml)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/collections` | Create collection |
-| `GET` | `/collections` | List collections (cursor pagination) |
-| `GET` | `/collections/{name}` | Get collection details |
-| `DELETE` | `/collections/{name}` | Delete collection |
-| `PUT` | `/collections/{name}/documents/{id}` | Upsert document (auto-embeds) |
-| `GET` | `/collections/{name}/documents/{id}` | Get document |
-| `PATCH` | `/collections/{name}/documents/{id}` | Partial update (no re-vectorization) |
-| `DELETE` | `/collections/{name}/documents/{id}` | Delete document |
-| `GET` | `/collections/{name}/documents` | List documents (cursor pagination) |
-| `POST` | `/collections/{name}/documents/search` | Search documents |
-| `POST` | `/collections/{name}/documents/batch-upsert` | Batch upsert (up to 100) |
-| `POST` | `/collections/{name}/documents/batch-delete` | Batch delete (up to 100) |
-| `GET` | `/usage` | Embedding usage & budget info |
+| `POST` | `/api/v2/collections` | Create collection |
+| `GET` | `/api/v2/collections` | List collections (cursor pagination) |
+| `GET` | `/api/v2/collections/{name}` | Get collection details |
+| `DELETE` | `/api/v2/collections/{name}` | Delete collection |
+| `PUT` | `/api/v2/collections/{name}/documents/{id}` | Upsert document (auto-embeds) |
+| `GET` | `/api/v2/collections/{name}/documents/{id}` | Get document |
+| `PATCH` | `/api/v2/collections/{name}/documents/{id}` | Update text or metadata; text changes re-embed |
+| `DELETE` | `/api/v2/collections/{name}/documents/{id}` | Delete document |
+| `GET` | `/api/v2/collections/{name}/documents` | List documents (cursor pagination) |
+| `POST` | `/api/v2/collections/{name}/search` | Search documents |
+| `POST` | `/api/v2/collections/{name}/documents/batch-upsert` | Batch upsert (up to 100) |
+| `POST` | `/api/v2/collections/{name}/documents/batch-delete` | Batch delete (up to 100) |
+| `GET` | `/api/v2/usage` | Embedding usage & budget info |
 | `GET` | `/health` | Health check |
 | `GET` | `/metrics` | Prometheus metrics |
 
@@ -292,16 +463,31 @@ are four concurrent calls and a 30-second call timeout. Document preparation has
 120-second deadline; batch preparation has a 300-second deadline. The default HTTP
 write timeout is 310 seconds so a batch can return its result.
 
-`GET /usage?period=day|month|total` reports actual upstream calls and measured tokens,
+`GET /api/v2/usage?period=day|month|total` reports actual upstream calls and measured tokens,
 including health probes and completed parts of failed batches. Accounting remains
 active without configured limits. `unknown_requests` counts calls whose consumption
 could not be measured; in that case `tokens` is a lower bound. Cache hits do not add
 upstream calls or tokens. Collection filtering is not supported and returns 400.
 Day and month boundaries use UTC. Total usage is retained independently of those periods.
 
-For `budget.action: reject`, all replicas reserve capacity atomically in Valkey
-using native WATCH/MULTI/EXEC transactions before each upstream attempt.
-All calculations and retries run in Go. Cohere v4 reserves 128,000 tokens per input and then
+Unlimited and `warn` accounting use 256 fixed virtual partitions per provider.
+An invocation updates only its own partition, so adding replicas does not add
+traffic to one shared write-side counter. Usage reports sum those partitions and
+retain existing strict-accounting history. Each partition's day/month/total read
+is atomic; different partitions may advance while a report is being collected.
+A failed partition fails the report instead of returning partial totals.
+The `warn` policy refreshes shared remaining metrics once per second and logs
+exhaustion once per UTC day or month. It does not reject writes. The invocation
+path performs no global usage read; explicit usage reports read fresh counters.
+
+For `budget.action: reject`, a shared day/month ledger issues 30-second credit
+grants, split across up to eight of the 256 usage partitions. The first invocation
+reserves its bound before the grant's idle balance becomes available for pressure
+recovery. Further invocations reserve and reconcile on their local partition with
+native WATCH/MULTI/EXEC transactions. The shared ledger handles grants and refunds;
+normal invocations perform no global usage read. All calculations and retries run in Go.
+Idle credit does not count as consumed tokens or in-flight reservations in usage reports.
+Cohere v4 reserves 128,000 tokens per input and then
 releases the unused portion when AWS reports measured consumption. A small daily
 limit can therefore reject even a short input until it has room for that reserve.
 A missing usage header, network failure, or interrupted request keeps the conservative
@@ -309,6 +495,18 @@ reserve until the period resets. Validation/authentication/throttling rejections
 with no usage release it. Store failures prevent a request from starting without a
 reservation. `warn` records usage without rejecting requests. Unlimited budgets use
 `-1` for both limit and remaining values.
+
+Every replica must use the same budget action and limits. Conflicting limits in
+an active period fail closed. Drain old writers and their in-flight calls before
+enabling strict budgets after `warn` or unlimited accounting. Existing measured
+usage and reservations remain in the starting balance; unknown historical
+consumption conservatively exhausts the remainder of the affected limited period.
+Background recovery closes expired grants before returning unused credit. Missing
+pool installations receive closed tombstones, preventing a delayed installer from
+reopening returned credit. Late measured replies and repeated refunds reconcile
+idempotently, including after another replica takes over recovery.
+Settled grant manifests expire after 24 hours to bound control-slot memory;
+partition receipts retain their longer reconciliation window.
 
 The embedded Go client's `Usage` method now returns `(UsageReport, error)` because
 reading shared counters can fail.
@@ -360,13 +558,13 @@ count uses `ZCARD`. Search-index backfill does not affect this count.
 
 PUT fully replaces the previous document; metadata-only PATCH does not call the
 embedding provider. Send the returned strong `ETag` as `If-Match` to guard a write
-against concurrent changes. A stale revision returns 409. Search preserves tags
-that are not declared as indexed fields, including when vectors are omitted.
+against concurrent changes. A stale source version returns 409. Search preserves arbitrary JSON
+metadata, including when vectors are omitted.
 If a later embedding sub-batch fails, earlier successful results are still stored
 and returned with per-document statuses.
 
 Cursors are opaque and bound to the collection generation. They advance after the
-last scanned ID. Deleting earlier records does not shift later pages. Inserts
+last catalog ID. Deleting earlier records does not shift later pages. Inserts
 before the cursor appear on a new traversal; concurrent deletes can shorten a page.
 Reusing a cursor after collection deletion and recreation returns 400.
 

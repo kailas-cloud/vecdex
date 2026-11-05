@@ -42,6 +42,8 @@ type BudgetTracker struct {
 	provider       string
 	lastDayReset   time.Time
 	lastMonthReset time.Time
+	warnedDay      time.Time
+	warnedMonth    time.Time
 	store          BudgetStore
 	logger         *zap.Logger
 }
@@ -105,26 +107,13 @@ func (b *BudgetTracker) monthlyKey(t time.Time) string {
 	return fmt.Sprintf("%sbudget:%s:monthly:%s", domain.KeyPrefix, b.provider, t.Format("2006-01"))
 }
 
-// Check reads shared availability when accounting is configured. Begin also reserves
-// the model upper bound atomically; callers must use Begin before invoking a model.
+// Check applies local limits. With shared accounting, Begin performs admission
+// immediately before the actual upstream attempt, so this wrapper needs no global read.
 func (b *BudgetTracker) Check(ctx context.Context) error {
 	if b.accounting != nil {
-		return b.checkSharedBudget(ctx)
+		return nil
 	}
 	return b.checkLocalBudget()
-}
-
-func (b *BudgetTracker) checkSharedBudget(ctx context.Context) error {
-	snap, err := b.Snapshot(ctx)
-	if err != nil {
-		return err
-	}
-	dailyExceeded := b.dailyLimit > 0 && snap.Day.Tokens+snap.Day.Reserved >= b.dailyLimit
-	monthlyExceeded := b.monthlyLimit > 0 && snap.Month.Tokens+snap.Month.Reserved >= b.monthlyLimit
-	if b.action == BudgetActionReject && (dailyExceeded || monthlyExceeded) {
-		return domain.ErrEmbeddingQuotaExceeded
-	}
-	return nil
 }
 
 func (b *BudgetTracker) checkLocalBudget() error {

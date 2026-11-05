@@ -20,12 +20,12 @@ type SearchService struct {
 
 // SearchOptions configures a search query.
 type SearchOptions struct {
-	Mode           SearchMode
-	Filters        FilterExpression
-	TopK           int
-	Limit          int
-	MinScore       float64
-	IncludeVectors bool
+	Mode            SearchMode
+	Filters         FilterExpression
+	MaxContentBytes int
+	Limit           int
+	MinScore        float64
+	IncludeVectors  bool
 }
 
 // Query executes a text search (semantic, keyword, or hybrid).
@@ -50,7 +50,7 @@ func (s *SearchService) Query(
 
 	req, err := request.New(
 		query, m, filters,
-		opts.TopK, opts.Limit, opts.MinScore, opts.IncludeVectors,
+		opts.Limit, opts.MaxContentBytes, opts.MinScore, opts.IncludeVectors,
 	)
 	if err != nil {
 		return SearchResponse{}, fmt.Errorf("query: %w", err)
@@ -117,11 +117,11 @@ func fromSearchResults(results []result.Result) []SearchResult {
 	for i := range results {
 		r := &results[i]
 		out[i] = SearchResult{
+			Version:  r.Version(),
+			Metadata: sourceMetadataValues(r.Metadata(), r.Tags(), r.Numerics()),
 			ID:       r.ID(),
 			Score:    r.Score(),
-			Content:  r.Content(),
-			Tags:     cloneTags(r.Tags()),
-			Numerics: cloneNumerics(r.Numerics()),
+			Snippet:  r.Content(),
 			Vector:   r.Vector(),
 		}
 	}

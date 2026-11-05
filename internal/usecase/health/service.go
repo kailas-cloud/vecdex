@@ -32,12 +32,12 @@ type Report struct {
 
 // Service coordinates health checks.
 type Service struct {
-	valkey    ValkeyPinger
+	valkey    ValkeyChecker
 	embedding EmbeddingChecker
 }
 
 // New creates a Service. embedding can be nil.
-func New(valkey ValkeyPinger, embedding EmbeddingChecker) *Service {
+func New(valkey ValkeyChecker, embedding EmbeddingChecker) *Service {
 	return &Service{valkey: valkey, embedding: embedding}
 }
 
@@ -45,7 +45,7 @@ func New(valkey ValkeyPinger, embedding EmbeddingChecker) *Service {
 func (s *Service) Check(ctx context.Context) Report {
 	checks := make(map[string]CheckResult)
 
-	if err := s.valkey.Ping(ctx); err != nil {
+	if err := s.valkey.Ready(ctx); err != nil {
 		checks["valkey"] = CheckError
 	} else {
 		checks["valkey"] = CheckOK

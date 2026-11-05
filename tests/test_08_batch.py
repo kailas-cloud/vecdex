@@ -7,12 +7,12 @@ from conftest import unique_name
 
 @pytest.mark.p0
 class TestBatchUpsert:
-    """POST /collections/{collection}/documents/batch-upsert"""
+    """POST /api/v2/collections/{collection}/documents/batch-upsert"""
 
     def test_batch_upsert_returns_200(self, client, collection_factory):
         coll = collection_factory()
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={
                 "documents": [
                     {"id": "batch-1", "content": "first doc"},
@@ -26,7 +26,7 @@ class TestBatchUpsert:
     def test_batch_upsert_reports_succeeded(self, client, collection_factory):
         coll = collection_factory()
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={
                 "documents": [
                     {"id": "batch-1", "content": "first doc"},
@@ -41,7 +41,7 @@ class TestBatchUpsert:
     def test_batch_upsert_items_have_status(self, client, collection_factory):
         coll = collection_factory()
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={
                 "documents": [
                     {"id": "batch-1", "content": "first doc"},
@@ -56,21 +56,21 @@ class TestBatchUpsert:
     def test_batch_upsert_documents_retrievable(self, client, collection_factory):
         coll = collection_factory()
         client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={
                 "documents": [
                     {"id": "batch-1", "content": "retrievable content"},
                 ]
             },
         )
-        resp = client.get(f"/collections/{coll['name']}/documents/batch-1")
+        resp = client.get(f"/api/v2/collections/{coll['name']}/documents/batch-1")
         assert resp.status_code == 200
         assert resp.json()["content"] == "retrievable content"
 
     def test_batch_upsert_nonexistent_collection(self, client):
         """Batch against nonexistent collection returns 200 with per-item errors."""
         resp = client.post(
-            "/collections/nonexistent-xyz/documents/batch-upsert",
+            "/api/v2/collections/nonexistent-xyz/documents/batch-upsert",
             json={
                 "documents": [{"id": "doc-1", "content": "test"}],
             },
@@ -84,31 +84,31 @@ class TestBatchUpsert:
 
 @pytest.mark.p0
 class TestBatchDelete:
-    """POST /collections/{collection}/documents/batch-delete"""
+    """POST /api/v2/collections/{collection}/documents/batch-delete"""
 
     def test_batch_delete_returns_200(self, client, collection_factory):
         coll = collection_factory()
         # Create docs first
         for i in range(3):
             client.put(
-                f"/collections/{coll['name']}/documents/del-{i}",
+                f"/api/v2/collections/{coll['name']}/documents/del-{i}",
                 json={"content": f"doc {i}"},
             )
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-delete",
-            json={"ids": ["del-0", "del-1", "del-2"]},
+            f"/api/v2/collections/{coll['name']}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in ["del-0", "del-1", "del-2"]]},
         )
         assert resp.status_code == 200
 
     def test_batch_delete_reports_succeeded(self, client, collection_factory):
         coll = collection_factory()
         client.put(
-            f"/collections/{coll['name']}/documents/del-1",
+            f"/api/v2/collections/{coll['name']}/documents/del-1",
             json={"content": "to delete"},
         )
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-delete",
-            json={"ids": ["del-1"]},
+            f"/api/v2/collections/{coll['name']}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in ["del-1"]]},
         )
         data = resp.json()
         assert data["succeeded"] == 1
@@ -116,8 +116,8 @@ class TestBatchDelete:
     def test_batch_delete_nonexistent_doc_reports_failure(self, client, collection_factory):
         coll = collection_factory()
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-delete",
-            json={"ids": ["nonexistent-doc"]},
+            f"/api/v2/collections/{coll['name']}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in ["nonexistent-doc"]]},
         )
         data = resp.json()
         assert data["failed"] >= 1
@@ -130,29 +130,29 @@ class TestBatchUpsertP1:
     def test_batch_upsert_with_tags(self, client, collection_factory):
         coll = collection_factory(fields=[{"name": "lang", "type": "tag"}])
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={
                 "documents": [
-                    {"id": "bt-1", "content": "python code", "tags": {"lang": "python"}},
-                    {"id": "bt-2", "content": "go code", "tags": {"lang": "go"}},
+                    {"id": "bt-1", "content": "python code", "metadata": {"lang": "python"}},
+                    {"id": "bt-2", "content": "go code", "metadata": {"lang": "go"}},
                 ]
             },
         )
         data = resp.json()
         assert data["succeeded"] == 2
         # Verify tags persisted
-        doc = client.get(f"/collections/{coll['name']}/documents/bt-1").json()
-        assert doc.get("tags", {}).get("lang") == "python"
+        doc = client.get(f"/api/v2/collections/{coll['name']}/documents/bt-1").json()
+        assert doc.get("metadata", {}).get("lang") == "python"
 
     def test_batch_upsert_updates_existing(self, client, collection_factory):
         """Batch upsert should update existing docs."""
         coll = collection_factory()
         client.put(
-            f"/collections/{coll['name']}/documents/existing",
+            f"/api/v2/collections/{coll['name']}/documents/existing",
             json={"content": "original"},
         )
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={
                 "documents": [
                     {"id": "existing", "content": "updated via batch"},
@@ -160,13 +160,13 @@ class TestBatchUpsertP1:
             },
         )
         assert resp.json()["succeeded"] == 1
-        doc = client.get(f"/collections/{coll['name']}/documents/existing").json()
+        doc = client.get(f"/api/v2/collections/{coll['name']}/documents/existing").json()
         assert doc["content"] == "updated via batch"
 
     def test_batch_upsert_single_doc(self, client, collection_factory):
         coll = collection_factory()
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={"documents": [{"id": "single", "content": "only one"}]},
         )
         assert resp.json()["succeeded"] == 1
@@ -174,7 +174,7 @@ class TestBatchUpsertP1:
     def test_batch_upsert_malformed_json_returns_400(self, client, collection_factory):
         coll = collection_factory()
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             content=b"not json",
             headers={"content-type": "application/json"},
         )
@@ -188,12 +188,12 @@ class TestBatchDeleteP1:
     def test_batch_delete_mix_existing_and_nonexistent(self, client, collection_factory):
         coll = collection_factory()
         client.put(
-            f"/collections/{coll['name']}/documents/exists-1",
+            f"/api/v2/collections/{coll['name']}/documents/exists-1",
             json={"content": "real doc"},
         )
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-delete",
-            json={"ids": ["exists-1", "ghost-1"]},
+            f"/api/v2/collections/{coll['name']}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in ["exists-1", "ghost-1"]]},
         )
         data = resp.json()
         assert data["succeeded"] >= 1
@@ -202,13 +202,13 @@ class TestBatchDeleteP1:
     def test_batch_delete_already_deleted(self, client, collection_factory):
         coll = collection_factory()
         client.put(
-            f"/collections/{coll['name']}/documents/del-twice",
+            f"/api/v2/collections/{coll['name']}/documents/del-twice",
             json={"content": "delete me"},
         )
-        client.delete(f"/collections/{coll['name']}/documents/del-twice")
+        client.delete(f"/api/v2/collections/{coll['name']}/documents/del-twice")
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-delete",
-            json={"ids": ["del-twice"]},
+            f"/api/v2/collections/{coll['name']}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in ["del-twice"]]},
         )
         data = resp.json()
         assert data["failed"] >= 1
@@ -226,7 +226,7 @@ class TestBatchUpsertLimits:
             for i in range(100)
         ]
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={"documents": docs},
         )
         assert resp.status_code == 200
@@ -245,7 +245,7 @@ class TestBatchUpsertBoundaryP1:
             for i in range(5001)
         ]
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={"documents": docs},
         )
         assert resp.status_code == 400
@@ -254,7 +254,7 @@ class TestBatchUpsertBoundaryP1:
         """7.1.8: 0 docs → 400."""
         coll = collection_factory()
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={"documents": []},
         )
         assert resp.status_code == 400
@@ -273,13 +273,13 @@ class TestBatchDeleteBoundaryP1:
             for i in range(100)
         ]
         client.post(
-            f"/collections/{coll['name']}/documents/batch-upsert",
+            f"/api/v2/collections/{coll['name']}/documents/batch-upsert",
             json={"documents": docs},
         )
         ids = [f"bd100-{i}" for i in range(100)]
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-delete",
-            json={"ids": ids},
+            f"/api/v2/collections/{coll['name']}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in ids]},
         )
         assert resp.status_code == 200
 
@@ -288,8 +288,8 @@ class TestBatchDeleteBoundaryP1:
         coll = collection_factory()
         ids = [f"over-{i}" for i in range(5001)]
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-delete",
-            json={"ids": ids},
+            f"/api/v2/collections/{coll['name']}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in ids]},
         )
         assert resp.status_code == 400
 
@@ -297,7 +297,7 @@ class TestBatchDeleteBoundaryP1:
         """7.2.7: Empty IDs array → 400."""
         coll = collection_factory()
         resp = client.post(
-            f"/collections/{coll['name']}/documents/batch-delete",
-            json={"ids": []},
+            f"/api/v2/collections/{coll['name']}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in []]},
         )
         assert resp.status_code == 400

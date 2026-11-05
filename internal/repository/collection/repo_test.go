@@ -8,311 +8,229 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
+	"github.com/kailas-cloud/vecdex/internal/domain/storage"
 )
 
-// --- Create ---
-
-func TestCreate_HappyPath(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-	col := testCollection(t)
-
-	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
-	ms.hsetFn = func(_ context.Context, key string, _ map[string]string) error {
-		if key != "vecdex:v2:{test-collection}:meta" {
-			t.Errorf("unexpected key: %s", key)
-		}
-		return nil
-	}
-	ms.createIndexFn = func(_ context.Context, def *db.IndexDefinition) error {
-		if def.Name != "vecdex:v2:{test-collection}:g:fixture:index" {
-			t.Errorf("unexpected index name: %s", def.Name)
-		}
-		return nil
-	}
-
-	err := repo.Create(ctx, col)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestCreate_HappyPath_WithTextSearch(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-	col := testCollection(t)
-
-	ms.supportsTextSearch = true
-	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
-	ms.hsetFn = func(_ context.Context, _ string, _ map[string]string) error { return nil }
-	ms.createIndexFn = func(_ context.Context, def *db.IndexDefinition) error {
-		if !hasIndexField(def.Fields, "__content", db.IndexFieldText) {
-			t.Fatalf("expected __content TEXT field in index definition: %+v", def.Fields)
-		}
-		if !hasIndexField(def.Fields, domcol.SystemParentDocID, db.IndexFieldTag) {
-			t.Fatalf("expected %s TAG field in index definition: %+v", domcol.SystemParentDocID, def.Fields)
-		}
-		if !hasIndexField(def.Fields, "__n:"+domcol.SystemChunkIndex, db.IndexFieldNumeric) {
-			t.Fatalf("expected %s NUMERIC field in index definition: %+v", domcol.SystemChunkIndex, def.Fields)
-		}
-		return nil
-	}
-
-	err := repo.Create(ctx, col)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestCreate_AlreadyExists(t *testing.T) {
+func TestCreateActivatesAllPartitionsAndOneDistributedIndex(t *testing.T) {
 	repo, store := newTestRepo(t)
-	store.mutateFn = func(_ context.Context, m *db.HashMutation) (db.HashMutationResult, error) {
-		if !m.RequireAbsent {
-			t.Fatal("metadata reservation was not conditional")
+	col := testCollection(t)
+	store.supportsTextSearch = true
+	if err := repo.Create(context.Background(), col); err != nil {
+		t.Fatal(err)
+	}
+	layout, _ := storage.NewCollection(col.Name(), col.Generation())
+	for p := range storage.PartitionCount {
+		guard := store.rows[layout.Guard(p)]
+		if guard["generation"] != col.Generation() || guard["state"] != "active" {
+			t.Fatalf("inactive guard %d", p)
 		}
-		return db.HashMutationResult{}, domain.ErrAlreadyExists
 	}
-	if err := repo.Create(context.Background(), testCollection(t)); !errors.Is(err, domain.ErrAlreadyExists) {
-		t.Fatalf("error %v", err)
+	index := store.indexes[layout.Index()]
+	if index == nil || len(index.Prefixes) != 1 || index.Prefixes[0] != layout.ChunkPrefix() {
+		t.Fatal("wrong distributed index")
+	}
+	if !hasIndexField(index.Fields, "__content", db.IndexFieldText) {
+		t.Fatal("text search field missing")
+	}
+	if !hasIndexField(index.Fields, "__parent_id", db.IndexFieldTag) {
+		t.Fatal("parent filter missing")
+	}
+	current, err := repo.Get(context.Background(), col.Name())
+	if err != nil || current.Generation() != col.Generation() {
+		t.Fatalf("current=%+v err=%v", current, err)
+	}
+	queue := storage.LifecycleQueue(storage.ControlPartition(col.Name()))
+	if n, _ := store.CatalogCount(context.Background(), queue); n != 0 {
+		t.Fatal("completed create remained queued")
+	}
+	if err := repo.Create(context.Background(), col); !errors.Is(err, domain.ErrAlreadyExists) {
+		t.Fatalf("duplicate create: %v", err)
 	}
 }
 
-func TestCreate_ReservationError(t *testing.T) {
+func TestBuildIndexContainsOnlyDeclaredMetadata(t *testing.T) {
+	index, err := buildIndex("notes", nil, 3, true, HNSWConfig{M: 16, EFConstruct: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []string{"__parent_id", "__expires_at", "__content", "__vector"}
+	if len(index.Fields) != len(expected) {
+		t.Fatalf("unexpected implicit fields: %+v", index.Fields)
+	}
+	for i, name := range expected {
+		if index.Fields[i].Name != name {
+			t.Fatalf("unexpected field: %+v", index.Fields[i])
+		}
+	}
+}
+
+func TestCanceledCreationIsRecoveredFromPersistentLifecycle(t *testing.T) {
 	repo, store := newTestRepo(t)
-	store.mutateFn = func(context.Context, *db.HashMutation) (db.HashMutationResult, error) {
-		return db.HashMutationResult{}, errors.New("connection lost")
+	col := testCollection(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store.createIndexFn = func(context.Context, *db.IndexDefinition) error { cancel(); return context.Canceled }
+	if err := repo.Create(ctx, col); !errors.Is(err, context.Canceled) {
+		t.Fatalf("create=%v", err)
 	}
-	if err := repo.Create(context.Background(), testCollection(t)); err == nil {
-		t.Fatal("expected reservation error")
+	if store.rows[storage.Metadata(col.Name())]["state"] != "creating" {
+		t.Fatal("lost creating metadata")
+	}
+	if _, err := repo.Get(context.Background(), col.Name()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatal("partial create exposed")
+	}
+	store.createIndexFn = nil
+	if _, err := repo.RecoverLifecycle(context.Background(), "", 8); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Get(context.Background(), col.Name()); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestCreate_FTCreateError_RollbackOK(t *testing.T) {
-	repo, ms := newTestRepo(t)
+func TestDeleteClosesEveryGuardBeforeCleaningData(t *testing.T) {
+	repo, store := newTestRepo(t)
 	ctx := context.Background()
 	col := testCollection(t)
-
-	var delCalled bool
-	ms.existsFn = func(_ context.Context, _ string) (bool, error) { return false, nil }
-	ms.hsetFn = func(_ context.Context, _ string, _ map[string]string) error { return nil }
-	ms.createIndexFn = func(_ context.Context, _ *db.IndexDefinition) error {
-		return errors.New("index limit reached")
+	if err := repo.Create(ctx, col); err != nil {
+		t.Fatal(err)
 	}
-	ms.mutateFn = func(_ context.Context, m *db.HashMutation) (db.HashMutationResult, error) {
-		if m.Delete {
-			delCalled = true
-			if m.GuardState != "creating" || m.ExpectedRevision == nil {
-				t.Fatal("unsafe rollback")
+	layout, _ := storage.NewCollection(col.Name(), col.Generation())
+	id := "source"
+	p := storage.Partition(id)
+	store.rows[layout.Document(id)] = map[string]string{"__revision": "1"}
+	store.member(layout.Catalog(p), id, true)
+	store.mutateFn = func(ctx context.Context, m *db.HashMutation) (db.HashMutationResult, error) {
+		if m.Key == layout.Document(id) && m.Delete {
+			for p := range storage.PartitionCount {
+				if store.rows[layout.Guard(p)]["state"] != "deleting" {
+					t.Fatal("cleanup before guard barrier")
+				}
 			}
 		}
-		return db.HashMutationResult{Revision: 1, Created: true}, nil
+		return store.applyMutation(ctx, m)
 	}
-
-	err := repo.Create(ctx, col)
-	if err == nil {
-		t.Fatal("expected error on FT.CREATE failure")
+	failed := errors.New("coordinator unavailable")
+	store.dropIndexFn = func(context.Context, string) error { return failed }
+	if err := repo.Delete(ctx, col.Name()); !errors.Is(err, failed) {
+		t.Fatal(err)
 	}
-	if !delCalled {
-		t.Error("expected DEL to be called for rollback")
+	if store.rows[storage.Metadata(col.Name())]["state"] != "deleting" {
+		t.Fatal("interrupted delete lost its job")
+	}
+	store.dropIndexFn = nil
+	if _, err := repo.RecoverLifecycle(ctx, "", 8); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Get(ctx, col.Name()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatal("deleted collection is visible")
+	}
+	if len(store.indexes) != 0 {
+		t.Fatal("index remained")
+	}
+	if err := repo.activateGuard(ctx, layout.Guard(p), col.Generation()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatal("late creator reopened guard")
 	}
 }
 
-// --- Get ---
-
-func TestGet_HappyPath(t *testing.T) {
-	repo, ms := newTestRepo(t)
+func TestListUsesControlCatalogs(t *testing.T) {
+	repo, _ := newTestRepo(t)
 	ctx := context.Background()
-
-	ms.hgetAllFn = func(_ context.Context, key string) (map[string]string, error) {
-		if key != "vecdex:v2:{test-collection}:meta" {
-			t.Errorf("unexpected key: %s", key)
+	for _, name := range []string{"beta", "alpha"} {
+		col := domcol.Reconstruct(name, domcol.TypeText, nil, 4, 1, 1).WithGeneration("fixture")
+		if err := repo.Create(ctx, col); err != nil {
+			t.Fatal(err)
 		}
-		return map[string]string{
-			"name":        "test-collection",
-			"type":        "json",
-			"fields_json": `[{"name":"language","type":"tag"}]`,
-			"vector_dim":  "1024",
-			"generation":  "fixture", "created_at": "1700000000000",
-		}, nil
 	}
-
-	col, err := repo.Get(ctx, "test-collection")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if col.Name() != "test-collection" {
-		t.Fatalf("expected name test-collection, got %s", col.Name())
-	}
-	if col.VectorDim() != 1024 {
-		t.Fatalf("expected vector_dim 1024, got %d", col.VectorDim())
-	}
-	if len(col.Fields()) != 1 || col.Fields()[0].Name() != "language" {
-		t.Fatalf("unexpected fields: %+v", col.Fields())
-	}
-}
-
-func TestGet_NotFound(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
-		return map[string]string{}, nil
-	}
-
-	_, err := repo.Get(ctx, "nonexistent")
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-}
-
-// --- List ---
-
-func TestList_HappyPath(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	ms.scanFn = func(_ context.Context, _ string) ([]string, error) {
-		return []string{"vecdex:v2:{alpha}:meta", "vecdex:v2:{beta}:meta"}, nil
-	}
-	ms.hgetAllMultiFn = func(_ context.Context, keys []string) ([]map[string]string, error) {
-		return []map[string]string{
-			{
-				"name": "alpha", "type": "json", "fields_json": "[]",
-				"vector_dim": "1024", "generation": "fixture", "created_at": "1700000000002",
-			},
-			{
-				"name": "beta", "type": "json", "fields_json": "[]",
-				"vector_dim": "1024", "generation": "fixture", "created_at": "1700000000001",
-			},
-		}, nil
-	}
-
 	cols, err := repo.List(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cols) != 2 {
-		t.Fatalf("expected 2 collections, got %d", len(cols))
-	}
-	if cols[0].Name() != "beta" {
-		t.Fatalf("expected first collection to be beta (earlier), got %s", cols[0].Name())
-	}
-	if cols[1].Name() != "alpha" {
-		t.Fatalf("expected second collection to be alpha (later), got %s", cols[1].Name())
+	if err != nil || len(cols) != 2 || cols[0].Name() != "alpha" || cols[1].Name() != "beta" {
+		t.Fatalf("list=%v err=%v", cols, err)
 	}
 }
 
-func TestList_Empty(t *testing.T) {
-	repo, ms := newTestRepo(t)
+func TestMissingAndInactiveCollections(t *testing.T) {
+	repo, store := newTestRepo(t)
 	ctx := context.Background()
-
-	ms.scanFn = func(_ context.Context, _ string) ([]string, error) {
-		return nil, nil
+	if err := repo.Delete(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("delete=%v", err)
 	}
-
-	cols, err := repo.List(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cols) != 0 {
-		t.Fatalf("expected empty list, got %d", len(cols))
+	for _, state := range []string{"creating", "deleting"} {
+		store.rows[storage.Metadata("notes")] = map[string]string{"state": state}
+		if _, err := repo.Get(ctx, "notes"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("state %s: %v", state, err)
+		}
 	}
 }
 
-// --- Delete ---
-
-func TestDelete_HappyPath(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
-		return map[string]string{
-			"name": "test-collection", "type": "json", "fields_json": "[]",
-			"vector_dim": "1024", "generation": "fixture", "created_at": "1700000000000",
-		}, nil
+func TestReservationErrorDoesNotCreateIndex(t *testing.T) {
+	repo, store := newTestRepo(t)
+	failure := errors.New("connection lost")
+	store.mutateFn = func(context.Context, *db.HashMutation) (db.HashMutationResult, error) {
+		return db.HashMutationResult{}, failure
 	}
-	ms.indexExistsFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
-	ms.delFn = func(_ context.Context, _ string) error { return nil }
-	ms.dropIndexFn = func(_ context.Context, _ string) error { return nil }
-
-	err := repo.Delete(ctx, "test-collection")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := repo.Create(context.Background(), testCollection(t)); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	if len(store.indexes) != 0 {
+		t.Fatal("index created without registered metadata")
 	}
 }
 
-func TestDelete_NotFound(t *testing.T) {
-	repo, ms := newTestRepo(t)
-	ctx := context.Background()
-
-	ms.hgetAllFn = func(_ context.Context, _ string) (map[string]string, error) {
-		return map[string]string{}, nil
-	}
-
-	err := repo.Delete(ctx, "nonexistent")
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-}
-
-func hasIndexField(fields []db.IndexField, name string, typ db.IndexFieldType) bool {
-	for index := range fields {
-		field := &fields[index]
-		if field.Name == name && field.Type == typ {
+func hasIndexField(fields []db.IndexField, name string, kind db.IndexFieldType) bool {
+	for i := range fields {
+		if fields[i].Name == name && fields[i].Type == kind {
 			return true
 		}
 	}
 	return false
 }
 
-func TestDeleteCleansOnlyCapturedGeneration(t *testing.T) {
+func TestCreateWaitsForEveryIndexPartitionBeforePublishing(t *testing.T) {
 	repo, store := newTestRepo(t)
-	store.hgetAllFn = func(context.Context, string) (map[string]string, error) {
-		return map[string]string{"generation": "old", "state": "active", "__revision": "2"}, nil
+	failure := errors.New("one primary is still backfilling")
+	store.waitForIndexFn = func(context.Context, string) error { return failure }
+	col := testCollection(t)
+	if err := repo.Create(context.Background(), col); !errors.Is(err, failure) {
+		t.Fatalf("create err=%v", err)
 	}
-	store.scanFn = func(_ context.Context, pattern string) ([]string, error) {
-		if pattern != "vecdex:v2:{notes}:g:old:*" {
-			t.Fatalf("unsafe cleanup pattern %s", pattern)
-		}
-		return []string{"vecdex:v2:{notes}:g:old:doc:a", "vecdex:v2:{notes}:g:old:pending:a"}, nil
+	if _, err := repo.Get(context.Background(), col.Name()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("published incomplete collection: %v", err)
 	}
-	removed := 0
-	store.delFn = func(context.Context, string) error { removed++; return nil }
-	store.dropIndexFn = func(_ context.Context, name string) error {
-		if name != "vecdex:v2:{notes}:g:old:index" {
-			t.Fatalf("wrong index %s", name)
-		}
-		return nil
-	}
-	calls := 0
-	store.mutateFn = func(_ context.Context, m *db.HashMutation) (db.HashMutationResult, error) {
-		calls++
-		if m.GuardGeneration != "old" {
-			t.Fatal("generation guard missing")
-		}
-		if calls == 1 && m.Set["state"] != "deleting" {
-			t.Fatal("write barrier missing")
-		}
-		if m.Delete {
-			return db.HashMutationResult{}, domain.ErrNotFound
-		} // Another request already finished and recreated it.
-		return db.HashMutationResult{Revision: 3}, nil
-	}
-	if err := repo.Delete(context.Background(), "notes"); err != nil {
+	store.waitForIndexFn = nil
+	if _, err := repo.RecoverLifecycle(context.Background(), "", 8); err != nil {
 		t.Fatal(err)
 	}
-	if removed != 2 || calls != 2 {
-		t.Fatalf("cleanup removed=%d calls=%d", removed, calls)
+	if _, err := repo.Get(context.Background(), col.Name()); err != nil {
+		t.Fatal(err)
 	}
 }
-func TestInactiveCollectionsAreHidden(t *testing.T) {
+
+func TestConcurrentDeleteDoesNotTargetRecreatedCollection(t *testing.T) {
 	repo, store := newTestRepo(t)
-	for _, state := range []string{"creating", "deleting"} {
-		store.hgetAllFn = func(context.Context, string) (map[string]string, error) {
-			return map[string]string{"state": state}, nil
+	ctx := context.Background()
+	original := testCollection(t)
+	if err := repo.Create(ctx, original); err != nil {
+		t.Fatal(err)
+	}
+	replacement := original.WithGeneration("replacement")
+	intercepted := false
+	store.mutateFn = func(ctx context.Context, m *db.HashMutation) (db.HashMutationResult, error) {
+		if !intercepted && m.Key == storage.Metadata(original.Name()) && m.Set["state"] == "deleting" {
+			intercepted = true
+			if err := repo.Delete(ctx, original.Name()); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.Create(ctx, replacement); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if _, err := repo.Get(context.Background(), "notes"); !errors.Is(err, domain.ErrNotFound) {
-			t.Fatalf("state %s: %v", state, err)
-		}
+		return store.applyMutation(ctx, m)
+	}
+	if err := repo.Delete(ctx, original.Name()); err != nil {
+		t.Fatal(err)
+	}
+	current, err := repo.Get(ctx, original.Name())
+	if err != nil || current.Generation() != replacement.Generation() {
+		t.Fatalf("deleted recreated generation: %v", err)
 	}
 }

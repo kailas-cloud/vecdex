@@ -2,11 +2,13 @@ package document
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
 
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
+	"github.com/kailas-cloud/vecdex/internal/domain/metadata"
 )
 
 // numericPrefix disambiguates numeric fields from tags in HASH storage.
@@ -20,6 +22,7 @@ func buildHashFields(doc *domdoc.Document) map[string]string {
 		m["__content"] = doc.Content()
 	}
 	m["__vector"] = vectorToBytes(doc.Vector())
+	m["__expires_at"] = strconv.FormatInt(doc.ExpiresAt(), 10)
 	for k, v := range doc.Tags() {
 		m[k] = v
 	}
@@ -30,7 +33,7 @@ func buildHashFields(doc *domdoc.Document) map[string]string {
 }
 
 // parseHashFields converts a flat hash map back into a domain Document.
-func parseHashFields(id string, m map[string]string) domdoc.Document {
+func parseHashFields(id string, m map[string]string) (domdoc.Document, error) {
 	var content string
 	var vector []float32
 	tags := make(map[string]string)
@@ -55,7 +58,23 @@ func parseHashFields(id string, m map[string]string) domdoc.Document {
 	}
 
 	revision, _ := strconv.Atoi(m["__revision"])
-	return domdoc.Reconstruct(id, content, tags, numerics, vector, revision)
+	doc := domdoc.Reconstruct(id, content, tags, numerics, vector, revision)
+	doc.SetVersion(m["__source_version"])
+	expiresAt, err := domdoc.ParseExpiresAt(m["__expires_at"])
+	if err != nil {
+		return domdoc.Document{}, fmt.Errorf("decode stored expiration: %w", err)
+	}
+	if err := doc.SetExpiresAt(expiresAt); err != nil {
+		return domdoc.Document{}, fmt.Errorf("restore expiration: %w", err)
+	}
+	if raw := m["__source_metadata"]; raw != "" {
+		value, err := metadata.Parse([]byte(raw))
+		if err != nil {
+			return domdoc.Document{}, fmt.Errorf("decode stored metadata: %w", err)
+		}
+		doc.SetMetadata(value)
+	}
+	return doc, nil
 }
 
 // vectorToBytes serializes []float32 to a binary string (4 bytes per float, little-endian).

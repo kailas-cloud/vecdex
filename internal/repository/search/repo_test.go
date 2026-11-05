@@ -9,16 +9,17 @@ import (
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
+	"github.com/kailas-cloud/vecdex/internal/domain/storage"
 )
 
 // --- SearchKNN ---
 
 func TestSearchKNN_HappyPath(t *testing.T) {
 	repo, ms := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testContext()
 
 	ms.searchKNNFn = func(_ context.Context, q *db.KNNQuery) (*db.SearchResult, error) {
-		if q.IndexName != "vecdex:v2:{notes}:index" {
+		if q.IndexName != searchTestLayout().Index() {
 			t.Errorf("unexpected index: %s", q.IndexName)
 		}
 		if q.K != 10 {
@@ -69,7 +70,7 @@ func TestSearchKNN_HappyPath(t *testing.T) {
 
 func TestSearchKNN_IncludeVectors(t *testing.T) {
 	repo, ms := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testContext()
 
 	vec := []float32{0.1, 0.2, 0.3}
 	vecBytes := testVectorToBytes(vec)
@@ -107,7 +108,7 @@ func TestSearchKNN_IncludeVectors(t *testing.T) {
 
 func TestSearchKNN_EmptyResults(t *testing.T) {
 	repo, ms := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testContext()
 
 	ms.searchKNNFn = func(_ context.Context, _ *db.KNNQuery) (*db.SearchResult, error) {
 		return &db.SearchResult{Total: 0}, nil
@@ -124,7 +125,7 @@ func TestSearchKNN_EmptyResults(t *testing.T) {
 
 func TestSearchKNN_Error(t *testing.T) {
 	repo, ms := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testContext()
 
 	ms.searchKNNFn = func(_ context.Context, _ *db.KNNQuery) (*db.SearchResult, error) {
 		return nil, errors.New("index not found")
@@ -138,7 +139,7 @@ func TestSearchKNN_Error(t *testing.T) {
 
 func TestSearchKNN_WithFilter(t *testing.T) {
 	repo, ms := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testContext()
 
 	expr := mustExpression(t,
 		[]filter.Condition{mustMatch(t, "language", "go")},
@@ -178,10 +179,10 @@ func TestSearchKNN_WithFilter(t *testing.T) {
 
 func TestSearchBM25_HappyPath(t *testing.T) {
 	repo, ms := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testContext()
 
 	ms.searchBM25Fn = func(_ context.Context, q *db.TextQuery) (*db.SearchResult, error) {
-		if q.IndexName != "vecdex:v2:{notes}:index" {
+		if q.IndexName != searchTestLayout().Index() {
 			t.Errorf("unexpected index: %s", q.IndexName)
 		}
 		if q.Query != "hello" {
@@ -230,7 +231,7 @@ func TestSearchBM25_HappyPath(t *testing.T) {
 
 func TestSearchBM25_EmptyResults(t *testing.T) {
 	repo, ms := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testContext()
 
 	ms.searchBM25Fn = func(_ context.Context, _ *db.TextQuery) (*db.SearchResult, error) {
 		return &db.SearchResult{Total: 0}, nil
@@ -247,7 +248,7 @@ func TestSearchBM25_EmptyResults(t *testing.T) {
 
 func TestSearchBM25_Error(t *testing.T) {
 	repo, ms := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testContext()
 
 	ms.searchBM25Fn = func(_ context.Context, _ *db.TextQuery) (*db.SearchResult, error) {
 		return nil, errors.New("index not found")
@@ -263,7 +264,7 @@ func TestSearchBM25_Error(t *testing.T) {
 
 func TestSupportsTextSearch(t *testing.T) {
 	repo, ms := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testContext()
 
 	ms.supportsTextSearchFn = func(_ context.Context) bool { return true }
 
@@ -294,10 +295,18 @@ func TestOnlyCommittedFragmentsAreVisible(t *testing.T) {
 		{Key: "chunk-current", Fields: map[string]string{"__parent_id": "a", "__version": "current"}},
 		{Key: "orphan", Fields: map[string]string{"__parent_id": "b", "__version": "uncommitted"}},
 	}}
-	if err := repo.filterCommitted(context.Background(), "notes", found); err != nil {
+	if err := repo.filterCommitted(testContext(), "notes", found); err != nil {
 		t.Fatal(err)
 	}
 	if len(found.Entries) != 1 || found.Entries[0].Key != "chunk-current" {
 		t.Fatalf("visible %+v", found.Entries)
 	}
+}
+
+func searchTestLayout() storage.Collection {
+	l, err := storage.NewCollection("notes", "fixture")
+	if err != nil {
+		panic(err)
+	}
+	return l
 }

@@ -1,105 +1,64 @@
 # SciFact Benchmark Harness
 
-This directory contains a standalone Python harness for running a chunked retrieval benchmark against a live `vecdex` instance using Hugging Face `BeIR/scifact` plus `BeIR/scifact-qrels`.
+The harness uploads each original SciFact paper as one source document through
+API v2. Vecdex prepares private fragments when the embedding model rejects a
+long input. Search rankings use the original corpus IDs for qrels evaluation.
 
-The harness:
+It loads Hugging Face `BeIR/scifact` and `BeIR/scifact-qrels`, recreates the chosen
+collection, uploads the whole corpus in batches, and evaluates semantic and
+hybrid search. Each evaluation query runs once. Only the readiness probe retries;
+search errors fail the run, and empty rankings count toward the metrics.
 
-- loads the full SciFact corpus and test qrels
-- builds chunked documents using the local `all-MiniLM-L6-v2` tokenizer
-- recreates one vecdex collection with chunk metadata
-- indexes all chunks via REST batch upserts
-- evaluates `semantic` and `hybrid` search
-- reads the ready document-level rankings returned by vecdex
-- writes `summary.json`, `per_query.csv`, `report.md`, and PNG plots under `plots/`
+## Local setup
 
-## Prerequisites
-
-- Docker with Compose
-- Python 3.12+
-- A running `vecdex` instance backed by the local ONNX embedder
-
-The recommended local stack for this benchmark is the existing `valkey-onnx` profile:
+Start the official Valkey stack with the ONNX embedder from the repository root:
 
 ```bash
-cd /Users/chistopat/GolandProjects/vecdex/tests
+cd tests
 docker compose --profile valkey-onnx up --build -d valkey vecdex-valkey-onnx
-```
-
-Wait until `vecdex-valkey-onnx` is healthy, then run the harness from the repository root.
-
-## Install benchmark dependencies
-
-```bash
+cd ..
 python3 -m venv .venv-bench
 source .venv-bench/bin/activate
 pip install -r benchmarks/scifact/requirements.txt
 ```
 
-## Run
-
-Named chunking presets for test runs:
-
-- Group `A`: `128` tokens, overlap `16`
-- Group `B`: `256` tokens, overlap `32`
-
-Example: group `A`
+Wait for Vecdex to become healthy, then run:
 
 ```bash
 python benchmarks/scifact/run.py \
   --base-url http://localhost:8080 \
   --api-key test-api-key \
-  --collection scifact-benchmark-a \
-  --chunk-group A \
+  --collection scifact-benchmark \
+  --limit 100 \
   --modes semantic hybrid \
-  --output-dir benchmarks/scifact/output/group-a
+  --output-dir benchmarks/scifact/output/latest
 ```
 
-Example: group `B`
+The target collection is deleted and recreated. `--ingest-only` stops after
+uploading the corpus. `--dataset-cache-dir` selects an existing Hugging Face
+cache. Batch size defaults to 100 and must be within 1–100. Search has one
+`--limit`, default 100, maximum 100. The benchmark requests a one-byte combined
+snippet budget because metrics need ranked IDs only.
+
+Client chunking flags and `--top-k` have been removed. To compare fragmentation
+settings, configure the server separately and use distinct output directories.
+
+## Outputs
+
+- `summary.json`: config, source byte counts, timings and metrics by mode
+- `per_query.csv`: nDCG@10, MRR@10, recall@10/20 and source IDs for every query
+- `report.md`: aggregate metrics and qualitative examples
+- `plots/`: aggregate metrics, per-query distributions and result counts
+
+Run the local protocol and metric checks without downloading the dataset:
 
 ```bash
-python benchmarks/scifact/run.py \
-  --base-url http://localhost:8080 \
-  --api-key test-api-key \
-  --collection scifact-benchmark-b \
-  --chunk-group B \
-  --modes semantic hybrid \
-  --output-dir benchmarks/scifact/output/group-b
+python -m unittest discover -s benchmarks/scifact -p 'test_*.py'
 ```
 
-## Important behavior
-
-- The harness deletes and recreates the target collection before indexing.
-- `--chunk-group` applies a named preset and overrides manual `--chunk-size` / `--overlap` values.
-- `--chunk-size` counts total tokens per chunk, including tokenizer-added special tokens.
-- Chunking uses the local [`tokenizer.json`](/Users/chistopat/GolandProjects/vecdex/models/all-MiniLM-L6-v2/tokenizer.json) so chunk length matches the ONNX model path used by `vecdex`.
-- Search is evaluated at document level directly from vecdex API responses.
-
-## Output artifacts
-
-- `summary.json`: run config, corpus diagnostics, and aggregate metrics by mode
-- `per_query.csv`: one row per query and mode with metrics plus top/relevant doc ids
-- `report.md`: compact Markdown summary with best/worst qualitative examples
-- `plots/aggregate_metrics.png`: grouped bar chart for the aggregate metrics
-- `plots/ndcg_at_10_boxplot.png`: per-query nDCG@10 distribution by mode
-- `plots/mrr_at_10_boxplot.png`: per-query MRR@10 distribution by mode
-- `plots/result_count_histogram.png`: histogram of returned document counts per query
-
-## Defaults
-
-- Dataset: `scifact`
-- Qrels split: `test`
-- Chunk size: `256`
-- Overlap: `0`
-- Chunk groups:
-  - `A`: chunk size `128`, overlap `16`
-  - `B`: chunk size `256`, overlap `32`
-- `top_k`: `500`
-- `limit`: `100`
-- Modes: `semantic hybrid`
-
-## Tear down
+Stop the local stack when finished:
 
 ```bash
-cd /Users/chistopat/GolandProjects/vecdex/tests
+cd tests
 docker compose --profile valkey-onnx down -v
 ```

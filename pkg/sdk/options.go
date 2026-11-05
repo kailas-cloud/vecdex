@@ -34,8 +34,15 @@ type clientConfig struct {
 
 // WithValkey configures the client to connect to a Valkey instance.
 func WithValkey(addr, password string) Option {
+	return WithValkeyAddresses([]string{addr}, password)
+}
+
+// WithValkeyAddresses configures seed addresses for cluster discovery.
+// The seeds are copied; subsequent caller changes do not affect the client.
+func WithValkeyAddresses(addrs []string, password string) Option {
+	seeds := append([]string(nil), addrs...)
 	return optionFunc(func(c *clientConfig) {
-		c.addrs = []string{addr}
+		c.addrs = append([]string(nil), seeds...)
 		c.password = password
 	})
 }

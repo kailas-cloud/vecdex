@@ -46,3 +46,26 @@ func ExcludedDocument(ctx context.Context) string {
 	id, _ := ctx.Value(excludedDocumentKey{}).(string)
 	return id
 }
+
+type expectedVersionKey struct{}
+
+// WithExpectedVersion requires the exact opaque source version, including its
+// incarnation. Nil clears an inherited condition and makes the write unconditional.
+func WithExpectedVersion(ctx context.Context, version *string) context.Context {
+	if version == nil {
+		if ExpectedVersion(ctx) != nil {
+			return context.WithValue(ctx, expectedVersionKey{}, false)
+		}
+		return ctx
+	}
+	return context.WithValue(ctx, expectedVersionKey{}, *version)
+}
+
+// ExpectedVersion returns the source version required by this request.
+func ExpectedVersion(ctx context.Context) *string {
+	value, ok := ctx.Value(expectedVersionKey{}).(string)
+	if !ok {
+		return nil
+	}
+	return &value
+}

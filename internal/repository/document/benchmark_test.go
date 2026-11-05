@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/db/valkey"
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
+	"github.com/kailas-cloud/vecdex/internal/domain/storage"
 	"github.com/redis/rueidis"
 )
 
@@ -65,8 +67,12 @@ func BenchmarkDocumentCatalogLive(b *testing.B) {
 
 func (c *catalogCorpus) populate(b *testing.B) {
 	b.Helper()
-	if err := c.store.HSet(c.ctx, domain.CollectionMetadataKey(c.name), map[string]string{
-		"generation": c.generation, "state": "active"}); err != nil {
+	guards := make([]db.HashSetItem, storage.PartitionCount)
+	for p := range guards {
+		guards[p] = db.HashSetItem{Key: c.layout().Guard(p),
+			Fields: map[string]string{"generation": c.generation, "state": "active"}}
+	}
+	if err := c.store.HSetMulti(c.ctx, guards); err != nil {
 		b.Fatal(err)
 	}
 	memoryBefore := c.info(b, "memory")["used_memory"]
@@ -124,7 +130,7 @@ func (c *catalogCorpus) benchPage(b *testing.B, offset int, legacy bool) {
 	b.Helper()
 	cursor := ""
 	if offset > 0 {
-		cursor = encodeDocumentCursor(domain.CollectionDataBase(c.name, c.generation), c.id(offset-1))
+		cursor = encodeDocumentCursor(c.layout().Base(), c.id(offset-1))
 	}
 	before := c.info(b, "commandstats")
 	samples := make([]time.Duration, 0, b.N)
@@ -149,20 +155,31 @@ func (c *catalogCorpus) benchPage(b *testing.B, offset int, legacy bool) {
 }
 
 func (c *catalogCorpus) legacyPage(offset int) ([]domdoc.Document, error) {
-	result, err := c.store.SearchList(c.ctx, domain.GenerationIndexName(c.name, c.generation), "*", offset, 21, nil)
+	keys, err := c.store.ScanForTest(c.ctx, c.layout().Base()+":doc:*")
 	if err != nil {
 		return nil, fmt.Errorf("baseline scan list: %w", err)
 	}
-	entries := result.Entries
-	if len(entries) > 20 {
-		entries = entries[:20]
+	keyByID := make(map[string]string, len(keys))
+	ids := make([]string, len(keys))
+	for i, key := range keys {
+		ids[i] = key[strings.LastIndex(key, ":")+1:]
+		keyByID[ids[i]] = key
 	}
-	docs := make([]domdoc.Document, len(entries))
-	for i, entry := range entries {
-		docs[i] = parseHashFields(
-			strings.TrimPrefix(entry.Key, domain.GenerationDocumentPrefix(c.name, c.generation)),
-			entry.Fields,
-		)
+	sort.Strings(ids)
+	if offset >= len(ids) {
+		return nil, nil
+	}
+	ids = ids[offset:min(offset+20, len(ids))]
+	docs := make([]domdoc.Document, len(ids))
+	for i, id := range ids {
+		fields, err := c.store.HGetAll(c.ctx, keyByID[id])
+		if err != nil {
+			return nil, fmt.Errorf("baseline hash read: %w", err)
+		}
+		docs[i], err = parseHashFields(id, fields)
+		if err != nil {
+			return nil, fmt.Errorf("baseline document decode: %w", err)
+		}
 	}
 	return docs, nil
 }
@@ -178,7 +195,9 @@ func (c *catalogCorpus) benchCount(b *testing.B, legacy bool) {
 		var count int
 		var err error
 		if legacy {
-			count, err = c.store.SearchCount(c.ctx, domain.GenerationIndexName(c.name, c.generation), "*")
+			var keys []string
+			keys, err = c.store.ScanForTest(c.ctx, c.layout().Base()+":doc:*")
+			count = len(keys)
 		} else {
 			count, err = c.repo.Count(c.ctx, c.name)
 		}
@@ -229,12 +248,11 @@ func (c *catalogCorpus) id(index int) string { return fmt.Sprintf("doc-%06d", in
 
 func (c *catalogCorpus) cleanup(b *testing.B) {
 	b.Helper()
-	keys, err := c.store.Scan(c.ctx, domain.CollectionDataBase(c.name, c.generation)+":*")
+	keys, err := c.store.ScanForTest(c.ctx, c.layout().Base()+":*")
 	if err != nil {
 		b.Error(err)
 		return
 	}
-	keys = append(keys, domain.CollectionMetadataKey(c.name))
 	for start := 0; start < len(keys); start += 256 {
 		commands := make([]rueidis.Completed, 0, 256)
 		for _, key := range keys[start:min(start+256, len(keys))] {
@@ -246,4 +264,12 @@ func (c *catalogCorpus) cleanup(b *testing.B) {
 			}
 		}
 	}
+}
+
+func (c *catalogCorpus) layout() storage.Collection {
+	layout, err := storage.NewCollection(c.name, c.generation)
+	if err != nil {
+		panic(err)
+	}
+	return layout
 }

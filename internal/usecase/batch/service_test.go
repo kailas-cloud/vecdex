@@ -164,7 +164,7 @@ func TestUpsert_Success(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b"), makeDoc(t, "c")}
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))
@@ -189,7 +189,7 @@ func TestUpsert_PartialFailure(t *testing.T) {
 		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // ok — unknown tags allowed (stored)
 		makeDoc(t, "c"), // ok
 	}
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 
 	for i, r := range results {
 		if r.Status() != dombatch.StatusOK {
@@ -198,8 +198,10 @@ func TestUpsert_PartialFailure(t *testing.T) {
 	}
 }
 
-func TestUpsert_SystemFieldsAllowedWithoutSchema(t *testing.T) {
-	col := makeCollection(t, nil)
+func TestUpsert_ExplicitFormerChunkFields(t *testing.T) {
+	col := makeCollection(t, []field.Field{
+		makeField(t, "parent_doc_id", field.Tag), makeField(t, "chunk_index", field.Numeric),
+	})
 	docs := &mockDocUpserter{}
 	del := &mockDocDeleter{}
 	colls := &mockCollReader{col: col}
@@ -207,15 +209,15 @@ func TestUpsert_SystemFieldsAllowedWithoutSchema(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	item, err := domdoc.New("a", "content", map[string]string{
-		domcol.SystemParentDocID: "a",
+		"parent_doc_id": "a",
 	}, map[string]float64{
-		domcol.SystemChunkIndex: 1,
+		"chunk_index": 1,
 	})
 	if err != nil {
 		t.Fatalf("domdoc.New: %v", err)
 	}
 
-	results := svc.Upsert(context.Background(), "test-col", []domdoc.Document{item})
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest([]domdoc.Document{item}))
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -237,7 +239,7 @@ func TestUpsert_ExceedsMax(t *testing.T) {
 		items[i] = makeDoc(t, fmt.Sprintf("doc-%d", i))
 	}
 
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 	for _, r := range results {
 		if r.Status() != dombatch.StatusError {
 			t.Error("expected all errors for oversized batch")
@@ -253,7 +255,7 @@ func TestUpsert_CollectionNotFound(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a")}
-	results := svc.Upsert(context.Background(), "nonexistent", items)
+	results := svc.Upsert(context.Background(), "nonexistent", upsertItemsForTest(items))
 
 	if results[0].Status() != dombatch.StatusError {
 		t.Error("expected error for nonexistent collection")
@@ -275,7 +277,7 @@ func TestUpsert_QuotaCascade(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b"), makeDoc(t, "c")}
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 
 	// Batch embed fails atomically — all items get the error
 	for i, r := range results {
@@ -300,7 +302,7 @@ func TestUpsert_RateLimitCascade(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")}
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 
 	// Batch embed fails atomically — all items get rate limit error
 	for i, r := range results {
@@ -326,7 +328,7 @@ func TestUpsert_BatchEmbedError(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b"), makeDoc(t, "c")}
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 
 	// Batch embed fails — all items get the error
 	for i, r := range results {
@@ -348,7 +350,7 @@ func TestUpsert_UnknownTagsAllowed(t *testing.T) {
 		makeDocWithTags(t, "a", map[string]string{"lang": "go"}),     // ok — known tag
 		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // ok — stored field
 	}
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 
 	for i, r := range results {
 		if r.Status() != dombatch.StatusOK {
@@ -367,7 +369,7 @@ func TestDelete_Success(t *testing.T) {
 	embed := &mockEmbedder{}
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
-	results := svc.Delete(context.Background(), "test-col", []string{"a", "b"})
+	results := svc.Delete(context.Background(), "test-col", deleteItemsForTest([]string{"a", "b"}))
 
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
@@ -387,7 +389,7 @@ func TestDelete_PartialFailure(t *testing.T) {
 	embed := &mockEmbedder{}
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
-	results := svc.Delete(context.Background(), "test-col", []string{"a", "b", "c"})
+	results := svc.Delete(context.Background(), "test-col", deleteItemsForTest([]string{"a", "b", "c"}))
 
 	if results[0].Status() != dombatch.StatusOK {
 		t.Error("result[0] expected ok")
@@ -413,7 +415,7 @@ func TestDelete_ExceedsMax(t *testing.T) {
 		ids[i] = fmt.Sprintf("doc-%d", i)
 	}
 
-	results := svc.Delete(context.Background(), "test-col", ids)
+	results := svc.Delete(context.Background(), "test-col", deleteItemsForTest(ids))
 	for _, r := range results {
 		if r.Status() != dombatch.StatusError {
 			t.Error("expected all errors for oversized batch")
@@ -428,7 +430,7 @@ func TestDelete_CollectionNotFound(t *testing.T) {
 	embed := &mockEmbedder{}
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
-	results := svc.Delete(context.Background(), "nonexistent", []string{"a"})
+	results := svc.Delete(context.Background(), "nonexistent", deleteItemsForTest([]string{"a"}))
 
 	if results[0].Status() != dombatch.StatusError {
 		t.Error("expected error for nonexistent collection")
@@ -449,7 +451,7 @@ func TestUpsert_BatchEmbedUsed(t *testing.T) {
 
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, embed)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")}
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 
 	for i, r := range results {
 		if r.Status() != dombatch.StatusOK {
@@ -475,7 +477,7 @@ func TestUpsert_NilBatchEmbedFallback(t *testing.T) {
 	// batchEmbed = nil → fallback на поштучный Embed через BatchFallback
 	svc := New(docs, &mockBatchUpserter{}, del, colls, embed, nil)
 	items := []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")}
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 
 	for i, r := range results {
 		if r.Status() != dombatch.StatusOK {
@@ -501,7 +503,7 @@ func TestUpsert_AllValidEmbedded(t *testing.T) {
 		makeDocWithTags(t, "b", map[string]string{"unknown": "val"}), // valid — stored field
 		makeDoc(t, "c"), // valid
 	}
-	results := svc.Upsert(context.Background(), "test-col", items)
+	results := svc.Upsert(context.Background(), "test-col", upsertItemsForTest(items))
 
 	for i, r := range results {
 		if r.Status() != dombatch.StatusOK {
@@ -526,7 +528,8 @@ func TestBatchRejectsMalformedVectorsBeforeWriting(t *testing.T) {
 			embed,
 			embed,
 		)
-		results := svc.Upsert(context.Background(), "test-col", []domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")})
+		results := svc.Upsert(context.Background(), "test-col",
+			upsertItemsForTest([]domdoc.Document{makeDoc(t, "a"), makeDoc(t, "b")}))
 		for _, result := range results {
 			if result.Err() == nil {
 				t.Fatal("invalid embedding accepted")
@@ -568,7 +571,8 @@ func TestContextFallbackAndPerParentWriteErrors(t *testing.T) {
 	small, _ := domdoc.New("small", "okay", nil, nil)
 	bad, _ := domdoc.New("bad", "bad", nil, nil)
 	writefail, _ := domdoc.New("writefail", "okay", nil, nil)
-	results := svc.Upsert(context.Background(), "test-col", []domdoc.Document{large, small, bad, writefail})
+	results := svc.Upsert(context.Background(), "test-col",
+		upsertItemsForTest([]domdoc.Document{large, small, bad, writefail}))
 	if results[0].Err() != nil || results[1].Err() != nil || results[2].Err() == nil || results[3].Err() == nil {
 		t.Fatalf("results %+v", results)
 	}
@@ -598,7 +602,7 @@ func TestBatchDeadlineReachesProvider(t *testing.T) {
 		embed,
 		embed,
 	)
-	results := svc.Upsert(ctx, "test-col", []domdoc.Document{makeDoc(t, "deadline")})
+	results := svc.Upsert(ctx, "test-col", upsertItemsForTest([]domdoc.Document{makeDoc(t, "deadline")}))
 	if !observed || len(results) != 1 || results[0].Err() != nil {
 		t.Fatalf("batch provider not reached: %v", results)
 	}
@@ -617,7 +621,8 @@ func TestUpsertKeepsCompletedEmbeddingPrefixOnLaterFailure(t *testing.T) {
 		embed,
 	)
 	ctx, usage := domain.NewContextWithUsage(context.Background())
-	results := service.Upsert(ctx, "test-col", []domdoc.Document{makeDoc(t, "completed"), makeDoc(t, "failed")})
+	results := service.Upsert(ctx, "test-col",
+		upsertItemsForTest([]domdoc.Document{makeDoc(t, "completed"), makeDoc(t, "failed")}))
 	if results[0].Err() != nil || !errors.Is(results[1].Err(), domain.ErrEmbeddingProviderError) ||
 		docs.callCount != 1 {
 		t.Fatalf("successful prefix discarded: %v calls %d", results, docs.callCount)
@@ -625,4 +630,19 @@ func TestUpsertKeepsCompletedEmbeddingPrefixOnLaterFailure(t *testing.T) {
 	if usage.TotalTokens != 7 {
 		t.Fatalf("completed usage lost: %+v", usage)
 	}
+}
+
+func upsertItemsForTest(docs []domdoc.Document) []dombatch.UpsertItem {
+	items := make([]dombatch.UpsertItem, len(docs))
+	for i, doc := range docs {
+		items[i].Document = doc
+	}
+	return items
+}
+func deleteItemsForTest(ids []string) []dombatch.DeleteItem {
+	items := make([]dombatch.DeleteItem, len(ids))
+	for i, id := range ids {
+		items[i].ID = id
+	}
+	return items
 }

@@ -19,3 +19,9 @@ type BudgetCommand struct {
 type BudgetStore interface {
 	Budget(ctx context.Context, command *BudgetCommand) (domusage.Snapshot, error)
 }
+
+// BudgetSnapshotStore reads fixed routed counter groups without scanning.
+// Each three-period group is atomic; different partitions can advance independently.
+type BudgetSnapshotStore interface {
+	BudgetSnapshots(ctx context.Context, groups [][]string) ([]domusage.Snapshot, error)
+}

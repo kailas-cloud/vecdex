@@ -216,7 +216,7 @@ func TestDocumentService_Upsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !created {
+	if !created.Created {
 		t.Error("expected created=true")
 	}
 }
@@ -323,9 +323,9 @@ func TestDocumentService_Delete_Error(t *testing.T) {
 }
 
 func TestDocumentService_Patch(t *testing.T) {
-	d, _ := domdoc.New("doc-1", "updated", nil, nil)
+	d := domdoc.WriteResult{ID: "doc-1", Version: "updated-version"}
 	mock := &mockDocumentUC{
-		patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.Document, error) {
+		patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.WriteResult, error) {
 			return d, nil
 		},
 	}
@@ -336,15 +336,15 @@ func TestDocumentService_Patch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if doc.Content != "updated" {
-		t.Errorf("Content = %q, want updated", doc.Content)
+	if doc.Version != "updated-version" {
+		t.Errorf("Version = %q, want updated-version", doc.Version)
 	}
 }
 
 func TestDocumentService_Patch_Error(t *testing.T) {
 	mock := &mockDocumentUC{
-		patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.Document, error) {
-			return domdoc.Document{}, errors.New("fail")
+		patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.WriteResult, error) {
+			return domdoc.WriteResult{}, errors.New("fail")
 		},
 	}
 
@@ -383,13 +383,13 @@ func TestDocumentService_Count_Error(t *testing.T) {
 
 func TestDocumentService_BatchUpsert(t *testing.T) {
 	batch := &mockBatchUC{
-		upsertFn: func(_ context.Context, _ string, docs []domdoc.Document) []dombatch.Result {
+		upsertFn: func(_ context.Context, _ string, docs []dombatch.UpsertItem) []dombatch.Result {
 			return []dombatch.Result{dombatch.NewOK(docs[0].ID())}
 		},
 	}
 
 	svc := newDocSvc(nil, batch)
-	resp, err := svc.BatchUpsert(context.Background(), []Document{{ID: "doc-1"}})
+	resp, err := svc.BatchUpsert(context.Background(), []BatchUpsertItem{{ID: "doc-1"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -403,13 +403,13 @@ func TestDocumentService_BatchUpsert(t *testing.T) {
 
 func TestDocumentService_BatchDelete(t *testing.T) {
 	batch := &mockBatchUC{
-		deleteFn: func(_ context.Context, _ string, ids []string) []dombatch.Result {
-			return []dombatch.Result{dombatch.NewOK(ids[0])}
+		deleteFn: func(_ context.Context, _ string, ids []dombatch.DeleteItem) []dombatch.Result {
+			return []dombatch.Result{dombatch.NewOK(ids[0].ID)}
 		},
 	}
 
 	svc := newDocSvc(nil, batch)
-	resp := svc.BatchDelete(context.Background(), []string{"doc-1"})
+	resp := svc.BatchDelete(context.Background(), []BatchDeleteItem{{ID: "doc-1"}})
 	if len(resp.Results) != 1 || !resp.Results[0].OK {
 		t.Errorf("results = %+v", resp.Results)
 	}

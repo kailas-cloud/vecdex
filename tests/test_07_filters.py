@@ -22,7 +22,7 @@ class TestFilterMust:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("tags", {}).get("category") == "programming"
+            assert item.get("metadata", {}).get("category") == "programming"
 
     def test_must_numeric_range_filter(self, client, populated_collection):
         coll = populated_collection["name"]
@@ -35,7 +35,7 @@ class TestFilterMust:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("numerics", {}).get("priority", 0) >= 9
+            assert item.get("metadata", {}).get("priority", 0) >= 9
 
 
 @pytest.mark.p0
@@ -53,7 +53,7 @@ class TestFilterMustNot:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("tags", {}).get("category") != "database"
+            assert item.get("metadata", {}).get("category") != "database"
 
 
 @pytest.mark.p0
@@ -76,7 +76,7 @@ class TestFilterShould:
         )
         data = resp.json()
         for item in data["items"]:
-            cat = item.get("tags", {}).get("category")
+            cat = item.get("metadata", {}).get("category")
             assert cat in ("programming", "database")
 
 
@@ -98,8 +98,8 @@ class TestFilterCombined:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("numerics", {}).get("priority", 0) >= 7
-            assert item.get("tags", {}).get("category") != "database"
+            assert item.get("metadata", {}).get("priority", 0) >= 7
+            assert item.get("metadata", {}).get("category") != "database"
 
     def test_empty_filter_is_noop(self, client, populated_collection):
         coll = populated_collection["name"]
@@ -125,7 +125,7 @@ class TestFilterRange:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("numerics", {}).get("priority", 0) < 8
+            assert item.get("metadata", {}).get("priority", 0) < 8
 
     def test_range_gte_and_lte(self, client, populated_collection):
         coll = populated_collection["name"]
@@ -138,7 +138,7 @@ class TestFilterRange:
         )
         data = resp.json()
         for item in data["items"]:
-            p = item.get("numerics", {}).get("priority", 0)
+            p = item.get("metadata", {}).get("priority", 0)
             assert 7 <= p <= 9
 
 
@@ -163,8 +163,8 @@ class TestFilterP1:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("tags", {}).get("category") == "programming"
-            assert item.get("numerics", {}).get("priority", 0) >= 9
+            assert item.get("metadata", {}).get("category") == "programming"
+            assert item.get("metadata", {}).get("priority", 0) >= 9
     def test_filter_with_keyword_mode(self, client, populated_collection):
         """Filters should work with keyword search too."""
         coll = populated_collection["name"]
@@ -177,7 +177,7 @@ class TestFilterP1:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("tags", {}).get("category") == "programming"
+            assert item.get("metadata", {}).get("category") == "programming"
 
     def test_must_not_with_range(self, client, populated_collection):
         coll = populated_collection["name"]
@@ -190,7 +190,7 @@ class TestFilterP1:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("numerics", {}).get("priority", 0) < 9
+            assert item.get("metadata", {}).get("priority", 0) < 9
 
     def test_should_with_must_not(self, client, populated_collection):
         coll = populated_collection["name"]
@@ -209,9 +209,9 @@ class TestFilterP1:
         )
         data = resp.json()
         for item in data["items"]:
-            cat = item.get("tags", {}).get("category")
+            cat = item.get("metadata", {}).get("category")
             assert cat in ("programming", "infrastructure")
-            assert item.get("numerics", {}).get("priority", 0) >= 8
+            assert item.get("metadata", {}).get("priority", 0) >= 8
 
     def test_range_gt_strict(self, client, populated_collection):
         """gt (strictly greater than) vs gte."""
@@ -225,7 +225,7 @@ class TestFilterP1:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("numerics", {}).get("priority", 0) > 9
+            assert item.get("metadata", {}).get("priority", 0) > 9
 
     def test_single_should_equals_must(self, client, populated_collection):
         """6.2.2: Single should == must equivalent."""
@@ -239,7 +239,7 @@ class TestFilterP1:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("tags", {}).get("category") == "programming"
+            assert item.get("metadata", {}).get("category") == "programming"
 
     def test_must_not_single_doc_returns_empty(self, client, collection_factory):
         """6.3.2: must_not on the only matching doc → empty results."""
@@ -248,12 +248,12 @@ class TestFilterP1:
         )
         name = coll["name"]
         client.put(
-            f"/collections/{name}/documents/only-one",
-            json={"content": "only document here", "tags": {"env": "prod"}},
+            f"/api/v2/collections/{name}/documents/only-one",
+            json={"content": "only document here", "metadata": {"env": "prod"}},
         )
         time.sleep(0.5)
         resp = client.post(
-            f"/collections/{name}/documents/search",
+            f"/api/v2/collections/{name}/search",
             json={
                 "query": "only document",
                 "mode": "semantic",
@@ -279,7 +279,7 @@ class TestFilterP1:
         """6.5.4: range: {lte: 0} → only docs with priority ≤ 0."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={
                 "query": "technology",
                 "mode": "semantic",
@@ -288,13 +288,13 @@ class TestFilterP1:
         )
         assert resp.status_code == 200
         for item in resp.json()["items"]:
-            assert item.get("numerics", {}).get("priority", 0) <= 0
+            assert item.get("metadata", {}).get("priority", 0) <= 0
 
     def test_range_gt_and_gte_conflict_returns_400(self, client, populated_collection):
         """6.5.5: range: {gt: 5, gte: 5} → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={
                 "query": "technology",
                 "mode": "semantic",
@@ -307,7 +307,7 @@ class TestFilterP1:
         """6.5.6: range: {lt: 5, lte: 5} → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={
                 "query": "technology",
                 "mode": "semantic",
@@ -320,7 +320,7 @@ class TestFilterP1:
         """6.5.7: Empty range {} → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={
                 "query": "technology",
                 "mode": "semantic",
@@ -338,7 +338,7 @@ class TestFilterValidation:
         """6.6.1: Unknown field in filter → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={
                 "query": "technology",
                 "mode": "semantic",
@@ -351,7 +351,7 @@ class TestFilterValidation:
         """6.6.2: Condition without match/range → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={
                 "query": "technology",
                 "mode": "semantic",
@@ -364,7 +364,7 @@ class TestFilterValidation:
         """6.6.3: Both match AND range → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={
                 "query": "technology",
                 "mode": "semantic",
@@ -379,7 +379,7 @@ class TestFilterValidation:
         """6.6.4: match on numeric / range on tag → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={
                 "query": "technology",
                 "mode": "semantic",
@@ -393,7 +393,7 @@ class TestFilterValidation:
         coll = populated_collection["name"]
         conditions = [{"key": "category", "match": f"val{i}"} for i in range(33)]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={
                 "query": "technology",
                 "mode": "semantic",
@@ -418,7 +418,7 @@ class TestFilterWithModes:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("tags", {}).get("category") == "programming"
+            assert item.get("metadata", {}).get("category") == "programming"
 
     def test_filters_with_semantic_mode(self, client, populated_collection):
         """6.7.2: Filters + semantic mode."""
@@ -432,7 +432,7 @@ class TestFilterWithModes:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("tags", {}).get("category") == "infrastructure"
+            assert item.get("metadata", {}).get("category") == "infrastructure"
 
 
 @pytest.mark.p0
@@ -444,8 +444,8 @@ class TestFilterSpecialTags:
         coll = collection_factory(fields=[{"name": "label", "type": "tag"}])
         name = coll["name"]
         client.put(
-            f"/collections/{name}/documents/sp-1",
-            json={"content": "document with spaced tag", "tags": {"label": "hello world"}},
+            f"/api/v2/collections/{name}/documents/sp-1",
+            json={"content": "document with spaced tag", "metadata": {"label": "hello world"}},
         )
         time.sleep(0.5)
         resp = search_with_retry(
@@ -463,30 +463,30 @@ class TestFilterSpecialTags:
         coll = collection_factory(fields=[{"name": "label", "type": "tag"}])
         name = coll["name"]
         client.put(
-            f"/collections/{name}/documents/cm-1",
-            json={"content": "comma tag test", "tags": {"label": "a,b,c"}},
+            f"/api/v2/collections/{name}/documents/cm-1",
+            json={"content": "comma tag test", "metadata": {"label": "a,b,c"}},
         )
-        doc = client.get(f"/collections/{name}/documents/cm-1").json()
-        assert doc.get("tags", {}).get("label") == "a,b,c"
+        doc = client.get(f"/api/v2/collections/{name}/documents/cm-1").json()
+        assert doc.get("metadata", {}).get("label") == "a,b,c"
 
     def test_tag_with_pipe_not_or(self, client, collection_factory):
         """6.9.3: Tag with pipe — not interpreted as OR."""
         coll = collection_factory(fields=[{"name": "label", "type": "tag"}])
         name = coll["name"]
         client.put(
-            f"/collections/{name}/documents/pipe-1",
-            json={"content": "pipe tag test", "tags": {"label": "a|b"}},
+            f"/api/v2/collections/{name}/documents/pipe-1",
+            json={"content": "pipe tag test", "metadata": {"label": "a|b"}},
         )
-        doc = client.get(f"/collections/{name}/documents/pipe-1").json()
-        assert doc.get("tags", {}).get("label") == "a|b"
+        doc = client.get(f"/api/v2/collections/{name}/documents/pipe-1").json()
+        assert doc.get("metadata", {}).get("label") == "a|b"
 
     def test_tag_with_braces_escaped(self, client, collection_factory):
         """6.9.4: Tag with braces — proper escaping."""
         coll = collection_factory(fields=[{"name": "label", "type": "tag"}])
         name = coll["name"]
         client.put(
-            f"/collections/{name}/documents/brace-1",
-            json={"content": "brace tag test", "tags": {"label": "{value}"}},
+            f"/api/v2/collections/{name}/documents/brace-1",
+            json={"content": "brace tag test", "metadata": {"label": "{value}"}},
         )
-        doc = client.get(f"/collections/{name}/documents/brace-1").json()
-        assert doc.get("tags", {}).get("label") == "{value}"
+        doc = client.get(f"/api/v2/collections/{name}/documents/brace-1").json()
+        assert doc.get("metadata", {}).get("label") == "{value}"

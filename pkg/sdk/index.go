@@ -32,19 +32,20 @@ func (idx *TypedIndex[T]) Ensure(ctx context.Context) error {
 	return nil
 }
 
-// Upsert creates or updates a single item. Returns true if created.
-func (idx *TypedIndex[T]) Upsert(ctx context.Context, item T) (bool, error) {
+// Upsert creates or updates a single item and returns its committed source version.
+func (idx *TypedIndex[T]) Upsert(ctx context.Context, item T, options ...WriteOption) (WriteResult, error) {
 	doc := idx.meta.toDocument(item)
-	return idx.client.Documents(idx.name).Upsert(ctx, doc)
+	return idx.client.Documents(idx.name).Upsert(ctx, doc, options...)
 }
 
 // UpsertBatch creates or updates items in batch.
 func (idx *TypedIndex[T]) UpsertBatch(
 	ctx context.Context, items []T,
 ) (BatchResponse, error) {
-	docs := make([]Document, len(items))
+	docs := make([]BatchUpsertItem, len(items))
 	for i, item := range items {
-		docs[i] = idx.meta.toDocument(item)
+		doc := idx.meta.toDocument(item)
+		docs[i] = BatchUpsertItem{ID: doc.ID, Content: doc.Content, Metadata: doc.Metadata}
 	}
 	return idx.client.Documents(idx.name).BatchUpsert(ctx, docs)
 }
@@ -56,7 +57,12 @@ func (idx *TypedIndex[T]) Get(ctx context.Context, id string) (T, error) {
 		var zero T
 		return zero, fmt.Errorf("get: %w", err)
 	}
-	item, ok := idx.meta.fromDocument(doc).(T)
+	decoded, err := idx.meta.fromDocument(doc)
+	if err != nil {
+		var zero T
+		return zero, fmt.Errorf("get: %w", err)
+	}
+	item, ok := decoded.(T)
 	if !ok {
 		var zero T
 		return zero, fmt.Errorf("get: type assertion failed")
@@ -65,8 +71,8 @@ func (idx *TypedIndex[T]) Get(ctx context.Context, id string) (T, error) {
 }
 
 // Delete removes an item by ID.
-func (idx *TypedIndex[T]) Delete(ctx context.Context, id string) error {
-	return idx.client.Documents(idx.name).Delete(ctx, id)
+func (idx *TypedIndex[T]) Delete(ctx context.Context, id string, options ...WriteOption) error {
+	return idx.client.Documents(idx.name).Delete(ctx, id, options...)
 }
 
 // Count returns the number of items in the collection.

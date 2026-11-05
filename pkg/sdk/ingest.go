@@ -3,303 +3,32 @@ package vecdex
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"sync"
-	"unicode"
-
-	hftokenizer "github.com/sugarme/tokenizer"
-	"github.com/sugarme/tokenizer/pretrained"
 )
 
+// Default ingestion limits apply when IngestorConfig omits a field.
 const (
-	// DefaultChunkWindowTokens is the target ONNX text window size used for chunking.
-	DefaultChunkWindowTokens = 256
-	// DefaultChunkOverlapPercent is the sentence-preserving overlap between chunks.
-	DefaultChunkOverlapPercent = 0.10
-	// DefaultIngestBatchSize is the number of chunk documents per batch upsert.
-	DefaultIngestBatchSize = 100
-	// DefaultIngestParallelism is the number of concurrent batch upserts.
+	DefaultIngestBatchSize   = 100
 	DefaultIngestParallelism = 10
-	// ParentDocIDTag links a chunk back to its source document.
-	ParentDocIDTag = "parent_doc_id"
-	// ChunkIndexNumeric stores the 1-based chunk order within a parent document.
-	ChunkIndexNumeric = "chunk_index"
 )
 
-// TextChunk is a sentence-aligned text span produced by a chunker.
-type TextChunk struct {
-	Content string
-	Tokens  int
-}
-
-// Chunker splits long text into model-sized chunks.
-type Chunker interface {
-	Chunk(text string) ([]TextChunk, error)
-}
-
-// ONNXChunkerConfig configures the local tokenizer-backed text chunker.
-type ONNXChunkerConfig struct {
-	ModelDir       string
-	WindowTokens   int
-	OverlapPercent float64
-}
-
-type chunkTokenizer interface {
-	EncodeBatch(inputs []hftokenizer.EncodeInput, addSpecialTokens bool) ([]hftokenizer.Encoding, error)
-}
-
-// ONNXChunker uses the local tokenizer.json so chunk sizing matches ONNX ingest.
-type ONNXChunker struct {
-	tokenizer     chunkTokenizer
-	maxTokens     int
-	overlapTokens int
-}
-
-// NewONNXChunker creates a sentence-aware chunker for the given local model dir.
-func NewONNXChunker(cfg ONNXChunkerConfig) (*ONNXChunker, error) {
-	if cfg.ModelDir == "" {
-		return nil, fmt.Errorf("onnx chunker: model dir is required")
-	}
-	maxTokens := cfg.WindowTokens
-	if maxTokens <= 0 {
-		maxTokens = DefaultChunkWindowTokens
-	}
-	overlapPercent := cfg.OverlapPercent
-	if overlapPercent <= 0 {
-		overlapPercent = DefaultChunkOverlapPercent
-	}
-	if overlapPercent >= 1 {
-		return nil, fmt.Errorf("onnx chunker: overlap percent must be < 1, got %.2f", overlapPercent)
-	}
-
-	tk, err := pretrained.FromFile(filepath.Join(cfg.ModelDir, "tokenizer.json"))
-	if err != nil {
-		return nil, fmt.Errorf("onnx chunker: load tokenizer: %w", err)
-	}
-
-	overlapTokens := int(float64(maxTokens)*overlapPercent + 0.5)
-	if overlapTokens >= maxTokens {
-		overlapTokens = maxTokens - 1
-	}
-	if overlapTokens < 0 {
-		overlapTokens = 0
-	}
-
-	return &ONNXChunker{
-		tokenizer:     tk,
-		maxTokens:     maxTokens,
-		overlapTokens: overlapTokens,
-	}, nil
-}
-
-// Chunk splits text into sentence-aligned chunks with token overlap.
-func (c *ONNXChunker) Chunk(text string) ([]TextChunk, error) {
-	sentences := splitSentences(text)
-	if len(sentences) == 0 {
-		return nil, nil
-	}
-
-	tokenCounts, err := c.countTokens(sentences)
-	if err != nil {
-		return nil, err
-	}
-
-	chunks := make([]TextChunk, 0, len(sentences))
-	for start := 0; start < len(sentences); {
-		chunk, nextStart, done, err := c.nextChunk(sentences, tokenCounts, start)
-		if err != nil {
-			return nil, err
-		}
-		chunks = append(chunks, chunk)
-		if done {
-			break
-		}
-		start = nextStart
-	}
-
-	return chunks, nil
-}
-
-func (c *ONNXChunker) nextChunk(
-	sentences []string,
-	tokenCounts []int,
-	start int,
-) (chunk TextChunk, nextStart int, done bool, err error) {
-	end, totalTokens, err := c.chunkWindow(tokenCounts, start)
-	if err != nil {
-		return TextChunk{}, 0, false, err
-	}
-
-	return TextChunk{
-		Content: strings.Join(sentences[start:end], " "),
-		Tokens:  totalTokens,
-	}, c.nextChunkStart(start, end, tokenCounts), end == len(sentences), nil
-}
-
-func (c *ONNXChunker) chunkWindow(tokenCounts []int, start int) (end, totalTokens int, err error) {
-	end = start
-	for end < len(tokenCounts) && totalTokens+tokenCounts[end] <= c.maxTokens {
-		totalTokens += tokenCounts[end]
-		end++
-	}
-	if end == start {
-		return 0, 0, fmt.Errorf(
-			"onnx chunker: sentence exceeds %d-token window",
-			c.maxTokens,
-		)
-	}
-	return end, totalTokens, nil
-}
-
-func (c *ONNXChunker) nextChunkStart(start, end int, tokenCounts []int) int {
-	if c.overlapTokens <= 0 {
-		return end
-	}
-
-	nextStart := end
-	overlap := 0
-	for i := end - 1; i > start; i-- {
-		overlap += tokenCounts[i]
-		nextStart = i
-		if overlap >= c.overlapTokens {
-			break
-		}
-	}
-	return nextStart
-}
-
-func (c *ONNXChunker) countTokens(sentences []string) ([]int, error) {
-	inputs := make([]hftokenizer.EncodeInput, len(sentences))
-	for i, sentence := range sentences {
-		inputs[i] = hftokenizer.NewSingleEncodeInput(hftokenizer.NewInputSequence(sentence))
-	}
-
-	encodings, err := c.tokenizer.EncodeBatch(inputs, true)
-	if err != nil {
-		return nil, fmt.Errorf("onnx chunker: encode sentences: %w", err)
-	}
-
-	counts := make([]int, len(encodings))
-	for i := range encodings {
-		for _, mask := range encodings[i].AttentionMask {
-			counts[i] += mask
-		}
-	}
-	return counts, nil
-}
-
-func splitSentences(text string) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-
-	runes := []rune(text)
-	sentences := make([]string, 0, 8)
-	start := 0
-	for i := 0; i < len(runes); i++ {
-		if handled, nextStart, nextIndex := consumeParagraphBreak(runes, start, i, &sentences); handled {
-			start = nextStart
-			i = nextIndex
-			continue
-		}
-		boundaryEnd, ok := sentenceBoundaryEnd(runes, i)
-		if !ok {
-			continue
-		}
-		appendSentence(&sentences, runes[start:boundaryEnd])
-		start = boundaryEnd
-	}
-
-	appendSentence(&sentences, runes[start:])
-	return sentences
-}
-
-func consumeParagraphBreak(
-	runes []rune,
-	start int,
-	index int,
-	sentences *[]string,
-) (handled bool, nextStart, nextIndex int) {
-	if runes[index] != '\n' || index+1 >= len(runes) || runes[index+1] != '\n' {
-		return false, start, index
-	}
-	appendSentence(sentences, runes[start:index])
-	return true, index + 2, index + 1
-}
-
-func sentenceBoundaryEnd(runes []rune, index int) (int, bool) {
-	if !isSentenceTerminator(runes[index]) {
-		return 0, false
-	}
-	end := skipClosingPunctuation(runes, index+1)
-	if !isBoundaryWhitespace(runes, end) {
-		return 0, false
-	}
-	return end, true
-}
-
-func skipClosingPunctuation(runes []rune, index int) int {
-	for index < len(runes) && isClosingPunctuation(runes[index]) {
-		index++
-	}
-	return index
-}
-
-func isBoundaryWhitespace(runes []rune, index int) bool {
-	if index >= len(runes) {
-		return true
-	}
-	return unicode.IsSpace(runes[index]) || runes[index] == '\n'
-}
-
-func appendSentence(sentences *[]string, runes []rune) {
-	if sentence := normalizeSentenceRunes(runes); sentence != "" {
-		*sentences = append(*sentences, sentence)
-	}
-}
-
-func normalizeSentenceRunes(runes []rune) string {
-	return strings.Join(strings.Fields(string(runes)), " ")
-}
-
-func isSentenceTerminator(r rune) bool {
-	switch r {
-	case '.', '!', '?':
-		return true
-	default:
-		return false
-	}
-}
-
-func isClosingPunctuation(r rune) bool {
-	switch r {
-	case '"', '\'', ')', ']', '}':
-		return true
-	default:
-		return false
-	}
-}
-
-// IngestorConfig controls chunked batch ingestion.
+// IngestorConfig controls source-document batch ingestion.
 type IngestorConfig struct {
 	BatchSize   int
 	Parallelism int
 }
 
-// TextIngestor chunks long text documents and uploads them in parallel batches.
+// TextIngestor uploads complete source documents in parallel batches.
+// Fragmentation is private to the shared ingestion pipeline.
 type TextIngestor struct {
 	docs        *DocumentService
-	chunker     Chunker
 	batchSize   int
 	parallelism int
 }
 
-// NewTextIngestor creates a chunking ingestor over the SDK document service.
+// NewTextIngestor creates an ingestor over the SDK document service.
 func NewTextIngestor(
 	docs *DocumentService,
-	chunker Chunker,
 	cfg *IngestorConfig,
 ) *TextIngestor {
 	batchSize := DefaultIngestBatchSize
@@ -314,32 +43,26 @@ func NewTextIngestor(
 	}
 	return &TextIngestor{
 		docs:        docs,
-		chunker:     chunker,
 		batchSize:   batchSize,
 		parallelism: parallelism,
 	}
 }
 
-// Upsert chunk-splits the provided documents and uploads them in parallel batches.
+// Upsert stores each source ID once, regardless of its internal fragment count.
 func (i *TextIngestor) Upsert(
 	ctx context.Context,
-	docs []Document,
+	docs []BatchUpsertItem,
 ) (BatchResponse, error) {
-	chunkedDocs, err := i.chunkDocuments(docs)
-	if err != nil {
-		return BatchResponse{}, err
-	}
-	if len(chunkedDocs) == 0 {
+	if len(docs) == 0 {
 		return BatchResponse{}, nil
 	}
-
-	batches := shardDocuments(chunkedDocs, i.batchSize)
+	batches := shardDocuments(docs, i.batchSize)
 	return i.upsertParallel(ctx, batches)
 }
 
 type ingestJob struct {
 	index int
-	docs  []Document
+	docs  []BatchUpsertItem
 }
 
 type ingestResult struct {
@@ -350,7 +73,7 @@ type ingestResult struct {
 
 func (i *TextIngestor) upsertParallel(
 	ctx context.Context,
-	batches [][]Document,
+	batches [][]BatchUpsertItem,
 ) (BatchResponse, error) {
 	workers := maxInt(1, minInt(i.parallelism, len(batches)))
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -401,7 +124,7 @@ func (i *TextIngestor) startIngestWorkers(
 func enqueueIngestJobs(
 	ctx context.Context,
 	jobCh chan<- ingestJob,
-	batches [][]Document,
+	batches [][]BatchUpsertItem,
 ) {
 	defer close(jobCh)
 	for idx, batch := range batches {
@@ -437,91 +160,11 @@ func collectIngestResults(
 	return responses, nil
 }
 
-func (i *TextIngestor) chunkDocuments(docs []Document) ([]Document, error) {
-	if i.chunker == nil {
-		return addParentTags(docs), nil
-	}
-
-	chunked := make([]Document, 0, len(docs))
-	for _, doc := range docs {
-		docChunks, err := i.chunkDocument(doc)
-		if err != nil {
-			return nil, err
-		}
-		chunked = append(chunked, docChunks...)
-	}
-	return chunked, nil
-}
-
-func addParentTags(docs []Document) []Document {
-	plain := make([]Document, 0, len(docs))
-	for _, doc := range docs {
-		plain = append(plain, withParentDocIDTag(doc, doc.ID))
-	}
-	return plain
-}
-
-func (i *TextIngestor) chunkDocument(doc Document) ([]Document, error) {
-	parts, err := i.chunker.Chunk(doc.Content)
-	if err != nil {
-		return nil, fmt.Errorf("chunk document %q: %w", doc.ID, err)
-	}
-	if len(parts) <= 1 {
-		return []Document{withParentDocIDTag(doc, doc.ID)}, nil
-	}
-	return buildChunkDocuments(doc, parts), nil
-}
-
-func buildChunkDocuments(doc Document, parts []TextChunk) []Document {
-	chunked := make([]Document, 0, len(parts))
-	for idx, part := range parts {
-		chunked = append(chunked, newChunkDocument(doc, part, idx+1))
-	}
-	return chunked
-}
-
-func newChunkDocument(doc Document, part TextChunk, chunkIndex int) Document {
-	tags := ensureTags(cloneTags(doc.Tags))
-	tags[ParentDocIDTag] = doc.ID
-	numerics := ensureNumerics(cloneNumerics(doc.Numerics))
-	numerics[ChunkIndexNumeric] = float64(chunkIndex)
-	return Document{
-		ID:       fmt.Sprintf("%s-chunk-%04d", doc.ID, chunkIndex),
-		Content:  part.Content,
-		Tags:     tags,
-		Numerics: numerics,
-	}
-}
-
-func withParentDocIDTag(doc Document, parentDocID string) Document {
-	tags := ensureTags(cloneTags(doc.Tags))
-	tags[ParentDocIDTag] = parentDocID
-	numerics := ensureNumerics(cloneNumerics(doc.Numerics))
-	numerics[ChunkIndexNumeric] = 1
-	doc.Tags = tags
-	doc.Numerics = numerics
-	return doc
-}
-
-func ensureTags(tags map[string]string) map[string]string {
-	if tags != nil {
-		return tags
-	}
-	return make(map[string]string, 1)
-}
-
-func ensureNumerics(numerics map[string]float64) map[string]float64 {
-	if numerics != nil {
-		return numerics
-	}
-	return make(map[string]float64, 1)
-}
-
-func shardDocuments(docs []Document, size int) [][]Document {
+func shardDocuments(docs []BatchUpsertItem, size int) [][]BatchUpsertItem {
 	if size <= 0 {
 		size = len(docs)
 	}
-	batches := make([][]Document, 0, (len(docs)+size-1)/size)
+	batches := make([][]BatchUpsertItem, 0, (len(docs)+size-1)/size)
 	for start := 0; start < len(docs); start += size {
 		end := start + size
 		if end > len(docs) {

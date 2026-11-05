@@ -2,9 +2,9 @@ package health
 
 import "context"
 
-// ValkeyPinger checks Valkey availability.
-type ValkeyPinger interface {
-	Ping(ctx context.Context) error
+// ValkeyChecker checks primary coverage and Search readiness.
+type ValkeyChecker interface {
+	Ready(ctx context.Context) error
 }
 
 // EmbeddingChecker checks embedding provider availability.

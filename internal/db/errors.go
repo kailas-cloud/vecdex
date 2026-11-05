@@ -4,10 +4,11 @@ import "errors"
 
 // Sentinel errors for database operations.
 var (
-	ErrKeyNotFound   = errors.New("db: key not found")
-	ErrKeyExists     = errors.New("db: key already exists")
-	ErrIndexNotFound = errors.New("db: index not found")
-	ErrIndexExists   = errors.New("db: index already exists")
+	ErrKeyNotFound    = errors.New("db: key not found")
+	ErrKeyExists      = errors.New("db: key already exists")
+	ErrIndexNotFound  = errors.New("db: index not found")
+	ErrIndexExists    = errors.New("db: index already exists")
+	ErrMutationFenced = errors.New("db: mutation was fenced by recovery")
 )
 
 // Op constants map to wire command names for error context.

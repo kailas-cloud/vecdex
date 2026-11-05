@@ -22,7 +22,7 @@ func TestCatalogTransactionFailuresLive(t *testing.T) {
 	ctx := context.Background()
 	base := "vecdex:v2:{catalog-" + rand.Text() + "}"
 	defer func() {
-		keys, err := admin.Scan(ctx, base+"*")
+		keys, err := admin.ScanForTest(ctx, base+"*")
 		if err != nil {
 			t.Error(err)
 			return

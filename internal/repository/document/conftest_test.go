@@ -5,25 +5,23 @@ import (
 	"testing"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
+	"github.com/kailas-cloud/vecdex/internal/domain"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 )
 
 // mockStore implements the consumer interface for tests.
 type mockStore struct {
-	catalogIDsFn   func(context.Context, string, string, int) ([]string, error)
-	catalogCountFn func(context.Context, string) (int, error)
-	hgetAllMultiFn func(context.Context, []string) ([]map[string]string, error)
-	mutateFn       func(context.Context, *db.HashMutation) (db.HashMutationResult, error)
-	hsetFn         func(ctx context.Context, key string, fields map[string]string) error
-	hsetMultiFn    func(ctx context.Context, items []db.HashSetItem) error
-	hgetAllFn      func(ctx context.Context, key string) (map[string]string, error)
-	hdelFn         func(ctx context.Context, key string, fields ...string) error
-	delFn          func(ctx context.Context, key string) error
-	existsFn       func(ctx context.Context, key string) (bool, error)
-	searchListFn   func(
-		ctx context.Context, index, query string, offset, limit int, fields []string,
-	) (*db.SearchResult, error)
-	searchCountFn func(ctx context.Context, index, query string) (int, error)
+	catalogIDsFn     func(context.Context, string, string, int) ([]string, error)
+	catalogCountFn   func(context.Context, string) (int, error)
+	hgetAllMultiFn   func(context.Context, []string) ([]map[string]string, error)
+	hgetFieldMultiFn func(context.Context, []string, string) ([]string, error)
+	mutateFn         func(context.Context, *db.HashMutation) (db.HashMutationResult, error)
+	hsetFn           func(ctx context.Context, key string, fields map[string]string) error
+	hsetMultiFn      func(ctx context.Context, items []db.HashSetItem) error
+	hgetAllFn        func(ctx context.Context, key string) (map[string]string, error)
+	hdelFn           func(ctx context.Context, key string, fields ...string) error
+	delFn            func(ctx context.Context, key string) error
+	existsFn         func(ctx context.Context, key string) (bool, error)
 }
 
 func (m *mockStore) HSet(ctx context.Context, key string, fields map[string]string) error {
@@ -66,22 +64,6 @@ func (m *mockStore) Exists(ctx context.Context, key string) (bool, error) {
 		return m.existsFn(ctx, key)
 	}
 	return false, nil
-}
-
-func (m *mockStore) SearchList(
-	ctx context.Context, index, query string, offset, limit int, fields []string,
-) (*db.SearchResult, error) {
-	if m.searchListFn != nil {
-		return m.searchListFn(ctx, index, query, offset, limit, fields)
-	}
-	return &db.SearchResult{}, nil
-}
-
-func (m *mockStore) SearchCount(ctx context.Context, index, query string) (int, error) {
-	if m.searchCountFn != nil {
-		return m.searchCountFn(ctx, index, query)
-	}
-	return 0, nil
 }
 
 func newTestRepo(t *testing.T) (*Repo, *mockStore) {
@@ -141,4 +123,45 @@ func (m *mockStore) HGetAllMulti(ctx context.Context, keys []string) ([]map[stri
 		rows[i] = row
 	}
 	return rows, nil
+}
+
+func testContext() context.Context {
+	return domain.WithCollectionGeneration(context.Background(), "fixture")
+}
+func (m *mockStore) CatalogIDPages(ctx context.Context, keys []string, after string, limit int) ([][]string, error) {
+	pages := make([][]string, len(keys))
+	if len(keys) > 0 {
+		var err error
+		pages[0], err = m.CatalogIDs(ctx, keys[0], after, limit)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return pages, nil
+}
+func (m *mockStore) CatalogCounts(ctx context.Context, keys []string) ([]int, error) {
+	counts := make([]int, len(keys))
+	if len(keys) > 0 {
+		var err error
+		counts[0], err = m.CatalogCount(ctx, keys[0])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return counts, nil
+}
+
+func (m *mockStore) HGetFieldMulti(ctx context.Context, keys []string, field string) ([]string, error) {
+	if m.hgetFieldMultiFn != nil {
+		return m.hgetFieldMultiFn(ctx, keys, field)
+	}
+	rows, err := m.HGetAllMulti(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]string, len(rows))
+	for i, row := range rows {
+		values[i] = row[field]
+	}
+	return values, nil
 }

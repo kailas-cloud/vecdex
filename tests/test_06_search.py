@@ -32,13 +32,13 @@ class TestSearchSemantic:
         for item in resp.json()["items"]:
             assert 0 <= item["score"] <= 1
 
-    def test_semantic_returns_content(self, client, populated_collection):
+    def test_semantic_returns_snippet(self, client, populated_collection):
         coll = populated_collection["name"]
         resp = search_with_retry(
             client, coll, query="programming language", mode="semantic"
         )
         for item in resp.json()["items"]:
-            assert "content" in item
+            assert "snippet" in item
             assert "id" in item
 
 
@@ -60,7 +60,7 @@ class TestSearchKeyword:
             client, coll, query="Kubernetes", mode="keyword"
         )
         data = resp.json()
-        contents = [item["content"] for item in data["items"]]
+        contents = [item["snippet"] for item in data["items"]]
         assert any("Kubernetes" in c for c in contents)
 
 
@@ -84,7 +84,7 @@ class TestSearchHybrid:
 
 @pytest.mark.p0
 class TestSearchParams:
-    """top_k, limit, min_score, include_vectors."""
+    """limit, max_content_bytes, min_score, include_vectors."""
 
     def test_limit_caps_results(self, client, populated_collection):
         coll = populated_collection["name"]
@@ -94,10 +94,10 @@ class TestSearchParams:
         data = resp.json()
         assert len(data["items"]) <= 2
 
-    def test_top_k_controls_window(self, client, populated_collection):
+    def test_limit_controls_window(self, client, populated_collection):
         coll = populated_collection["name"]
         resp = search_with_retry(
-            client, coll, query="programming", mode="semantic", top_k=3
+            client, coll, query="programming", mode="semantic", limit=3
         )
         data = resp.json()
         assert len(data["items"]) <= 3
@@ -127,7 +127,7 @@ class TestSearchParams:
 
     def test_search_nonexistent_collection_returns_404(self, client):
         resp = client.post(
-            "/collections/nonexistent-xyz/documents/search",
+            "/api/v2/collections/nonexistent-xyz/search",
             json={"query": "test"},
         )
         assert resp.status_code == 404
@@ -135,7 +135,7 @@ class TestSearchParams:
     def test_search_empty_query_returns_400(self, client, populated_collection):
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={"query": ""},
         )
         assert resp.status_code == 400
@@ -196,7 +196,7 @@ class TestSearchKeywordP1:
     def test_keyword_no_match_returns_empty(self, client, populated_collection):
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={"query": "xyzzyplughtwisty", "mode": "keyword"},
         )
         assert resp.status_code == 200
@@ -258,15 +258,15 @@ class TestSearchKeywordHeaders:
 
 
 @pytest.mark.p0
-class TestSearchTopKLimit:
-    """P0 top_k and limit interaction."""
+class TestSearchLimit:
+    """P0 result limit."""
 
-    def test_top_k_50_limit_5(self, client, populated_collection):
-        """5.4.1: top_k=50, limit=5 → ≤ 5 results."""
+    def test_limit_5(self, client, populated_collection):
+        """5.4.1: limit=5 → ≤ 5 results."""
         coll = populated_collection["name"]
         resp = search_with_retry(
             client, coll, query="programming", mode="semantic",
-            top_k=50, limit=5,
+            limit=5,
         )
         assert len(resp.json()["items"]) <= 5
 
@@ -279,7 +279,7 @@ class TestSearchParamValidationP1:
         """5.4.5: top_k=501 → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={"query": "test", "mode": "semantic", "top_k": 501},
         )
         assert resp.status_code == 400
@@ -288,7 +288,7 @@ class TestSearchParamValidationP1:
         """5.4.6: top_k=0 → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={"query": "test", "mode": "semantic", "top_k": 0},
         )
         assert resp.status_code == 400
@@ -297,7 +297,7 @@ class TestSearchParamValidationP1:
         """5.4.7: limit=0 → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={"query": "test", "mode": "semantic", "limit": 0},
         )
         assert resp.status_code == 400
@@ -306,7 +306,7 @@ class TestSearchParamValidationP1:
         """5.4.8: limit=101 → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={"query": "test", "mode": "semantic", "limit": 101},
         )
         assert resp.status_code == 400
@@ -315,7 +315,7 @@ class TestSearchParamValidationP1:
         """5.7.4: Invalid mode 'full_text' → 400."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={"query": "test", "mode": "full_text"},
         )
         assert resp.status_code == 400
@@ -329,7 +329,7 @@ class TestSearchMinScore:
         """5.5.1: min_score=0.8 → all returned scores ≥ 0.8."""
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={"query": "programming language", "mode": "semantic", "min_score": 0.8},
         )
         assert resp.status_code == 200
@@ -348,7 +348,7 @@ class TestSearchHybridP1:
         )
         items = resp.json()["items"]
         # At least some items should have tags from populated_collection
-        has_tags = any(item.get("tags") for item in items)
+        has_tags = any(item.get("metadata") for item in items)
         assert has_tags
 
 
@@ -359,7 +359,7 @@ class TestSearchMalformedBody:
     def test_malformed_search_body_returns_400(self, client, populated_collection):
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             content=b"not json",
             headers={"content-type": "application/json"},
         )
@@ -369,14 +369,14 @@ class TestSearchMalformedBody:
 @pytest.mark.parametrize("mode", ["semantic", "keyword", "hybrid"])
 def test_projection_preserves_unindexed_metadata(client, collection_factory, mode):
     name = collection_factory(fields=[{"name": "priority", "type": "numeric"}])["name"]
-    base = f"/collections/{name}/documents"
+    base = f"/api/v2/collections/{name}/documents"
     created = client.put(f"{base}/metadata", json={
-        "content": "projectedmetadatakeep", "tags": {"not_indexed": "retained"}, "numerics": {"priority": 1.25},
+        "content": "projectedmetadatakeep", "metadata": {"not_indexed": "retained", "priority": 1.25},
     })
     assert created.status_code == 201, created.text
-    response = client.post(f"{base}/search", json={"query": "projectedmetadatakeep", "mode": mode, "include_vectors": False})
+    response = client.post(f"/api/v2/collections/{name}/search", json={"query": "projectedmetadatakeep", "mode": mode, "include_vectors": False})
     assert response.status_code == 200, response.text
     item = response.json()["items"][0]
-    assert item["tags"]["not_indexed"] == "retained"
-    assert item["numerics"]["priority"] == 1.25
+    assert item["metadata"]["not_indexed"] == "retained"
+    assert item["metadata"]["priority"] == 1.25
     assert "vector" not in item

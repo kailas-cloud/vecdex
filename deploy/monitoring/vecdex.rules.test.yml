@@ -1,0 +1,72 @@
+rule_files:
+  - vecdex.rules.yml
+evaluation_interval: 1m
+tests:
+  - name: capacity alerts use individual nodes and respect their hold times
+    interval: 1m
+    input_series:
+      - series: 'redis_memory_used_bytes{service="vecdex",instance="busy",cluster="test"}'
+        values: '70+0x12'
+      - series: 'redis_memory_max_bytes{service="vecdex",instance="busy",cluster="test"}'
+        values: '100+0x12'
+      - series: 'redis_memory_used_bytes{service="vecdex",instance="quiet",cluster="test"}'
+        values: '20+0x12'
+      - series: 'redis_memory_max_bytes{service="vecdex",instance="quiet",cluster="test"}'
+        values: '100+0x12'
+      - series: 'redis_memory_used_bytes{service="other",instance="unrelated",cluster="test"}'
+        values: '95+0x12'
+      - series: 'redis_memory_max_bytes{service="other",instance="unrelated",cluster="test"}'
+        values: '100+0x12'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: VecdexValkeyScaleOutRequired
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: VecdexValkeyScaleOutRequired
+        exp_alerts:
+          - exp_labels: {service: vecdex, instance: busy, cluster: test, severity: warning}
+            exp_annotations:
+              summary: "Start the shard expansion procedure for busy"
+      - eval_time: 10m
+        alertname: VecdexValkeyMemoryWarning
+        exp_alerts:
+          - exp_labels: {service: vecdex, instance: busy, cluster: test, severity: warning}
+            exp_annotations:
+              summary: "Valkey memory is at least 60% on busy"
+      - eval_time: 10m
+        alertname: VecdexValkeyMemoryCritical
+        exp_alerts: []
+
+  - name: an unset memory limit is an error rather than a capacity ratio
+    interval: 1m
+    input_series:
+      - series: 'redis_memory_used_bytes{service="vecdex",instance="unbounded"}'
+        values: '90+0x6'
+      - series: 'redis_memory_max_bytes{service="vecdex",instance="unbounded"}'
+        values: '0+0x6'
+    promql_expr_test:
+      - expr: vecdex:valkey_memory_ratio
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: VecdexValkeyMemoryLimitMissing
+        exp_alerts:
+          - exp_labels: {service: vecdex, instance: unbounded, severity: critical}
+            exp_annotations:
+              summary: "Valkey has no maxmemory limit on unbounded"
+
+  - name: fork transients do not hide a persistent writer misconfiguration
+    interval: 1m
+    input_series:
+      - series: 'redis_search_total_active_write_threads{service="vecdex",instance="brief-fork"}'
+        values: '0 1 1 1'
+      - series: 'redis_search_total_active_write_threads{service="vecdex",instance="bad-writers"}'
+        values: '4 4 4 4'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VecdexSearchWriterConfiguration
+        exp_alerts:
+          - exp_labels: {service: vecdex, instance: bad-writers, severity: critical}
+            exp_annotations:
+              summary: "Search 1.2.1 requires one active writer on bad-writers"

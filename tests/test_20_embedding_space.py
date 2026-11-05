@@ -12,9 +12,9 @@ def test_model_change_requires_reindexing(client, collection_factory):
     if not incompatible_url:
         pytest.skip("second vectorizer is not configured")
     collection = collection_factory(fields=[{"name": "category", "type": "tag"}])["name"]
-    base = f"/collections/{collection}"
+    base = f"/api/v2/collections/{collection}"
     path = f"{base}/documents/source"
-    created = client.put(path, json={"content": "original text", "tags": {"category": "before"}})
+    created = client.put(path, json={"content": "original text", "metadata": {"category": "before"}})
     assert created.status_code == 201
     fingerprint = client.get(base).json()["embedding_space"]
     assert len(fingerprint) == 64
@@ -23,7 +23,7 @@ def test_model_change_requires_reindexing(client, collection_factory):
         for response in (
             changed.put(path, json={"content": "replacement"}),
             changed.patch(path, json={"content": "replacement"}),
-            changed.post(f"{base}/documents/search", json={"query": "original", "mode": "semantic"}),
+            changed.post(f"{base}/search", json={"query": "original", "mode": "semantic"}),
             changed.post(f"{path}/similar", json={}),
         ):
             assert response.status_code == 409, response.text
@@ -37,9 +37,9 @@ def test_model_change_requires_reindexing(client, collection_factory):
         # Source extraction and metadata maintenance remain available for reindexing.
         assert changed.get(path).json()["content"] == "original text"
         assert changed.get(f"{base}/documents").json()["items"][0]["id"] == "source"
-        assert changed.patch(path, json={"tags": {"category": "after"}}).status_code == 200
-        keyword = changed.post(f"{base}/documents/search", json={"query": "original", "mode": "keyword"})
+        assert changed.patch(path, json={"metadata": {"category": "after"}}).status_code == 200
+        keyword = changed.post(f"{base}/search", json={"query": "original", "mode": "keyword"})
         assert keyword.status_code == 200, keyword.text
         assert keyword.json()["items"][0]["id"] == "source"
     assert client.get(path).json()["content"] == "original text"
-    assert client.get(path).json()["tags"]["category"] == "after"
+    assert client.get(path).json()["metadata"]["category"] == "after"

@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -27,7 +26,7 @@ func (s *Store) SearchKNN(ctx context.Context, q *db.KNNQuery) (*db.SearchResult
 		return nil, fmt.Errorf("k must be positive")
 	}
 
-	filterStr := buildFilter(q.Filters)
+	filterStr := withExpiryFilter(buildFilter(q.Filters), q.NotExpiredAt)
 	if q.ExcludeParentID != "" {
 		filterStr = strings.TrimSpace(filterStr + " -" + buildTagFilter("__parent_id", q.ExcludeParentID))
 	}
@@ -40,16 +39,20 @@ func (s *Store) SearchKNN(ctx context.Context, q *db.KNNQuery) (*db.SearchResult
 		queryStr = fmt.Sprintf("*=>%s", knnPart)
 	}
 
-	args := []string{q.IndexName, queryStr}
+	// A successful search must cover every shard with one index/topology view.
+	args := []string{q.IndexName, queryStr, "ALLSHARDS", "CONSISTENT"}
 
 	if len(q.ReturnFields) > 0 {
 		args = append(args, "RETURN", strconv.Itoa(len(q.ReturnFields)))
 		args = append(args, q.ReturnFields...)
 	}
 
-	args = append(args, "PARAMS", "2", "BLOB", vectorToBytes(q.Vector), "DIALECT", "2")
+	// K controls candidate ranking, while LIMIT controls response cardinality.
+	// Omitting LIMIT silently truncates FT.SEARCH to its ten-row default.
+	args = append(args, "LIMIT", "0", strconv.Itoa(q.K),
+		"PARAMS", "2", "BLOB", vectorToBytes(q.Vector), "DIALECT", "2")
 
-	cmd := s.b().Arbitrary("FT.SEARCH").Args(args...).Build()
+	cmd := s.searchCommand(args)
 	raw, err := s.do(ctx, cmd).ToArray()
 	if err != nil {
 		return nil, &db.Error{Op: db.OpSearch, Err: err}
@@ -70,7 +73,7 @@ func (s *Store) SearchBM25(ctx context.Context, q *db.TextQuery) (*db.SearchResu
 		return nil, fmt.Errorf("topK must be positive")
 	}
 
-	filterStr := buildFilter(q.Filters)
+	filterStr := withExpiryFilter(buildFilter(q.Filters), q.NotExpiredAt)
 
 	escaped := escapeQuery(q.Query)
 	textPart := escaped
@@ -82,19 +85,16 @@ func (s *Store) SearchBM25(ctx context.Context, q *db.TextQuery) (*db.SearchResu
 		queryStr = textPart
 	}
 
-	args := []string{q.IndexName, queryStr}
+	// A successful search must cover every shard with one index/topology view.
+	args := []string{q.IndexName, queryStr, "ALLSHARDS", "CONSISTENT"}
 
 	if len(q.ReturnFields) > 0 {
 		args = append(args, "RETURN", strconv.Itoa(len(q.ReturnFields)))
 		args = append(args, q.ReturnFields...)
 	}
+	args = append(args, "LIMIT", "0", strconv.Itoa(q.TopK), "DIALECT", "2")
 
-	args = append(args,
-		"LIMIT", "0", strconv.Itoa(q.TopK),
-		"DIALECT", "2",
-	)
-
-	cmd := s.b().Arbitrary("FT.SEARCH").Args(args...).Build()
+	cmd := s.searchCommand(args)
 	raw, err := s.do(ctx, cmd).ToArray()
 	if err != nil {
 		return nil, &db.Error{Op: db.OpSearch, Err: err}
@@ -103,199 +103,82 @@ func (s *Store) SearchBM25(ctx context.Context, q *db.TextQuery) (*db.SearchResu
 	return parseBM25Result(raw)
 }
 
-// SearchList performs paginated search. Valkey-search does not support bare FT.SEARCH
-// without KNN, so query="*" falls back to SCAN + JSON.GET.
-func (s *Store) SearchList(
-	ctx context.Context, index, query string, offset, limit int, fields []string,
-) (*db.SearchResult, error) {
-	if query == "*" {
-		return s.scanList(ctx, index, offset, limit, fields)
+func withExpiryFilter(filters string, now int64) string {
+	if now <= 0 {
+		return filters
 	}
-
-	args := []string{index, query, "LIMIT", strconv.Itoa(offset), strconv.Itoa(limit)}
-
-	if len(fields) > 0 {
-		args = append(args, "RETURN", strconv.Itoa(len(fields)))
-		args = append(args, fields...)
-	}
-
-	cmd := s.b().Arbitrary("FT.SEARCH").Args(args...).Build()
-	raw, err := s.do(ctx, cmd).ToArray()
-	if err != nil {
-		return nil, &db.Error{Op: db.OpSearch, Err: err}
-	}
-
-	return parseListResult(raw)
+	expiry := fmt.Sprintf("(@__expires_at:[0 0] | @__expires_at:[(%d +inf])", now)
+	return strings.TrimSpace(filters + " " + expiry)
 }
 
-// SearchCount returns document count. Falls back to SCAN for query="*"
-// because valkey-search does not support bare FT.SEARCH without KNN.
-func (s *Store) SearchCount(ctx context.Context, index, query string) (int, error) {
-	if query == "*" {
-		return s.scanCount(ctx, index)
-	}
-
-	cmd := s.b().Arbitrary("FT.SEARCH").Args(index, query, "LIMIT", "0", "0").Build()
-	raw, err := s.do(ctx, cmd).ToArray()
-	if err != nil {
-		return 0, &db.Error{Op: db.OpSearch, Err: err}
-	}
-	if len(raw) == 0 {
-		return 0, nil
-	}
-	total, err := raw[0].AsInt64()
-	if err != nil {
-		return 0, fmt.Errorf("parse count: %w", err)
-	}
-	return int(total), nil
-}
-
-// scanList implements listing via SCAN + HGETALL for valkey-search
-// which does not support bare FT.SEARCH without KNN.
-func (s *Store) scanList(
-	ctx context.Context, index string, offset, limit int, _ []string,
-) (*db.SearchResult, error) {
-	if offset < 0 || limit < 0 {
-		return nil, fmt.Errorf("invalid pagination bounds")
-	}
-	prefix := indexToKeyPrefix(index)
-	keys, err := s.Scan(ctx, prefix+"*")
-	if err != nil {
-		return nil, fmt.Errorf("scan for list: %w", err)
-	}
-
-	sort.Strings(keys) // deterministic ordering
-
-	total := len(keys)
-	if offset >= total {
-		return &db.SearchResult{Total: total}, nil
-	}
-
-	end := total
-	if limit < total-offset {
-		end = offset + limit
-	}
-	if end > total {
-		end = total
-	}
-	pageKeys := keys[offset:end]
-
-	entries := make([]db.SearchEntry, 0, len(pageKeys))
-	for _, key := range pageKeys {
-		m, err := s.HGetAll(ctx, key)
-		if err != nil {
-			continue // key may have been deleted between SCAN and GET
-		}
-		entries = append(entries, db.SearchEntry{
-			Key:    key,
-			Fields: m,
-		})
-	}
-
-	return &db.SearchResult{Total: total, Entries: entries}, nil
-}
-
-func (s *Store) scanCount(ctx context.Context, index string) (int, error) {
-	prefix := indexToKeyPrefix(index)
-	keys, err := s.Scan(ctx, prefix+"*")
-	if err != nil {
-		return 0, fmt.Errorf("scan for count: %w", err)
-	}
-	return len(keys), nil
-}
-
-// indexToKeyPrefix converts index name to a SCAN prefix.
-// "vecdex:myCollection:idx" -> "vecdex:myCollection:"
-func indexToKeyPrefix(index string) string {
-	if strings.HasPrefix(index, "vecdex:v2:") && strings.HasSuffix(index, ":index") {
-		return strings.TrimSuffix(index, ":index") + ":doc:"
-	}
-	if strings.HasSuffix(index, ":idx") {
-		return index[:len(index)-3]
-	}
-	return index + ":"
+// A routing slot selects a primary coordinator without creating a data key.
+// Rotating it avoids pinning a collection's entire query load to its index-name
+// slot. The actual index argument and distributed consistency checks are intact.
+func (s *Store) searchCommand(args []string) rueidis.Completed {
+	route := "vecdex:query-route:" + strconv.FormatUint(s.queryRoute.Add(1), 10)
+	return s.b().Arbitrary("FT.SEARCH").Args(args...).ReadOnly().SetSlot(route)
 }
 
 // --- Result parsing ---
 
 func parseKNNResult(raw []rueidis.RedisMessage) (*db.SearchResult, error) {
-	if len(raw) == 0 {
-		return &db.SearchResult{}, nil
-	}
-
-	total, err := raw[0].AsInt64()
+	result, err := parseSearchResult(raw)
 	if err != nil {
-		return nil, fmt.Errorf("parse total: %w", err)
+		return nil, err
 	}
-	if total == 0 {
-		return &db.SearchResult{}, nil
-	}
-
-	entries := make([]db.SearchEntry, 0, total)
-	// 2-stride: [total, key1, fields1, key2, fields2, ...]
-	for i := 1; i+1 < len(raw); i += 2 {
-		key, err := raw[i].ToString()
-		if err != nil {
-			continue
-		}
-
-		fields, err := raw[i+1].ToArray()
-		if err != nil {
-			continue
-		}
-
-		entry := db.SearchEntry{
-			Key:    key,
-			Fields: parseFieldPairs(fields),
-		}
-
-		if scoreStr, ok := entry.Fields["__vector_score"]; ok {
-			if s, err := strconv.ParseFloat(scoreStr, 64); err == nil {
-				entry.Score = max(0, 1.0-s) // cosine distance → similarity, clamped to [0,1]
+	for i := range result.Entries {
+		entry := &result.Entries[i]
+		if value, ok := entry.Fields["__vector_score"]; ok {
+			distance, err := strconv.ParseFloat(value, 64)
+			if err != nil || math.IsNaN(distance) || math.IsInf(distance, 0) {
+				return nil, fmt.Errorf("invalid vector distance for %q", entry.Key)
 			}
+			// FLOAT32 cosine dot products can round slightly above one.
+			entry.Score = min(1, max(0, 1.0-distance))
 			delete(entry.Fields, "__vector_score")
 		}
-
-		entries = append(entries, entry)
 	}
-
-	return &db.SearchResult{Total: int(total), Entries: entries}, nil
+	return result, nil
 }
 
 func parseBM25Result(raw []rueidis.RedisMessage) (*db.SearchResult, error) {
-	if len(raw) == 0 {
-		return &db.SearchResult{}, nil
-	}
-
-	total, err := raw[0].AsInt64()
+	result, err := parseSearchResult(raw)
 	if err != nil {
-		return nil, fmt.Errorf("parse total: %w", err)
+		return nil, err
 	}
-	if total == 0 {
-		return &db.SearchResult{}, nil
+	for i := range result.Entries {
+		result.Entries[i].Score = rankScore(i, result.Total)
 	}
+	return result, nil
+}
 
-	entries := make([]db.SearchEntry, 0, max(0, (len(raw)-1)/2))
-	// Valkey Search 1.2 returns non-vector FT.SEARCH results without WITHSCORES:
-	// [total, key1, fields1, key2, fields2, ...]
-	for i, rank := 1, 0; i+1 < len(raw); i, rank = i+2, rank+1 {
+// Reject malformed rows as a whole. Skipping a key or field would turn a
+// protocol error into a successful, silently incomplete search response.
+func parseSearchResult(raw []rueidis.RedisMessage) (*db.SearchResult, error) {
+	if len(raw) == 0 || len(raw)%2 != 1 {
+		return nil, fmt.Errorf("invalid search response shape")
+	}
+	total, err := raw[0].AsInt64()
+	rows := (len(raw) - 1) / 2
+	if err != nil || total < 0 || total < int64(rows) || (total > 0 && rows == 0) {
+		return nil, fmt.Errorf("invalid search response total")
+	}
+	entries := make([]db.SearchEntry, 0, rows)
+	for i := 1; i < len(raw); i += 2 {
 		key, err := raw[i].ToString()
-		if err != nil {
-			continue
+		if err != nil || key == "" {
+			return nil, fmt.Errorf("invalid search key at row %d", (i-1)/2)
 		}
-
 		fields, err := raw[i+1].ToArray()
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("invalid search fields for %q: %w", key, err)
 		}
-
-		entries = append(entries, db.SearchEntry{
-			Key:    key,
-			Score:  rankScore(rank, int(total)),
-			Fields: parseFieldPairs(fields),
-		})
+		values, err := parseFieldPairs(fields)
+		if err != nil {
+			return nil, fmt.Errorf("invalid search fields for %q: %w", key, err)
+		}
+		entries = append(entries, db.SearchEntry{Key: key, Fields: values})
 	}
-
 	return &db.SearchResult{Total: int(total), Entries: entries}, nil
 }
 
@@ -310,55 +193,26 @@ func rankScore(rank, total int) float64 {
 	return score
 }
 
-func parseListResult(raw []rueidis.RedisMessage) (*db.SearchResult, error) {
-	if len(raw) == 0 {
-		return &db.SearchResult{}, nil
+func parseFieldPairs(fields []rueidis.RedisMessage) (map[string]string, error) {
+	if len(fields)%2 != 0 {
+		return nil, fmt.Errorf("unpaired field name")
 	}
-
-	total, err := raw[0].AsInt64()
-	if err != nil {
-		return nil, fmt.Errorf("parse total: %w", err)
-	}
-	if total == 0 {
-		return &db.SearchResult{}, nil
-	}
-
-	entries := make([]db.SearchEntry, 0, total)
-	// 2-stride: [total, key1, fields1, key2, fields2, ...]
-	for i := 1; i+1 < len(raw); i += 2 {
-		key, err := raw[i].ToString()
-		if err != nil {
-			continue
+	values := make(map[string]string, len(fields)/2)
+	for i := 0; i < len(fields); i += 2 {
+		if !fields[i].IsString() || !fields[i+1].IsString() {
+			return nil, fmt.Errorf("field names and values must be strings")
 		}
-
-		fields, err := raw[i+1].ToArray()
+		name, err := fields[i].ToString()
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("invalid field name: %w", err)
 		}
-
-		entries = append(entries, db.SearchEntry{
-			Key:    key,
-			Fields: parseFieldPairs(fields),
-		})
+		value, err := fields[i+1].ToString()
+		if err != nil {
+			return nil, fmt.Errorf("invalid value for %q: %w", name, err)
+		}
+		values[name] = value
 	}
-
-	return &db.SearchResult{Total: int(total), Entries: entries}, nil
-}
-
-func parseFieldPairs(fields []rueidis.RedisMessage) map[string]string {
-	m := make(map[string]string, len(fields)/2)
-	for j := 0; j+1 < len(fields); j += 2 {
-		name, err := fields[j].ToString()
-		if err != nil {
-			continue
-		}
-		value, err := fields[j+1].ToString()
-		if err != nil {
-			continue
-		}
-		m[name] = value
-	}
-	return m
+	return values, nil
 }
 
 // --- Filter building ---

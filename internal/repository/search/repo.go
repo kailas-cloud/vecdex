@@ -8,16 +8,20 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
+	"github.com/kailas-cloud/vecdex/internal/domain/metadata"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/result"
+	"github.com/kailas-cloud/vecdex/internal/domain/storage"
 )
 
 // store is the consumer interface for search operations (ISP).
 type store interface {
-	HGetFieldMulti(ctx context.Context, keys []string, field string) ([]string, error)
+	HGetFieldsMulti(ctx context.Context, keys, fields []string) ([][]string, error)
 	SearchKNN(ctx context.Context, q *db.KNNQuery) (*db.SearchResult, error)
 	SearchBM25(ctx context.Context, q *db.TextQuery) (*db.SearchResult, error)
 	SupportsTextSearch(ctx context.Context) bool
@@ -44,9 +48,14 @@ func (r *Repo) SearchKNN(
 	vector []float32, filters filter.Expression, topK int,
 	includeVectors bool,
 ) ([]result.Result, error) {
-	indexName := domain.GenerationIndexName(collectionName, domain.CollectionGeneration(ctx))
+	layout, err := storage.NewCollection(collectionName, domain.CollectionGeneration(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("search layout: %w", err)
+	}
+	indexName := layout.Index()
 
 	q := &db.KNNQuery{
+		NotExpiredAt:    time.Now().UnixMilli(),
 		IndexName:       indexName,
 		ExcludeParentID: domain.ExcludedDocument(ctx),
 		Filters:         filters,
@@ -72,9 +81,14 @@ func (r *Repo) SearchBM25(
 	ctx context.Context, collectionName string,
 	query string, filters filter.Expression, topK int,
 ) ([]result.Result, error) {
-	indexName := domain.GenerationIndexName(collectionName, domain.CollectionGeneration(ctx))
+	layout, err := storage.NewCollection(collectionName, domain.CollectionGeneration(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("search layout: %w", err)
+	}
+	indexName := layout.Index()
 
 	q := &db.TextQuery{
+		NotExpiredAt: time.Now().UnixMilli(),
 		IndexName:    indexName,
 		Query:        query,
 		Filters:      filters,
@@ -106,7 +120,10 @@ func parseKNNResults(sr *db.SearchResult, _ string, includeVectors bool) ([]resu
 		if entry.Fields["__parent_id"] != "" {
 			docID = entry.Fields["__parent_id"]
 		}
-		res := parseEntryFields(docID, entry, includeVectors)
+		res, err := parseEntryFields(docID, entry, includeVectors)
+		if err != nil {
+			return nil, err
+		}
 		results = append(results, res)
 	}
 
@@ -126,7 +143,10 @@ func parseBM25Results(sr *db.SearchResult, _ string) ([]result.Result, error) {
 		if entry.Fields["__parent_id"] != "" {
 			docID = entry.Fields["__parent_id"]
 		}
-		res := parseBM25EntryFields(docID, entry.Score, entry)
+		res, err := parseBM25EntryFields(docID, entry.Score, entry)
+		if err != nil {
+			return nil, err
+		}
 		results = append(results, res)
 	}
 
@@ -137,7 +157,7 @@ func parseBM25Results(sr *db.SearchResult, _ string) ([]result.Result, error) {
 const numericPrefix = "__n:"
 
 // parseEntryFields parses a KNN entry from flat hash fields.
-func parseEntryFields(docID string, entry db.SearchEntry, includeVectors bool) result.Result {
+func parseEntryFields(docID string, entry db.SearchEntry, includeVectors bool) (result.Result, error) {
 	var content string
 	var vector []float32
 	tags := make(map[string]string)
@@ -166,11 +186,11 @@ func parseEntryFields(docID string, entry db.SearchEntry, includeVectors bool) r
 	}
 
 	tags, numerics = projectedMetadata(entry.Fields, tags, numerics)
-	return result.New(docID, entry.Score, content, tags, numerics, vector)
+	return withSourceMetadata(result.New(docID, entry.Score, content, tags, numerics, vector), entry.Fields)
 }
 
 // parseBM25EntryFields parses a BM25 entry from flat hash fields.
-func parseBM25EntryFields(docID string, score float64, entry db.SearchEntry) result.Result {
+func parseBM25EntryFields(docID string, score float64, entry db.SearchEntry) (result.Result, error) {
 	var content string
 	tags := make(map[string]string)
 	numerics := make(map[string]float64)
@@ -194,7 +214,7 @@ func parseBM25EntryFields(docID string, score float64, entry db.SearchEntry) res
 	}
 
 	tags, numerics = projectedMetadata(entry.Fields, tags, numerics)
-	return result.New(docID, score, content, tags, numerics, nil)
+	return withSourceMetadata(result.New(docID, score, content, tags, numerics, nil), entry.Fields)
 }
 
 // bytesToVector deserializes a binary string to []float32.
@@ -214,23 +234,62 @@ func (r *Repo) filterCommitted(ctx context.Context, collection string, found *db
 	if found == nil {
 		return nil
 	}
-	keys, positions := committedParentKeys(ctx, collection, found.Entries)
+	layout, err := storage.NewCollection(collection, domain.CollectionGeneration(ctx))
+	if err != nil {
+		return fmt.Errorf("search layout: %w", err)
+	}
+	keys, positions := committedParentKeys(layout, found.Entries)
 	if len(keys) == 0 {
 		return nil
 	}
-	versions, err := r.store.HGetFieldMulti(ctx, keys, "__chunk_version")
+	rows, err := r.store.HGetFieldsMulti(ctx, keys,
+		[]string{"__chunk_version", "__source_metadata", "__source_version", "__expires_at"})
 	if err != nil {
-		return fmt.Errorf("read committed document versions: %w", err)
+		return fmt.Errorf("read committed source projection: %w", err)
 	}
-	if len(versions) != len(keys) {
-		return fmt.Errorf("document version count mismatch")
+	if len(rows) != len(keys) {
+		return fmt.Errorf("document projection count mismatch")
+	}
+	versions := make([]string, len(rows))
+	for i, row := range rows {
+		if len(row) != 4 {
+			return fmt.Errorf("document projection width mismatch")
+		}
+		expiresAt, err := domdoc.ParseExpiresAt(row[3])
+		if err != nil {
+			return fmt.Errorf("read committed expiration: %w", err)
+		}
+		if !domdoc.Expired(expiresAt, time.Now().UnixMilli()) {
+			versions[i] = row[0]
+		}
 	}
 	keepCommittedEntries(found, positions, versions)
+	for i := range found.Entries {
+		entry := &found.Entries[i]
+		if id := entry.Fields["__parent_id"]; id != "" {
+			if rows[positions[id]][2] == "" {
+				return fmt.Errorf("committed source %q has no version", id)
+			}
+			entry.Fields["__source_metadata"] = rows[positions[id]][1]
+			entry.Fields["__source_version"] = rows[positions[id]][2]
+		}
+	}
 	return nil
 }
 
+func withSourceMetadata(value result.Result, fields map[string]string) (result.Result, error) {
+	if fields["__source_metadata"] == "" {
+		return value.WithSource(fields["__source_version"], metadata.Object{}), nil
+	}
+	object, err := metadata.Parse([]byte(fields["__source_metadata"]))
+	if err != nil {
+		return result.Result{}, fmt.Errorf("decode search source metadata: %w", err)
+	}
+	return value.WithSource(fields["__source_version"], object), nil
+}
+
 func committedParentKeys(
-	ctx context.Context, collection string, entries []db.SearchEntry,
+	layout storage.Collection, entries []db.SearchEntry,
 ) (parentKeys []string, parentPositions map[string]int) {
 	keys := make([]string, 0, len(entries))
 	positions := map[string]int{}
@@ -241,7 +300,7 @@ func committedParentKeys(
 		}
 		if _, exists := positions[id]; !exists {
 			positions[id] = len(keys)
-			keys = append(keys, domain.GenerationDocumentPrefix(collection, domain.CollectionGeneration(ctx))+id)
+			keys = append(keys, layout.Document(id))
 		}
 	}
 	return keys, positions
@@ -267,9 +326,9 @@ func projectedMetadata(
 	if fields["__metadata"] == "" {
 		return tags, numerics
 	}
-	var metadata db.RecordMetadata
-	if json.Unmarshal([]byte(fields["__metadata"]), &metadata) != nil {
+	var projection db.RecordMetadata
+	if json.Unmarshal([]byte(fields["__metadata"]), &projection) != nil {
 		return tags, numerics
 	}
-	return metadata.Tags, metadata.Numerics
+	return projection.Tags, projection.Numerics
 }

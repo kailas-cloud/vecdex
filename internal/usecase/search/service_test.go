@@ -90,25 +90,17 @@ func (m *mockEmbedder) Embed(_ context.Context, _ string) (domain.EmbeddingResul
 
 func makeSearchRequest(t *testing.T, m mode.Mode) *request.Request {
 	t.Helper()
-	r, err := request.New("test query", m, filter.Expression{}, 10, 10, 0, false)
+	r, err := request.New("test query", m, filter.Expression{}, 10, 0, 0, false)
 	if err != nil {
 		t.Fatalf("request.New: %v", err)
 	}
 	return &r
 }
 
-func makeChunkResult(id, parentID string, score, chunkIndex float64, content string) result.Result {
-	return result.New(
-		id,
-		score,
-		content,
-		map[string]string{domcol.SystemParentDocID: parentID},
-		map[string]float64{domcol.SystemChunkIndex: chunkIndex},
-		nil,
-	)
+func makeSourceFragment(sourceID string, score float64, content string) result.Result {
+	// The repository has already resolved the private fragment's source ID.
+	return result.New(sourceID, score, content, nil, nil, nil)
 }
-
-// --- Tests ---
 
 func TestSearch_Semantic(t *testing.T) {
 	repo := &mockRepo{
@@ -195,9 +187,9 @@ func TestSearch_Hybrid(t *testing.T) {
 func TestSearch_SemanticAggregatesChunksToDocuments(t *testing.T) {
 	repo := &mockRepo{
 		knnResults: []result.Result{
-			makeChunkResult("paper-a-chunk-1", "paper-a", 0.95, 1, "best chunk"),
-			makeChunkResult("paper-a-chunk-2", "paper-a", 0.91, 2, "later chunk"),
-			makeChunkResult("paper-b-chunk-1", "paper-b", 0.80, 1, "other doc"),
+			makeSourceFragment("paper-a", 0.95, "best chunk"),
+			makeSourceFragment("paper-a", 0.91, "later chunk"),
+			makeSourceFragment("paper-b", 0.80, "other doc"),
 		},
 		textSearchOK: true,
 	}
@@ -226,12 +218,12 @@ func TestSearch_SemanticAggregatesChunksToDocuments(t *testing.T) {
 func TestSearch_HybridAggregatesAfterChunkRRF(t *testing.T) {
 	repo := &mockRepo{
 		knnResults: []result.Result{
-			makeChunkResult("paper-a-sem-1", "paper-a", 0.92, 1, "semantic hit"),
-			makeChunkResult("paper-b-sem-1", "paper-b", 0.80, 1, "semantic only"),
+			makeSourceFragment("paper-a", 0.92, "semantic hit"),
+			makeSourceFragment("paper-b", 0.80, "semantic only"),
 		},
 		bm25Results: []result.Result{
-			makeChunkResult("paper-a-bm25-2", "paper-a", 0.88, 2, "keyword hit"),
-			makeChunkResult("paper-c-bm25-1", "paper-c", 0.70, 1, "keyword only"),
+			makeSourceFragment("paper-a", 0.88, "keyword hit"),
+			makeSourceFragment("paper-c", 0.70, "keyword only"),
 		},
 		textSearchOK: true,
 	}
@@ -268,7 +260,7 @@ func TestSearch_UsesConfiguredCandidateWindows(t *testing.T) {
 		BM25CandidateMultiplier:     4,
 	})
 
-	r, err := request.New("test query", mode.Hybrid, filter.Expression{}, 10, 5, 0, false)
+	r, err := request.New("test query", mode.Hybrid, filter.Expression{}, 5, 0, 0, false)
 	if err != nil {
 		t.Fatalf("request.New: %v", err)
 	}
@@ -277,11 +269,11 @@ func TestSearch_UsesConfiguredCandidateWindows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if repo.lastKNNK != 30 {
-		t.Fatalf("expected semantic candidate window 30, got %d", repo.lastKNNK)
+	if repo.lastKNNK != 25 {
+		t.Fatalf("expected semantic candidate window 25, got %d", repo.lastKNNK)
 	}
-	if repo.lastBM25K != 40 {
-		t.Fatalf("expected bm25 candidate window 40, got %d", repo.lastBM25K)
+	if repo.lastBM25K != 25 {
+		t.Fatalf("expected bm25 candidate window 25, got %d", repo.lastBM25K)
 	}
 }
 
@@ -344,7 +336,7 @@ func TestSearch_MinScoreFilter(t *testing.T) {
 	embed := &mockEmbedder{vec: []float32{0.1}}
 	svc := New(repo, defaultMockColls(), embed)
 
-	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0.5, false)
+	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 0, 0.5, false)
 	results, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -366,7 +358,7 @@ func TestSearch_FilterValidation_UnknownField(t *testing.T) {
 
 	matchCond, _ := filter.NewMatch("nonexistent", "val")
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 0, 0, false)
 
 	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
@@ -384,7 +376,7 @@ func TestSearch_FilterValidation_MatchOnNumeric(t *testing.T) {
 
 	matchCond, _ := filter.NewMatch("price", "100")
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 0, 0, false)
 
 	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
@@ -404,7 +396,7 @@ func TestSearch_FilterValidation_RangeOnTag(t *testing.T) {
 	rng, _ := filter.NewRangeFilter(&v, nil, nil, nil)
 	rangeCond, _ := filter.NewRange("category", rng)
 	expr, _ := filter.NewExpression([]filter.Condition{rangeCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 0, 0, false)
 
 	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
@@ -425,7 +417,7 @@ func TestSearch_FilterValidation_ValidMatch(t *testing.T) {
 
 	matchCond, _ := filter.NewMatch("category", "electronics")
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 0, 0, false)
 
 	results, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
@@ -448,7 +440,7 @@ func TestSearch_FilterValidation_ValidRange(t *testing.T) {
 	rng, _ := filter.NewRangeFilter(nil, &v, nil, nil)
 	rangeCond, _ := filter.NewRange("price", rng)
 	expr, _ := filter.NewExpression([]filter.Condition{rangeCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 0, 0, false)
 
 	results, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
@@ -459,7 +451,7 @@ func TestSearch_FilterValidation_ValidRange(t *testing.T) {
 	}
 }
 
-func TestSearch_FilterValidation_SystemFields(t *testing.T) {
+func TestSearch_FilterValidation_RequiresExplicitMetadataIndex(t *testing.T) {
 	repo := &mockRepo{
 		knnResults:   []result.Result{result.New("a", 0.9, "text", nil, nil, nil)},
 		textSearchOK: true,
@@ -467,19 +459,16 @@ func TestSearch_FilterValidation_SystemFields(t *testing.T) {
 	embed := &mockEmbedder{vec: []float32{0.1}}
 	svc := New(repo, mockCollsWithFields(), embed)
 
-	matchCond, _ := filter.NewMatch(domcol.SystemParentDocID, "doc-1")
+	matchCond, _ := filter.NewMatch("parent_doc_id", "doc-1")
 	v := 1.0
 	rng, _ := filter.NewRangeFilter(nil, &v, nil, nil)
-	rangeCond, _ := filter.NewRange(domcol.SystemChunkIndex, rng)
+	rangeCond, _ := filter.NewRange("chunk_index", rng)
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond, rangeCond}, nil, nil)
-	r, _ := request.New("test", mode.Semantic, expr, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, expr, 10, 0, 0, false)
 
-	results, _, err := svc.Search(context.Background(), "test-col", &r)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	_, _, err := svc.Search(context.Background(), "test-col", &r)
+	if !errors.Is(err, domain.ErrInvalidSchema) {
+		t.Fatalf("undeclared metadata field was searchable: %v", err)
 	}
 }
 
@@ -489,7 +478,7 @@ func TestSearch_CollectionNotFound(t *testing.T) {
 	colls := &mockColls{err: domain.ErrNotFound}
 	svc := New(repo, colls, embed)
 
-	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 0, 0, false)
 	_, _, err := svc.Search(context.Background(), "missing", &r)
 	if err == nil {
 		t.Fatal("expected error for missing collection")
@@ -504,7 +493,7 @@ func TestSearch_EmbedError(t *testing.T) {
 	embed := &mockEmbedder{err: errors.New("embedding provider down")}
 	svc := New(repo, defaultMockColls(), embed)
 
-	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, false)
+	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 0, 0, false)
 	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err == nil {
 		t.Fatal("expected error from embedding failure")
@@ -519,7 +508,7 @@ func TestSearch_IncludeVectors(t *testing.T) {
 	embed := &mockEmbedder{vec: []float32{0.1}}
 	svc := New(repo, defaultMockColls(), embed)
 
-	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 10, 0, true)
+	r, _ := request.New("test", mode.Semantic, filter.Expression{}, 10, 0, 0, true)
 	_, _, err := svc.Search(context.Background(), "test-col", &r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -542,7 +531,7 @@ func (m *mockDocs) Get(_ context.Context, _, _ string) (domdoc.Document, error) 
 
 func makeSimilarRequest(t *testing.T) *request.SimilarRequest {
 	t.Helper()
-	r, err := request.NewSimilar(filter.Expression{}, 10, 10, 0, false)
+	r, err := request.NewSimilar(filter.Expression{}, 10, 0, 0, false)
 	if err != nil {
 		t.Fatalf("request.NewSimilar: %v", err)
 	}
@@ -668,7 +657,7 @@ func TestSimilar_MinScoreFilter(t *testing.T) {
 	embed := &mockEmbedder{}
 	svc := New(repo, defaultMockColls(), embed).WithDocuments(docs)
 
-	r, _ := request.NewSimilar(filter.Expression{}, 10, 10, 0.5, false)
+	r, _ := request.NewSimilar(filter.Expression{}, 10, 0, 0.5, false)
 	results, total, err := svc.Similar(context.Background(), "test-col", "source", &r)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -726,7 +715,7 @@ func TestSimilar_FilterValidation(t *testing.T) {
 
 	matchCond, _ := filter.NewMatch("nonexistent", "val")
 	expr, _ := filter.NewExpression([]filter.Condition{matchCond}, nil, nil)
-	r, _ := request.NewSimilar(expr, 10, 10, 0, false)
+	r, _ := request.NewSimilar(expr, 10, 0, 0, false)
 
 	_, _, err := svc.Similar(context.Background(), "test-col", "doc-1", &r)
 	if err == nil {

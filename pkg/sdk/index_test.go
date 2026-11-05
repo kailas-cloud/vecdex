@@ -78,13 +78,10 @@ func TestSearchBuilder_ToHits_Text(t *testing.T) {
 
 	results := []SearchResult{
 		{
-			ID:      "doc-1",
-			Score:   0.95,
-			Content: "hello world",
-			Tags:    map[string]string{"author": "test"},
-			Numerics: map[string]float64{
-				"priority": 42,
-			},
+			ID:       "doc-1",
+			Score:    0.95,
+			Snippet:  "hello world",
+			Metadata: map[string]any{"author": "test", "priority": 42},
 		},
 	}
 
@@ -98,8 +95,8 @@ func TestSearchBuilder_ToHits_Text(t *testing.T) {
 	if hits[0].Item.ID != "doc-1" {
 		t.Errorf("ID = %q, want doc-1", hits[0].Item.ID)
 	}
-	if hits[0].Item.Content != "hello world" {
-		t.Errorf("Content = %q, want hello world", hits[0].Item.Content)
+	if hits[0].Item.Content != "" || hits[0].Snippet != "hello world" {
+		t.Errorf("typed search confused a snippet with complete text: %+v", hits[0])
 	}
 	if hits[0].Item.Author != "test" {
 		t.Errorf("Author = %q, want test", hits[0].Item.Author)
@@ -153,8 +150,8 @@ func newNoopDocumentUC() *mockDocumentUC {
 		getFn:    func(_ context.Context, _, _ string) (domdoc.Document, error) { return domdoc.Document{}, nil },
 		listFn:   func(_ context.Context, _, _ string, _ int) ([]domdoc.Document, string, error) { return nil, "", nil },
 		deleteFn: func(_ context.Context, _, _ string) error { return nil },
-		patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.Document, error) {
-			return domdoc.Document{}, nil
+		patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.WriteResult, error) {
+			return domdoc.WriteResult{}, nil
 		},
 		countFn: func(_ context.Context, _ string) (int, error) { return 0, nil },
 	}
@@ -162,8 +159,8 @@ func newNoopDocumentUC() *mockDocumentUC {
 
 func newNoopBatchUC() *mockBatchUC {
 	return &mockBatchUC{
-		upsertFn: func(_ context.Context, _ string, _ []domdoc.Document) []dombatch.Result { return nil },
-		deleteFn: func(_ context.Context, _ string, _ []string) []dombatch.Result { return nil },
+		upsertFn: func(_ context.Context, _ string, _ []dombatch.UpsertItem) []dombatch.Result { return nil },
+		deleteFn: func(_ context.Context, _ string, _ []dombatch.DeleteItem) []dombatch.Result { return nil },
 	}
 }
 
@@ -192,14 +189,14 @@ func TestTypedIndex_Ensure(t *testing.T) {
 			getFn:    func(_ context.Context, _, _ string) (domdoc.Document, error) { return domdoc.Document{}, nil },
 			listFn:   func(_ context.Context, _, _ string, _ int) ([]domdoc.Document, string, error) { return nil, "", nil },
 			deleteFn: func(_ context.Context, _, _ string) error { return nil },
-			patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.Document, error) {
-				return domdoc.Document{}, nil
+			patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.WriteResult, error) {
+				return domdoc.WriteResult{}, nil
 			},
 			countFn: func(_ context.Context, _ string) (int, error) { return 0, nil },
 		},
 		&mockBatchUC{
-			upsertFn: func(_ context.Context, _ string, _ []domdoc.Document) []dombatch.Result { return nil },
-			deleteFn: func(_ context.Context, _ string, _ []string) []dombatch.Result { return nil },
+			upsertFn: func(_ context.Context, _ string, _ []dombatch.UpsertItem) []dombatch.Result { return nil },
+			deleteFn: func(_ context.Context, _ string, _ []dombatch.DeleteItem) []dombatch.Result { return nil },
 		},
 		&mockSearchUC{
 			searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
@@ -228,14 +225,14 @@ func TestTypedIndex_Ensure_Error(t *testing.T) {
 			getFn:    func(_ context.Context, _, _ string) (domdoc.Document, error) { return domdoc.Document{}, nil },
 			listFn:   func(_ context.Context, _, _ string, _ int) ([]domdoc.Document, string, error) { return nil, "", nil },
 			deleteFn: func(_ context.Context, _, _ string) error { return nil },
-			patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.Document, error) {
-				return domdoc.Document{}, nil
+			patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.WriteResult, error) {
+				return domdoc.WriteResult{}, nil
 			},
 			countFn: func(_ context.Context, _ string) (int, error) { return 0, nil },
 		},
 		&mockBatchUC{
-			upsertFn: func(_ context.Context, _ string, _ []domdoc.Document) []dombatch.Result { return nil },
-			deleteFn: func(_ context.Context, _ string, _ []string) []dombatch.Result { return nil },
+			upsertFn: func(_ context.Context, _ string, _ []dombatch.UpsertItem) []dombatch.Result { return nil },
+			deleteFn: func(_ context.Context, _ string, _ []dombatch.DeleteItem) []dombatch.Result { return nil },
 		},
 		&mockSearchUC{
 			searchFn: func(_ context.Context, _ string, _ *request.Request) ([]result.Result, int, error) {
@@ -260,7 +257,7 @@ func TestTypedIndex_Upsert(t *testing.T) {
 	}
 	idx := newTypedIndex(t, testClient(newNoopCollectionUC(), documentUC, newNoopBatchUC(), &mockSearchUC{}))
 	created, err := idx.Upsert(context.Background(), doc)
-	if err != nil || !created {
+	if err != nil || !created.Created {
 		t.Fatalf("Upsert created=%v err=%v", created, err)
 	}
 }
@@ -268,7 +265,7 @@ func TestTypedIndex_Upsert(t *testing.T) {
 func TestTypedIndex_UpsertBatch(t *testing.T) {
 	doc := textDoc{ID: "doc-1", Content: "hello valkey", Author: "alice", Priority: 7}
 	batchUC := newNoopBatchUC()
-	batchUC.upsertFn = func(_ context.Context, collection string, docs []domdoc.Document) []dombatch.Result {
+	batchUC.upsertFn = func(_ context.Context, collection string, docs []dombatch.UpsertItem) []dombatch.Result {
 		if collection != "articles" || len(docs) != 1 || docs[0].ID() != "doc-1" {
 			t.Fatalf("BatchUpsert(%q, %+v)", collection, docs)
 		}
@@ -340,8 +337,8 @@ func TestTypedIndex_Get_Error(t *testing.T) {
 			},
 			listFn:   func(_ context.Context, _, _ string, _ int) ([]domdoc.Document, string, error) { return nil, "", nil },
 			deleteFn: func(_ context.Context, _, _ string) error { return nil },
-			patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.Document, error) {
-				return domdoc.Document{}, nil
+			patchFn: func(_ context.Context, _, _ string, _ patch.Patch) (domdoc.WriteResult, error) {
+				return domdoc.WriteResult{}, nil
 			},
 			countFn: func(_ context.Context, _ string) (int, error) { return 0, nil },
 		},
@@ -409,5 +406,20 @@ func TestWithStandalone(t *testing.T) {
 	WithStandalone().apply(cfg)
 	if !cfg.standalone {
 		t.Fatal("expected standalone=true")
+	}
+}
+
+func TestSearchBuilderLimitAboveTen(t *testing.T) {
+	search := &mockSearchUC{searchFn: func(
+		_ context.Context, _ string, req *request.Request,
+	) ([]result.Result, int, error) {
+		if req.Limit() != 50 || req.MaxContentBytes() != 1000 {
+			t.Errorf("search limits: documents=%d bytes=%d", req.Limit(), req.MaxContentBytes())
+		}
+		return nil, 0, nil
+	}}
+	idx := newTypedIndex(t, testClient(nil, nil, nil, search))
+	if _, err := idx.Search().Query("memory").Limit(50).MaxContentBytes(1000).Do(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }

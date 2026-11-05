@@ -1,7 +1,6 @@
 package document
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -10,14 +9,16 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
+	"github.com/kailas-cloud/vecdex/internal/domain/storage"
 )
 
 type fragmentRow struct {
-	End    int    `json:"end"`
-	Vector string `json:"vector"`
+	End int `json:"end"`
 }
 
-func prepareFragmentFields(doc *domdoc.Document, base, version string) (map[string]string, []db.HashSetItem, error) {
+func prepareFragmentFields(
+	doc *domdoc.Document, layout storage.Collection, version string,
+) (map[string]string, []db.HashSetItem, error) {
 	metadata, metadataErr := json.Marshal(db.RecordMetadata{Tags: doc.Tags(), Numerics: doc.Numerics()})
 	if metadataErr != nil {
 		return nil, nil, fmt.Errorf("encode metadata: %w: %w", domain.ErrInvalidSchema, metadataErr)
@@ -37,10 +38,7 @@ func prepareFragmentFields(doc *domdoc.Document, base, version string) (map[stri
 			return nil, nil, fmt.Errorf("fragment vector: %w", err)
 		}
 		offset += len(part.Content)
-		rows[i] = fragmentRow{
-			End:    offset,
-			Vector: base64.StdEncoding.EncodeToString([]byte(vectorToBytes(part.Vector))),
-		}
+		rows[i] = fragmentRow{End: offset}
 		child := buildHashFields(doc)
 		child["__metadata"] = string(metadata)
 		child["__content"] = part.Content
@@ -48,7 +46,7 @@ func prepareFragmentFields(doc *domdoc.Document, base, version string) (map[stri
 		child["__parent_id"] = doc.ID()
 		child["__version"] = version
 		child["__chunk_index"] = strconv.Itoa(i)
-		children[i] = db.HashSetItem{Key: fmt.Sprintf("%s:chunk:%s:%s:%06d", base, doc.ID(), version, i), Fields: child}
+		children[i] = db.HashSetItem{Key: layout.Fragment(doc.ID(), version, i), Fields: child}
 	}
 	if offset != len(doc.Content()) {
 		return nil, nil, fmt.Errorf("incomplete fragments: %w", domain.ErrInvalidSchema)
@@ -58,7 +56,12 @@ func prepareFragmentFields(doc *domdoc.Document, base, version string) (map[stri
 		return nil, nil, fmt.Errorf("encode fragments: %w", err)
 	}
 	fields := buildHashFields(doc)
+	delete(fields, "__vector")
+	fields["__vector_dim"] = strconv.Itoa(len(doc.Vector()))
 	fields["__metadata"] = string(metadata)
+	if doc.Metadata().Present() {
+		fields["__source_metadata"] = string(doc.Metadata().JSON())
+	}
 	fields["__parts"] = string(encoded)
 	fields["__chunk_version"] = version
 	return fields, children, nil
@@ -68,7 +71,7 @@ func matchesFragment(remaining, content string) bool {
 	return content != "" && strings.HasPrefix(remaining, content)
 }
 
-func hydrateFragments(doc *domdoc.Document, fields map[string]string) error {
+func hydrateFragments(doc *domdoc.Document, fields map[string]string, vectors []string) error {
 	if fields["__parts"] == "" {
 		return nil
 	}
@@ -76,15 +79,20 @@ func hydrateFragments(doc *domdoc.Document, fields map[string]string) error {
 	if err := json.Unmarshal([]byte(fields["__parts"]), &rows); err != nil {
 		return fmt.Errorf("decode fragment manifest: %w", err)
 	}
+	dimensions, err := strconv.Atoi(fields["__vector_dim"])
+	if err != nil || dimensions <= 0 || len(vectors) != len(rows) {
+		return fmt.Errorf("invalid fragment vector manifest")
+	}
 	parts := make([]domdoc.Fragment, len(rows))
 	start := 0
 	for i, row := range rows {
 		if row.End <= start || row.End > len(doc.Content()) {
 			return fmt.Errorf("invalid fragment span")
 		}
-		vector, err := decodeFragmentVector(row.Vector, len(doc.Vector()))
+		vector := bytesToVector(vectors[i])
+		err := domain.ValidateVector(vector, dimensions)
 		if err != nil {
-			return err
+			return fmt.Errorf("stored fragment vector: %w", err)
 		}
 		parts[i] = domdoc.Fragment{Content: doc.Content()[start:row.End], Vector: vector}
 		start = row.End
@@ -93,17 +101,8 @@ func hydrateFragments(doc *domdoc.Document, fields map[string]string) error {
 		return fmt.Errorf("incomplete stored fragments")
 	}
 	doc.SetFragments(parts)
+	if len(parts) > 0 {
+		doc.SetVector(domdoc.RepresentativeVector(parts))
+	}
 	return nil
-}
-
-func decodeFragmentVector(encoded string, dimensions int) ([]float32, error) {
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, fmt.Errorf("decode fragment vector: %w", err)
-	}
-	vector := bytesToVector(string(raw))
-	if err := domain.ValidateVector(vector, dimensions); err != nil {
-		return nil, fmt.Errorf("stored fragment: %w", err)
-	}
-	return vector, nil
 }

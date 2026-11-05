@@ -6,9 +6,12 @@ import (
 )
 
 // Hit is a typed search result.
+// Item contains the ID and typed metadata. Use Get for complete source content.
 type Hit[T any] struct {
-	Item  T
-	Score float64
+	Snippet string
+	Version string
+	Item    T
+	Score   float64
 }
 
 // SearchBuilder is a fluent builder for typed search queries.
@@ -19,8 +22,9 @@ type SearchBuilder[T any] struct {
 	mode  SearchMode
 
 	// Common parameters.
-	filters []FilterCondition
-	limit   int
+	filters         []FilterCondition
+	limit           int
+	maxContentBytes int
 }
 
 // Query sets the text query for semantic/keyword/hybrid search.
@@ -47,6 +51,12 @@ func (b *SearchBuilder[T]) Limit(n int) *SearchBuilder[T] {
 	return b
 }
 
+// MaxContentBytes bounds the combined UTF-8 snippet bytes in the response.
+func (b *SearchBuilder[T]) MaxContentBytes(n int) *SearchBuilder[T] {
+	b.maxContentBytes = n
+	return b
+}
+
 // Do executes the search and returns typed results.
 func (b *SearchBuilder[T]) Do(ctx context.Context) ([]Hit[T], error) {
 	return b.doText(ctx)
@@ -54,8 +64,9 @@ func (b *SearchBuilder[T]) Do(ctx context.Context) ([]Hit[T], error) {
 
 func (b *SearchBuilder[T]) doText(ctx context.Context) ([]Hit[T], error) {
 	opts := &SearchOptions{
-		Mode:  b.mode,
-		Limit: b.limit,
+		Mode:            b.mode,
+		Limit:           b.limit,
+		MaxContentBytes: b.maxContentBytes,
 	}
 	if len(b.filters) > 0 {
 		opts.Filters = FilterExpression{Must: b.filters}
@@ -73,19 +84,20 @@ func (b *SearchBuilder[T]) toHits(results []SearchResult) ([]Hit[T], error) {
 	for i, r := range results {
 		doc := Document{
 			ID:       r.ID,
-			Content:  r.Content,
-			Tags:     r.Tags,
-			Numerics: r.Numerics,
+			Metadata: r.Metadata,
 		}
-		item, ok := b.idx.meta.fromDocument(doc).(T)
+		decoded, err := b.idx.meta.fromDocument(doc)
+		if err != nil {
+			return nil, fmt.Errorf("result %d: %w", i, err)
+		}
+		item, ok := decoded.(T)
 		if !ok {
 			return nil, fmt.Errorf(
 				"result %d: type assertion to %T failed", i, *new(T),
 			)
 		}
 		hits[i] = Hit[T]{
-			Item:  item,
-			Score: r.Score,
+			Item: item, Score: r.Score, Snippet: r.Snippet, Version: r.Version,
 		}
 	}
 	return hits, nil

@@ -1,6 +1,9 @@
 package vecdex
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 type textDoc struct {
 	ID       string `vecdex:"id,id"`
@@ -153,11 +156,11 @@ func TestToDocument_TextDoc(t *testing.T) {
 	if doc.Content != "hello world" {
 		t.Errorf("Content = %q, want hello world", doc.Content)
 	}
-	if doc.Tags["author"] != "alice" {
-		t.Errorf("Tags[author] = %q, want alice", doc.Tags["author"])
+	if doc.Metadata["author"] != "alice" {
+		t.Errorf("Tags[author] = %q, want alice", doc.Metadata["author"])
 	}
-	if doc.Numerics["priority"] != 42 {
-		t.Errorf("Numerics[priority] = %f, want 42", doc.Numerics["priority"])
+	if doc.Metadata["priority"] != 42 {
+		t.Errorf("Numerics[priority] = %f, want 42", doc.Metadata["priority"])
 	}
 }
 
@@ -167,11 +170,10 @@ func TestFromDocument_TextDoc(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 
-	result := meta.fromDocument(Document{
+	result := restoreTypedDocument(t, meta, Document{
 		ID:       "doc-1",
 		Content:  "hello world",
-		Tags:     map[string]string{"author": "alice"},
-		Numerics: map[string]float64{"priority": 42},
+		Metadata: map[string]any{"author": "alice", "priority": 42},
 	})
 	item, ok := result.(textDoc)
 	if !ok {
@@ -194,7 +196,7 @@ func TestToDocument_Roundtrip(t *testing.T) {
 		Author:   "bob",
 		Priority: 7,
 	}
-	restored, ok := meta.fromDocument(meta.toDocument(original)).(textDoc)
+	restored, ok := restoreTypedDocument(t, meta, meta.toDocument(original)).(textDoc)
 	if !ok {
 		t.Fatal("type assertion failed")
 	}
@@ -247,11 +249,11 @@ func TestToDocument_StoredField(t *testing.T) {
 	}
 
 	doc := meta.toDocument(storedFieldDoc{ID: "s1", Name: "Starbucks", Cat: 42})
-	if doc.Tags["name"] != "Starbucks" {
-		t.Errorf("Tags[name] = %q, want Starbucks", doc.Tags["name"])
+	if doc.Metadata["name"] != "Starbucks" {
+		t.Errorf("Tags[name] = %q, want Starbucks", doc.Metadata["name"])
 	}
-	if doc.Numerics["cat"] != 42 {
-		t.Errorf("Numerics[cat] = %f, want 42", doc.Numerics["cat"])
+	if doc.Metadata["cat"] != 42 {
+		t.Errorf("Numerics[cat] = %f, want 42", doc.Metadata["cat"])
 	}
 }
 
@@ -261,10 +263,9 @@ func TestFromDocument_StoredField(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 
-	result := meta.fromDocument(Document{
+	result := restoreTypedDocument(t, meta, Document{
 		ID:       "s1",
-		Tags:     map[string]string{"name": "Starbucks"},
-		Numerics: map[string]float64{"cat": 42},
+		Metadata: map[string]any{"name": "Starbucks", "cat": 42},
 	})
 	item, ok := result.(storedFieldDoc)
 	if !ok {
@@ -300,8 +301,8 @@ func TestToDocument_UintField(t *testing.T) {
 	}
 
 	doc := meta.toDocument(uintDoc{ID: "u1", Val: 42})
-	if doc.Numerics["val"] != 42 {
-		t.Errorf("val = %f, want 42", doc.Numerics["val"])
+	if doc.Metadata["val"] != uint32(42) {
+		t.Errorf("val = %v, want uint32(42)", doc.Metadata["val"])
 	}
 }
 
@@ -311,9 +312,9 @@ func TestFromDocument_UintField(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 
-	result := meta.fromDocument(Document{
+	result := restoreTypedDocument(t, meta, Document{
 		ID:       "u1",
-		Numerics: map[string]float64{"val": 42},
+		Metadata: map[string]any{"val": 42},
 	})
 	item, ok := result.(uintDoc)
 	if !ok {
@@ -321,5 +322,53 @@ func TestFromDocument_UintField(t *testing.T) {
 	}
 	if item.Val != 42 {
 		t.Errorf("Val = %d, want 42", item.Val)
+	}
+}
+
+func restoreTypedDocument(t *testing.T, meta *schemaMeta, doc Document) any {
+	t.Helper()
+	decoded, err := meta.fromDocument(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
+}
+
+func TestTypedMetadataJSONRoundtrip(t *testing.T) {
+	type nested struct {
+		Items []string `json:"items"`
+		OK    bool     `json:"ok"`
+	}
+	type memory struct {
+		ID      string `vecdex:"id,id"`
+		Content string `vecdex:"text,content"`
+		Signed  int64  `vecdex:"signed,numeric"`
+		Big     uint64 `vecdex:"big,numeric"`
+		Context nested `vecdex:"context,stored"`
+	}
+	meta, err := parseSchema[memory]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := memory{ID: "memory", Content: "full source", Signed: 9007199254740993,
+		Big: 18446744073709551615, Context: nested{Items: []string{"one", "two"}, OK: true}}
+	stored, err := toInternalDocument(meta.toDocument(original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := meta.fromDocument(fromInternalDocument(&stored))
+	if err != nil || !reflect.DeepEqual(restored, original) {
+		t.Fatalf("typed metadata changed during JSON storage: %+v %v", restored, err)
+	}
+}
+
+func TestTypedMetadataTypeMismatchReturnsError(t *testing.T) {
+	meta, err := parseSchema[textDoc]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = meta.fromDocument(Document{ID: "memory", Metadata: map[string]any{"priority": "wrong type"}})
+	if err == nil {
+		t.Fatal("incompatible metadata must return a decoding error")
 	}
 }

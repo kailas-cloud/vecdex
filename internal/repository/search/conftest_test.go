@@ -5,11 +5,13 @@ import (
 	"testing"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
+	"github.com/kailas-cloud/vecdex/internal/domain"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 )
 
 // mockStore implements the consumer interface for tests.
 type mockStore struct {
+	projectionFn         func(context.Context, []string, []string) ([][]string, error)
 	versionFn            func(context.Context, []string, string) ([]string, error)
 	searchKNNFn          func(ctx context.Context, q *db.KNNQuery) (*db.SearchResult, error)
 	searchBM25Fn         func(ctx context.Context, q *db.TextQuery) (*db.SearchResult, error)
@@ -75,4 +77,23 @@ func (m *mockStore) HGetFieldMulti(ctx context.Context, keys []string, field str
 		return m.versionFn(ctx, keys, field)
 	}
 	return make([]string, len(keys)), nil
+}
+
+func testContext() context.Context {
+	return domain.WithCollectionGeneration(context.Background(), "fixture")
+}
+
+func (m *mockStore) HGetFieldsMulti(ctx context.Context, keys, fields []string) ([][]string, error) {
+	if m.projectionFn != nil {
+		return m.projectionFn(ctx, keys, fields)
+	}
+	versions, err := m.HGetFieldMulti(ctx, keys, fields[0])
+	if err != nil {
+		return nil, err
+	}
+	rows := make([][]string, len(versions))
+	for i, version := range versions {
+		rows[i] = []string{version, "", "source-token", "0"}
+	}
+	return rows, nil
 }

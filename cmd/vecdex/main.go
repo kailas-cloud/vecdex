@@ -106,6 +106,8 @@ func main() {
 		provName, budgetCfg.DailyTokenLimit, budgetCfg.MonthlyTokenLimit, action, logger,
 	).
 		WithAccountingStore(budgetrepo.NewAccounting(store), maxInputTokens)
+	stopBudgetMaintenance := budget.StartMaintenance(ctx)
+	defer stopBudgetMaintenance()
 	var budgetChecker embeddinguc.BudgetChecker = budget
 	var providerSlots chan struct{}
 	if provCfg.Backend == "bedrock" {
@@ -146,6 +148,10 @@ func main() {
 		M:           cfg.Index.HNSWM,
 		EFConstruct: cfg.Index.HNSWEFConstruct,
 	})
+	stopMaintenance := collRepo.StartMaintenance(ctx, func(err error) {
+		logger.Warn("Storage recovery pass failed", zap.Error(err))
+	})
+	defer stopMaintenance()
 	docRepo := documentrepo.New(store)
 	searchRepo := searchrepo.New(store)
 

@@ -17,14 +17,17 @@ func fuseRRF(knn, bm25 []result.Result, limit int) []result.Result {
 	type scored struct {
 		res   result.Result
 		score float64
-		inKNN bool
 	}
 
+	// Rank documents, not fragments. Duplicate fragments must neither overwrite
+	// the best snippet nor contribute multiple votes from the same search mode.
+	knn = aggregateToDocuments(knn, len(knn))
+	bm25 = aggregateToDocuments(bm25, len(bm25))
 	merged := make(map[string]*scored)
 
 	for rank, r := range knn {
 		s := 1.0 / float64(rrfK+rank+1)
-		merged[r.ID()] = &scored{res: r, score: s, inKNN: true}
+		merged[r.ID()] = &scored{res: r, score: s}
 	}
 
 	for rank, r := range bm25 {
@@ -38,18 +41,19 @@ func fuseRRF(knn, bm25 []result.Result, limit int) []result.Result {
 	}
 
 	results := make([]result.Result, 0, len(merged))
-	scores := make(map[string]float64, len(merged))
-	for id, s := range merged {
-		scores[id] = s.score
+	for _, s := range merged {
 		// Rebuild result with fused RRF score
 		results = append(results, result.New(
 			s.res.ID(), s.score, s.res.Content(),
 			s.res.Tags(), s.res.Numerics(), s.res.Vector(),
-		))
+		).WithSourceOf(&s.res))
 	}
 
 	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score() > results[j].Score()
+		if results[i].Score() != results[j].Score() {
+			return results[i].Score() > results[j].Score()
+		}
+		return results[i].ID() < results[j].ID()
 	})
 
 	if limit > 0 && len(results) > limit {

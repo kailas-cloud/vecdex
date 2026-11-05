@@ -115,27 +115,6 @@ func (s *Store) Exists(ctx context.Context, key string) (bool, error) {
 	return count > 0, nil
 }
 
-// Scan iterates keys matching a pattern.
-func (s *Store) Scan(ctx context.Context, pattern string) ([]string, error) {
-	var keys []string
-	var cursor uint64
-
-	for {
-		cmd := s.b().Scan().Cursor(cursor).Match(pattern).Count(100).Build()
-		res, err := s.do(ctx, cmd).AsScanEntry()
-		if err != nil {
-			return nil, &db.Error{Op: db.OpScan, Err: err}
-		}
-		keys = append(keys, res.Elements...)
-		cursor = res.Cursor
-		if cursor == 0 {
-			break
-		}
-	}
-
-	return keys, nil
-}
-
 // HGetFieldMulti reads one small field per key in a pipeline, avoiding full document hydration.
 func (s *Store) HGetFieldMulti(ctx context.Context, keys []string, field string) ([]string, error) {
 	commands := make([]rueidis.Completed, len(keys))
@@ -154,4 +133,39 @@ func (s *Store) HGetFieldMulti(ctx context.Context, keys []string, field string)
 		out[i] = value
 	}
 	return out, nil
+}
+
+// HGetFieldsMulti reads each parent's projection and version atomically in one
+// HMGET, while pipelining independent document partitions across the cluster.
+func (s *Store) HGetFieldsMulti(ctx context.Context, keys, fields []string) ([][]string, error) {
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("hash projection requires at least one field")
+	}
+	commands := make([]rueidis.Completed, len(keys))
+	for i, key := range keys {
+		commands[i] = s.b().Hmget().Key(key).Field(fields...).Build()
+	}
+	replies := s.client.DoMulti(ctx, commands...)
+	if len(replies) != len(keys) {
+		return nil, fmt.Errorf("incomplete hash projection response")
+	}
+	rows := make([][]string, len(keys))
+	for i, reply := range replies {
+		row, err := reply.ToArray()
+		if err != nil {
+			return nil, fmt.Errorf("read hash projection: %w", err)
+		}
+		if len(row) != len(fields) {
+			return nil, fmt.Errorf("invalid hash projection width")
+		}
+		rows[i] = make([]string, len(fields))
+		for j, message := range row {
+			value, err := message.ToString()
+			if err != nil && !rueidis.IsRedisNil(err) {
+				return nil, fmt.Errorf("decode hash projection: %w", err)
+			}
+			rows[i][j] = value
+		}
+	}
+	return rows, nil
 }

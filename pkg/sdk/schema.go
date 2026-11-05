@@ -1,6 +1,7 @@
 package vecdex
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -20,7 +21,7 @@ type schemaMeta struct {
 	// Schema fields for collection creation.
 	fields []FieldInfo
 
-	// Mapping from struct field index → document field name (for tags/numerics).
+	// Mapping from struct field index to a JSON metadata member.
 	tagFields     []fieldMapping
 	numericFields []fieldMapping
 }
@@ -86,7 +87,7 @@ func applyTag(meta *schemaMeta, idx int, fieldName, tag string) error {
 	case "numeric":
 		addNumeric(meta, idx, name)
 	case "stored":
-		// Stored field: goes into hash as a tag (bare key) but NOT indexed.
+		// Stored metadata is retained as JSON without an index entry.
 		meta.tagFields = append(meta.tagFields, fieldMapping{structIdx: idx, name: name})
 	case "":
 		// Поле без модификатора — mapped name, не индексируется.
@@ -132,63 +133,43 @@ func (m *schemaMeta) toDocument(item any) Document {
 		content = fmt.Sprint(v.Field(m.contentIdx).Interface())
 	}
 
-	tags := make(map[string]string, len(m.tagFields))
+	values := make(map[string]any, len(m.tagFields)+len(m.numericFields))
 	for _, tf := range m.tagFields {
-		tags[tf.name] = fmt.Sprint(v.Field(tf.structIdx).Interface())
+		values[tf.name] = v.Field(tf.structIdx).Interface()
 	}
 
-	numerics := make(map[string]float64, len(m.numericFields))
 	for _, nf := range m.numericFields {
-		numerics[nf.name] = toFloat64(v.Field(nf.structIdx))
+		values[nf.name] = v.Field(nf.structIdx).Interface()
 	}
 
 	return Document{
 		ID: id, Content: content,
-		Tags: tags, Numerics: numerics,
+		Metadata: values,
 	}
 }
 
-// fromDocument converts a Document back to a typed struct using schema metadata.
-func (m *schemaMeta) fromDocument(doc Document) any {
+// fromDocument restores typed JSON metadata without losing integer precision.
+func (m *schemaMeta) fromDocument(doc Document) (any, error) {
 	v := reflect.New(m.typ).Elem()
-
 	v.Field(m.idIdx).SetString(doc.ID)
 	if m.contentIdx != -1 {
 		v.Field(m.contentIdx).SetString(doc.Content)
 	}
-	for _, tf := range m.tagFields {
-		if val, ok := doc.Tags[tf.name]; ok {
-			v.Field(tf.structIdx).SetString(val)
+	for _, fields := range [][]fieldMapping{m.tagFields, m.numericFields} {
+		for _, f := range fields {
+			value, present := doc.Metadata[f.name]
+			if !present {
+				continue
+			}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				return nil, fmt.Errorf("encode metadata %q: %w", f.name, err)
+			}
+			target := v.Field(f.structIdx)
+			if err := json.Unmarshal(raw, target.Addr().Interface()); err != nil {
+				return nil, fmt.Errorf("decode metadata %q into %s: %w", f.name, target.Type(), err)
+			}
 		}
 	}
-	for _, nf := range m.numericFields {
-		if val, ok := doc.Numerics[nf.name]; ok {
-			setFloat(v.Field(nf.structIdx), val)
-		}
-	}
-	return v.Interface()
-}
-
-func toFloat64(v reflect.Value) float64 {
-	switch v.Kind() {
-	case reflect.Float32, reflect.Float64:
-		return v.Float()
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return float64(v.Int())
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return float64(v.Uint())
-	default:
-		return 0
-	}
-}
-
-func setFloat(v reflect.Value, f float64) {
-	switch v.Kind() {
-	case reflect.Float32, reflect.Float64:
-		v.SetFloat(f)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		v.SetInt(int64(f))
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		v.SetUint(uint64(f))
-	}
+	return v.Interface(), nil
 }

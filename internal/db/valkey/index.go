@@ -15,9 +15,11 @@ func (s *Store) CreateIndex(ctx context.Context, def *db.IndexDefinition) error 
 		return err
 	}
 
-	cmd := s.b().Arbitrary("FT.CREATE").Args(args...).Build()
+	cmd := s.b().Arbitrary("FT.CREATE").Keys(def.Name).Args(args[1:]...).Build()
 	if err := s.do(ctx, cmd).Error(); err != nil {
-		if isRedisErr(err, "index already exists") {
+		if isRedisErr(err, "index already exists") ||
+			(isRedisErr(err, "index with name") && isRedisErr(err, "already exists")) ||
+			(isRedisErr(err, "index ") && isRedisErr(err, " in database ") && isRedisErr(err, " already exists")) {
 			return db.ErrIndexExists
 		}
 		return &db.Error{Op: db.OpCreateIndex, Err: err}
@@ -27,9 +29,9 @@ func (s *Store) CreateIndex(ctx context.Context, def *db.IndexDefinition) error 
 
 // DropIndex removes an FT index by name.
 func (s *Store) DropIndex(ctx context.Context, name string) error {
-	cmd := s.b().Arbitrary("FT.DROPINDEX").Args(name).Build()
+	cmd := s.b().Arbitrary("FT.DROPINDEX").Keys(name).Build()
 	if err := s.do(ctx, cmd).Error(); err != nil {
-		if isRedisErr(err, "unknown index name") {
+		if isIndexMissing(err) {
 			return db.ErrIndexNotFound
 		}
 		return &db.Error{Op: db.OpDropIndex, Err: err}
@@ -39,9 +41,9 @@ func (s *Store) DropIndex(ctx context.Context, name string) error {
 
 // IndexExists probes index existence via FT.INFO; "unknown index name" means absent.
 func (s *Store) IndexExists(ctx context.Context, name string) (bool, error) {
-	cmd := s.b().Arbitrary("FT.INFO").Args(name).Build()
+	cmd := s.b().Arbitrary("FT.INFO").Keys(name).Build()
 	if err := s.do(ctx, cmd).Error(); err != nil {
-		if isRedisErr(err, "unknown index name") {
+		if isIndexMissing(err) {
 			return false, nil
 		}
 		return false, &db.Error{Op: db.OpIndexInfo, Err: err}
@@ -169,4 +171,9 @@ func buildVectorFieldArgs(f *db.IndexField) ([]string, error) {
 	result = append(result, attrs...)
 
 	return result, nil
+}
+
+func isIndexMissing(err error) bool {
+	return isRedisErr(err, "unknown index name") ||
+		(isRedisErr(err, "index with name") && isRedisErr(err, "not found in database"))
 }

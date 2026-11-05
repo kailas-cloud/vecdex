@@ -77,8 +77,12 @@ func (s *Service) Search(
 		return nil, 0, err
 	}
 
-	filtered, total := applyPostFilters(results, req.MinScore(), req.Limit())
-	return filtered, total, nil
+	threshold := req.MinScore()
+	if req.Mode() == mode.Keyword {
+		threshold = 0
+	}
+	filtered, total := applyPostFilters(results, threshold, req.Limit())
+	return limitSnippets(filtered, req.MaxContentBytes(), req.Query()), total, nil
 }
 
 // dispatch routes to the appropriate search implementation.
@@ -143,7 +147,9 @@ func (s *Service) Similar(
 	ctx = domain.WithExcludedDocument(ctx, documentID)
 	// Reuse stored vector — zero embedding cost. Exclude every source fragment in the backend.
 	results, err := s.repo.SearchKNN(
-		ctx, collectionName, vector, req.Filters(), req.TopK()+1, req.IncludeVectors(),
+		ctx, collectionName, vector, req.Filters(),
+		candidateWindow(req.Limit()+1, req.Limit(), s.cfg.SemanticCandidateFloor, s.cfg.SemanticCandidateMultiplier),
+		req.IncludeVectors(),
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("search knn: %w", err)
@@ -153,10 +159,10 @@ func (s *Service) Similar(
 		return results[i].Score() > results[j].Score()
 	})
 
-	results = aggregateToDocuments(results, req.TopK()+1)
+	results = aggregateToDocuments(results, req.Limit()+1)
 	results = excludeByID(results, documentID)
 	out, total := applyPostFilters(results, req.MinScore(), req.Limit())
-	return out, total, nil
+	return limitSnippets(out, req.MaxContentBytes(), ""), total, nil
 }
 
 // loadDocumentVector validates the collection/document and returns the stored vector.
@@ -206,7 +212,7 @@ func (s *Service) searchSemantic(
 	results, err := s.repo.SearchKNN(
 		ctx, collectionName, embResult.Embedding, req.Filters(),
 		candidateWindow(
-			req.TopK(),
+			req.Limit(),
 			req.Limit(),
 			s.cfg.SemanticCandidateFloor,
 			s.cfg.SemanticCandidateMultiplier,
@@ -222,7 +228,7 @@ func (s *Service) searchSemantic(
 		return results[i].Score() > results[j].Score()
 	})
 
-	return aggregateToDocuments(results, req.TopK()), nil
+	return aggregateToDocuments(results, req.Limit()), nil
 }
 
 // searchKeyword runs BM25 search when the backend exposes a TEXT field.
@@ -236,7 +242,7 @@ func (s *Service) searchKeyword(
 	results, err := s.repo.SearchBM25(
 		ctx, collectionName, req.Query(), req.Filters(),
 		candidateWindow(
-			req.TopK(),
+			req.Limit(),
 			req.Limit(),
 			s.cfg.BM25CandidateFloor,
 			s.cfg.BM25CandidateMultiplier,
@@ -245,7 +251,7 @@ func (s *Service) searchKeyword(
 	if err != nil {
 		return nil, fmt.Errorf("search bm25: %w", err)
 	}
-	return aggregateToDocuments(results, req.TopK()), nil
+	return aggregateToDocuments(results, req.Limit()), nil
 }
 
 // searchHybrid runs KNN + BM25 in parallel, then fuses via RRF.
@@ -257,13 +263,13 @@ func (s *Service) searchHybrid(
 	}
 
 	semanticCandidateK := candidateWindow(
-		req.TopK(),
+		req.Limit(),
 		req.Limit(),
 		s.cfg.SemanticCandidateFloor,
 		s.cfg.SemanticCandidateMultiplier,
 	)
 	bm25CandidateK := candidateWindow(
-		req.TopK(),
+		req.Limit(),
 		req.Limit(),
 		s.cfg.BM25CandidateFloor,
 		s.cfg.BM25CandidateMultiplier,
@@ -287,7 +293,7 @@ func (s *Service) searchHybrid(
 	}
 
 	fused := fuseRRF(semanticRes.results, keywordRes.results, 0)
-	return aggregateToDocuments(fused, req.TopK()), nil
+	return aggregateToDocuments(fused, req.Limit()), nil
 }
 
 func (s *Service) runHybridSemantic(

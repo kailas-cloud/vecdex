@@ -4,15 +4,20 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kailas-cloud/vecdex/internal/domain"
+	"github.com/kailas-cloud/vecdex/internal/domain/storage"
 )
 
 type integrationEmbedder struct{}
 
 func (integrationEmbedder) Embed(_ context.Context, text string) (EmbeddingResult, error) {
+	if len(text) > 512 {
+		return EmbeddingResult{}, domain.ErrEmbeddingInputTooLong
+	}
 	return EmbeddingResult{
 		Embedding:    vectorFromText(text),
 		PromptTokens: 1,
@@ -43,16 +48,12 @@ func vectorFromText(text string) []float32 {
 	return []float32{0, 1, 0}
 }
 
-func TestTextIngestorChunkingAndDocumentSearchIntegration(t *testing.T) {
+func TestTextIngestorDocumentLifecycleIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped in short mode")
 	}
 
 	valkeyAddr := resolveIntegrationValkeyAddr()
-	modelDir := resolveIntegrationModelDir()
-	if _, err := os.Stat(modelDir); err != nil {
-		t.Skipf("integration model dir unavailable: %v", err)
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -66,31 +67,44 @@ func TestTextIngestorChunkingAndDocumentSearchIntegration(t *testing.T) {
 	collectionName := createIntegrationCollection(t, ctx, client)
 	defer client.Collections().Delete(context.Background(), collectionName)
 
-	ingestor := newIntegrationIngestor(t, client, collectionName, modelDir)
+	ingestor := NewTextIngestor(client.Documents(collectionName), &IngestorConfig{BatchSize: 100, Parallelism: 4})
 
 	longText := strings.TrimSpace(strings.Repeat(
 		"SciFact benchmark sentence about evidence retrieval and chunked ingest performance. ",
 		80,
 	))
-	resp, err := ingestor.Upsert(ctx, []Document{{
+	resp, err := ingestor.Upsert(ctx, []BatchUpsertItem{{
 		ID:      "paper-scifact",
 		Content: longText,
 	}})
 	if err != nil {
 		t.Fatalf("ingestor.Upsert() error = %v", err)
 	}
-	if resp.Succeeded < 2 {
-		t.Fatalf("Succeeded = %d, want at least 2 chunks", resp.Succeeded)
+	if resp.Succeeded != 1 {
+		t.Fatalf("Succeeded = %d, want one source document", resp.Succeeded)
 	}
 
 	searchResp := waitForDocumentSearch(t, ctx, client, collectionName)
 	assertDocumentSearchResults(t, searchResp.Results)
 
-	rangeResp, err := queryChunkRange(ctx, client, collectionName)
-	if err != nil {
-		t.Fatalf("range search: %v", err)
+	doc, err := client.Documents(collectionName).Get(ctx, "paper-scifact")
+	if err != nil || doc.Content != longText {
+		t.Fatalf("read source: err=%v", err)
 	}
-	assertChunkRangeResults(t, rangeResp.Results)
+	verifyFragmentStorageAndMetadataPatch(t, ctx, client, collectionName, longText)
+	if _, err := ingestor.Upsert(ctx, []BatchUpsertItem{{ID: "paper-scifact", Content: "short replacement"}}); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := client.Documents(collectionName).Count(ctx); err != nil || count != 1 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	if err := client.Documents(collectionName).Delete(ctx, "paper-scifact"); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := client.Documents(collectionName).Count(ctx); err != nil || count != 0 {
+		t.Fatalf("count after delete=%d err=%v", count, err)
+	}
+
 }
 
 func resolveIntegrationValkeyAddr() string {
@@ -104,22 +118,14 @@ func resolveIntegrationValkeyAddr() string {
 	return valkeyAddr
 }
 
-func resolveIntegrationModelDir() string {
-	modelDir := os.Getenv("VECDEX_E2E_MODEL_DIR")
-	if modelDir == "" {
-		modelDir = filepath.Clean(filepath.Join("..", "..", "models", "all-MiniLM-L6-v2"))
-	}
-	return modelDir
-}
-
 func newIntegrationClient(ctx context.Context, valkeyAddr string) (*Client, error) {
-	return New(
-		ctx,
-		WithValkey(valkeyAddr, ""),
-		WithStandalone(),
-		WithEmbedder(integrationEmbedder{}),
-		WithVectorDimensions(3),
-	)
+	opts := []Option{WithEmbedder(integrationEmbedder{}), WithVectorDimensions(3)}
+	if seeds := os.Getenv("VECDEX_E2E_VALKEY_CLUSTER_ADDRS"); seeds != "" {
+		opts = append(opts, WithValkeyAddresses(strings.Split(seeds, ","), ""))
+	} else {
+		opts = append(opts, WithValkey(valkeyAddr, ""), WithStandalone())
+	}
+	return New(ctx, opts...)
 }
 
 func createIntegrationCollection(t *testing.T, ctx context.Context, client *Client) string {
@@ -129,28 +135,6 @@ func createIntegrationCollection(t *testing.T, ctx context.Context, client *Clie
 		t.Fatalf("ensure collection: %v", err)
 	}
 	return collectionName
-}
-
-func newIntegrationIngestor(
-	t *testing.T,
-	client *Client,
-	collectionName string,
-	modelDir string,
-) *TextIngestor {
-	t.Helper()
-	chunker, err := NewONNXChunker(ONNXChunkerConfig{
-		ModelDir:       modelDir,
-		WindowTokens:   DefaultChunkWindowTokens,
-		OverlapPercent: DefaultChunkOverlapPercent,
-	})
-	if err != nil {
-		t.Fatalf("NewONNXChunker() error = %v", err)
-	}
-	return NewTextIngestor(
-		client.Documents(collectionName),
-		chunker,
-		&IngestorConfig{BatchSize: 100, Parallelism: 4},
-	)
 }
 
 func waitForDocumentSearch(
@@ -164,11 +148,7 @@ func waitForDocumentSearch(
 	for {
 		resp, err := client.Search(collectionName).Query(ctx, "SciFact benchmark", &SearchOptions{
 			Mode:  ModeKeyword,
-			TopK:  20,
 			Limit: 20,
-			Filters: FilterExpression{
-				Must: []FilterCondition{{Key: ParentDocIDTag, Match: "paper-scifact"}},
-			},
 		})
 		if err == nil && len(resp.Results) >= 1 {
 			return resp
@@ -189,48 +169,36 @@ func assertDocumentSearchResults(t *testing.T, results []SearchResult) {
 		if item.ID != "paper-scifact" {
 			t.Fatalf("id = %q, want paper-scifact", item.ID)
 		}
-		if item.Tags[ParentDocIDTag] != "paper-scifact" {
-			t.Fatalf("parent_doc_id = %q, want paper-scifact", item.Tags[ParentDocIDTag])
-		}
-		if item.Numerics[ChunkIndexNumeric] < 1 {
-			t.Fatalf("chunk_index = %v, want >= 1", item.Numerics[ChunkIndexNumeric])
-		}
 	}
 }
 
-func queryChunkRange(
-	ctx context.Context,
-	client *Client,
-	collectionName string,
-) (SearchResponse, error) {
-	return client.Search(collectionName).Query(ctx, "SciFact benchmark", &SearchOptions{
-		Mode:  ModeKeyword,
-		TopK:  20,
-		Limit: 20,
-		Filters: FilterExpression{
-			Must: []FilterCondition{
-				{Key: ParentDocIDTag, Match: "paper-scifact"},
-				{Key: ChunkIndexNumeric, Range: &RangeFilter{GTE: ptrFloat64(2)}},
-			},
-		},
-	})
-}
-
-func assertChunkRangeResults(t *testing.T, results []SearchResult) {
+func verifyFragmentStorageAndMetadataPatch(
+	t *testing.T, ctx context.Context, client *Client, collectionName, longText string,
+) {
 	t.Helper()
-	if len(results) != 1 {
-		t.Fatalf("len(results) = %d, want 1", len(results))
+	col, err := client.collSvc.Get(ctx, collectionName)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, item := range results {
-		if item.ID != "paper-scifact" {
-			t.Fatalf("id = %q, want paper-scifact", item.ID)
-		}
-		if item.Numerics[ChunkIndexNumeric] < 2 {
-			t.Fatalf("chunk_index range filter violated: %v", item.Numerics[ChunkIndexNumeric])
-		}
+	layout, err := storage.NewCollection(collectionName, col.Generation())
+	if err != nil {
+		t.Fatal(err)
 	}
-}
+	parent, err := client.store.HGetAll(ctx, layout.Document("paper-scifact"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent["__vector"] != "" || strings.Contains(parent["__parts"], "vector") {
+		t.Fatal("parent duplicates fragment vectors")
+	}
+	value := "metadata-only change"
+	update := map[string]any{"note": value}
+	patched, err := client.Documents(collectionName).
+		Patch(ctx, "paper-scifact", DocumentPatch{Metadata: &update})
+	fetched, fetchErr := client.Documents(collectionName).Get(ctx, "paper-scifact")
+	if err != nil || fetchErr != nil || fetched.Version != patched.Version ||
+		fetched.Content != longText || fetched.Metadata["note"] != value {
+		t.Fatalf("metadata patch did not preserve source fragments: %v", err)
+	}
 
-func ptrFloat64(v float64) *float64 {
-	return &v
 }

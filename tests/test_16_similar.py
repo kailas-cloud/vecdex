@@ -11,9 +11,9 @@ from conftest import (
 
 
 def similar(client, collection, doc_id, **kwargs):
-    """Helper: POST /collections/{collection}/documents/{id}/similar."""
+    """Helper: POST /api/v2/collections/{collection}/documents/{id}/similar."""
     return client.post(
-        f"/collections/{collection}/documents/{doc_id}/similar",
+        f"/api/v2/collections/{collection}/documents/{doc_id}/similar",
         json=kwargs if kwargs else {},
     )
 
@@ -35,7 +35,7 @@ def similar_with_retry(client, collection, doc_id, retries=5, **kwargs):
 
 @pytest.mark.p0
 class TestSimilarTextBasic:
-    """POST /collections/{collection}/documents/{id}/similar on text collections."""
+    """POST /api/v2/collections/{collection}/documents/{id}/similar on text collections."""
 
     def test_returns_200(self, client, populated_collection):
         coll = populated_collection["name"]
@@ -67,12 +67,12 @@ class TestSimilarTextBasic:
         scores = [item["score"] for item in resp.json()["items"]]
         assert scores == sorted(scores, reverse=True)
 
-    def test_results_have_content_and_id(self, client, populated_collection):
+    def test_results_have_snippet_and_id(self, client, populated_collection):
         coll = populated_collection["name"]
         resp = similar_with_retry(client, coll, "doc-1")
         for item in resp.json()["items"]:
             assert "id" in item
-            assert "content" in item
+            assert "snippet" in item
 
     def test_response_has_total_and_limit(self, client, populated_collection):
         coll = populated_collection["name"]
@@ -123,16 +123,16 @@ class TestSimilarErrors:
 
 @pytest.mark.p1
 class TestSimilarParams:
-    """top_k, limit, min_score, include_vectors, filters."""
+    """limit, max_content_bytes, min_score, include_vectors, filters."""
 
     def test_limit_caps_results(self, client, populated_collection):
         coll = populated_collection["name"]
         resp = similar_with_retry(client, coll, "doc-1", limit=2)
         assert len(resp.json()["items"]) <= 2
 
-    def test_top_k_controls_window(self, client, populated_collection):
+    def test_limit_controls_window(self, client, populated_collection):
         coll = populated_collection["name"]
-        resp = similar_with_retry(client, coll, "doc-1", top_k=2)
+        resp = similar_with_retry(client, coll, "doc-1", limit=2)
         assert len(resp.json()["items"]) <= 2
 
     def test_min_score_filters_low_scores(self, client, populated_collection):
@@ -158,7 +158,7 @@ class TestSimilarParams:
             assert "vector" not in item
 
     def test_empty_body_uses_defaults(self, client, populated_collection):
-        """Empty body → default top_k, limit, no filters."""
+        """Empty body → default limit, max_content_bytes, no filters."""
         coll = populated_collection["name"]
         resp = similar_with_retry(client, coll, "doc-1")
         assert resp.status_code == 200
@@ -169,11 +169,11 @@ class TestSimilarParams:
         resp = similar(
             client, coll, "doc-1",
             filters={"must": [{"key": "category", "match": "infrastructure"}]},
-            top_k=10,
+            limit=10,
         )
         assert resp.status_code == 200
         for item in resp.json()["items"]:
-            assert item["tags"]["category"] == "infrastructure"
+            assert item["metadata"]["category"] == "infrastructure"
 
     def test_filter_must_not(self, client, populated_collection):
         """Exclude category=programming from similar results."""
@@ -181,11 +181,11 @@ class TestSimilarParams:
         resp = similar(
             client, coll, "doc-1",
             filters={"must_not": [{"key": "category", "match": "programming"}]},
-            top_k=10,
+            limit=10,
         )
         assert resp.status_code == 200
         for item in resp.json()["items"]:
-            assert item["tags"].get("category") != "programming"
+            assert item["metadata"].get("category") != "programming"
 
 
 # ============================================================
@@ -233,7 +233,7 @@ class TestSimilarEdgeCases:
         """Collection with 1 document → similar returns empty (source excluded)."""
         coll = collection_factory()
         client.put(
-            f"/collections/{coll['name']}/documents/only-doc",
+            f"/api/v2/collections/{coll['name']}/documents/only-doc",
             json={"content": "the only document in the collection"},
         )
         time.sleep(0.5)
@@ -265,5 +265,5 @@ class TestSimilarEdgeCases:
         coll = populated_collection["name"]
         resp = similar_with_retry(client, coll, "doc-1")
         items = resp.json()["items"]
-        has_tags = any(item.get("tags") for item in items)
+        has_tags = any(item.get("metadata") for item in items)
         assert has_tags

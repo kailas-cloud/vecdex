@@ -8,10 +8,13 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'deploy/monitoring/**'
       - 'config/**'
       - 'api/**'
       - 'models/**'
       - 'tests/**'
+      - 'benchmarks/scifact/**'
       - '.gitattributes'
       - '.github/workflows/tests.yml'
       - '.testcoverage.yml'
@@ -22,15 +25,33 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'deploy/monitoring/**'
       - 'config/**'
       - 'api/**'
       - 'models/**'
       - 'tests/**'
+      - 'benchmarks/scifact/**'
       - '.gitattributes'
       - '.github/workflows/tests.yml'
       - '.testcoverage.yml'
 
 jobs:
+  monitoring-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Check alert rules and threshold behavior
+        run: |
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/deploy/monitoring:/rules:ro" -w /rules \
+            prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996 \
+            check rules vecdex.rules.yml
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/deploy/monitoring:/rules:ro" -w /rules \
+            prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996 \
+            test rules vecdex.rules.test.yml
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -70,7 +91,7 @@ jobs:
         run: |
           docker run -d --name vecdex-unit-valkey -p 127.0.0.1:16379:6379 \
             valkey/valkey-bundle:9.1.2@sha256:1c39295cd8e3a34fc33fb46de235cf5e7bad530525b1a697eaf9f49e1c42747c \
-            --protected-mode no
+            --protected-mode no --search.writer-threads 1 --search.max-worker-suspension-secs 0
           for valkey_attempt in {1..30}; do
             if docker exec vecdex-unit-valkey valkey-cli ping | grep -q PONG; then exit 0; fi
             sleep 1
@@ -112,6 +133,120 @@ jobs:
       - name: Cleanup native storage fixture
         if: always()
         run: docker rm -f vecdex-unit-valkey
+
+  public-search-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      VECDEX_E2E_CLUSTER_CONTAINER: vecdex-public-cluster-search-cluster-1
+      VECDEX_E2E_VALKEY_CLUSTER_ADDRS: 127.0.0.1:17389,127.0.0.1:17390,127.0.0.1:17391
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.27.3'
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install native engine test runner
+        run: python -m pip install pytest==9.0.3 'httpx>=0.27,<1'
+
+      - name: Check source-document benchmark contract
+        run: python -m unittest discover -s benchmarks/scifact -p 'test_*.py'
+
+      - name: Start official public Search cluster
+        run: docker compose -p vecdex-public-cluster -f tests/cluster/docker-compose.yml up -d --wait
+
+      - name: Check native indexing and coordinator distribution
+        run: >-
+          go test ./internal/db/valkey
+          -run 'TestClusterSmallTransactionSearchVisibilityLive|TestClusterSearchCoordinatorDistributionLive|TestSearch121ParticipantConfigurationReadinessLive'
+          -count=1 -v -timeout 2m
+
+      - name: Check partitioned usage, leased credits and restart accounting
+        run: >-
+          go test ./internal/repository/budget
+          -run 'TestPartitionedUsage|TestLeasedCredit' -count=1 -v -timeout 2m
+
+      - name: Check distributed budget credit recovery
+        run: >-
+          go test ./internal/db/valkey
+          -run TestCredit -count=1 -v -timeout 2m
+
+      - name: Check SDK source search and conditional writes
+        run: >-
+          go test ./pkg/sdk
+          -run 'TestDistributedCollectionSearchIntegration|TestClusterFreshTextSearchIntegration|TestTextIngestorDocumentLifecycleIntegration|TestSDKOpaqueVersionIntegration|TestHTTPOpaqueVersionIntegration|TestJSONMetadataIntegration|TestHTTPJSONMetadataIntegration|TestHTTPV2SearchContractIntegration|TestHTTPClientContractIntegration|TestBatchVersionIntegration|TestIdempotencyIntegration|TestDocumentExpiryIntegration'
+          -count=1 -v -timeout 4m
+
+      - name: Check interrupted topology and failover recovery
+        run: >-
+          go test ./pkg/sdk -run TestClusterInterruptedTopologyRecoveryIntegration
+          -count=1 -v -timeout 7m
+
+      - name: Check search and writes during snapshots on primaries and replicas
+        run: >-
+          go test ./pkg/sdk -run TestClusterForkWindowIntegration
+          -count=1 -v -timeout 3m
+
+      - name: Reset disposable cluster before native engine regressions
+        run: docker compose -p vecdex-public-cluster -f tests/cluster/docker-compose.yml up -d --force-recreate --wait
+
+      - name: Check native migration capabilities and search regressions
+        env:
+          VECDEX_E2E_ENGINE_REPRO: '1'
+          VECDEX_E2E_ENGINE_HANDOFF_REPRO: '1'
+          VECDEX_E2E_ENGINE_ASM_REPRO: '1'
+        # Handoff deliberately leaves an importing slot as part of its evidence.
+        run: >-
+          python -m pytest -c tests/cluster/pytest.ini --confcutdir=tests/cluster
+          tests/cluster/engine_regressions/test_abort_signature.py
+          tests/cluster/engine_regressions/test_transaction_visibility.py
+          tests/cluster/engine_regressions/test_atomic_migration_capability.py
+          tests/cluster/engine_regressions/test_slot_handoff.py
+          -v -rxX --junitxml=tests/reports/engine-regressions.xml
+
+      - name: Reset disposable cluster before the crash reproducer
+        run: docker compose -p vecdex-public-cluster -f tests/cluster/docker-compose.yml up -d --force-recreate --wait
+
+      - name: Check isolated coordinator crash regression
+        env:
+          VECDEX_E2E_ENGINE_TOPOLOGY_REPRO: '1'
+        run: >-
+          python -m pytest -c tests/cluster/pytest.ini --confcutdir=tests/cluster
+          tests/cluster/engine_regressions/test_topology_consistency.py
+          -v -rxX --junitxml=tests/reports/engine-topology.xml
+
+      - name: Save official runtime provenance and node logs
+        if: always()
+        run: |
+          mkdir -p tests/reports
+          docker inspect "$VECDEX_E2E_CLUSTER_CONTAINER" > tests/reports/cluster-container.json
+          docker compose -p vecdex-public-cluster -f tests/cluster/docker-compose.yml logs > tests/reports/cluster-container.log
+          for cluster_port in {17389..17396}; do
+            docker exec "$VECDEX_E2E_CLUSTER_CONTAINER" cat "/tmp/search-$cluster_port/server.log" > "tests/reports/cluster-$cluster_port.log"
+          done
+
+      - name: Upload engine evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: official-search-cluster-evidence
+          path: tests/reports/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Cleanup public cluster
+        if: always()
+        run: docker compose -p vecdex-public-cluster -f tests/cluster/docker-compose.yml down -v
 
   e2e-pytest:
     runs-on: ubuntu-latest

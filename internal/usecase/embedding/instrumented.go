@@ -216,6 +216,9 @@ func (p *InstrumentedEmbedder) embedInner(
 }
 
 func (p *InstrumentedEmbedder) recordBatchBudget(totalTokens int) {
+	if shared, ok := p.budget.(interface{ sharedAccountingEnabled() bool }); ok && shared.sharedAccountingEnabled() {
+		return // The provider observer owns measured usage and shared remaining metrics.
+	}
 	if p.budget != nil && totalTokens > 0 {
 		p.budget.Record(int64(totalTokens))
 		remaining := metrics.EmbeddingBudgetTokensRemaining
