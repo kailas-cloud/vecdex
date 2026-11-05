@@ -72,7 +72,14 @@ repair_open_slots() {
 join_new_shard() {
   if [ -z "$(member_id 17395)" ]; then valkey-cli --cluster add-node 127.0.0.1:17395 "$seed"; fi
   new_id=$(node_id 17395)
-  if [ -z "$(member_id 17396)" ]; then valkey-cli --cluster add-node 127.0.0.1:17396 "$seed"; fi
+  if [ -z "$(member_id 17396)" ]; then
+    # MEET returns before gossip converges. The next add-node checks every
+    # member's configuration and rejects a mixed six/seven-node view.
+    for participant in 17389 17390 17391 17392 17393 17394 17395; do
+      wait_cluster_ready "$participant" 7
+    done
+    valkey-cli --cluster add-node 127.0.0.1:17396 "$seed"
+  fi
   for attempt in $(seq 1 100); do
     replica_parent=$(valkey-cli -e --raw -p 17396 cluster nodes | awk '$3 ~ /myself/ {print $4}')
     if [ "$replica_parent" = "$new_id" ]; then break; fi

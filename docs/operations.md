@@ -262,9 +262,12 @@ and examples, not scripts to point at a production cluster.
    changes even with an empty index, so ample RAM is not a substitute for this
    step on Search 1.2.1.
 3. **Provision a primary and replica.** Use the same official image, qualified
-   limits and required Search settings. Join the primary, then the replica,
-   assign the replica to the new primary with `CLUSTER REPLICATE`, and wait for
-   every member to see the full topology. Verify the replica's primary ID,
+   limits and required Search settings. Join the primary and wait until every
+   old member and the new primary reports the expanded membership and full slot
+   coverage. Only then add the replica: `add-node` returns before gossip has
+   converged, while the next `add-node` requires agreement across the cluster.
+   Assign the replica with `CLUSTER REPLICATE`, and wait for every member to see
+   the full topology again. Verify the replica's primary ID,
    `master_link_status:up` and `master_sync_in_progress:0`.
 4. **Bootstrap schemas before moving payload.** Select a genuinely empty slot
    owned by an existing primary and verify it with `CLUSTER COUNTKEYSINSLOT`.
@@ -300,6 +303,8 @@ Native CLI command shapes, after supplying the deployment's endpoints:
 ```sh
 set -eu
 valkey-cli --cluster add-node "$NEW_PRIMARY" "$SEED"
+# Wait for the expanded membership and full slot coverage on every member.
+# Do not issue the next add-node while any old member still has the old view.
 valkey-cli --cluster add-node "$NEW_REPLICA" "$SEED"
 # Wait for complete gossip views before assigning the replica.
 NEW_ID=$(valkey-cli -e -u "redis://$NEW_PRIMARY" CLUSTER MYID)

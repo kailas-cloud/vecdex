@@ -20,6 +20,11 @@ go test ./pkg/sdk -run TestClusterTopologyIntegration -count=1 -v
 
 The contract changes 3→4→3 primary topology, transfers slots with legacy SETSLOT/MIGRATE, kills a primary to test automatic failover, and reconnects the SDK. A concurrent worker writes, reads, deletes, and checks keyword/semantic/hybrid search against 64 immutable source IDs. Temporary request errors are allowed; successful incomplete search replies fail the test. The scripts verify actual slot ownership after migration, not only CLI exit codes. Use a fresh fixture for each topology run, including after a failure.
 
+The join procedure waits for all seven members to report the new primary before
+adding the eighth member. `CLUSTER MEET` returning does not prove gossip has
+converged; the next CLI add-node checks cluster agreement. Repeated expansion
+with all eight members already present skips this seven-member barrier.
+
 Cleanup:
 
 ```sh
