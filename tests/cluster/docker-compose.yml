@@ -2,6 +2,10 @@ services:
   search-cluster:
     image: valkey/valkey-bundle:9.1.2@sha256:1c39295cd8e3a34fc33fb46de235cf5e7bad530525b1a697eaf9f49e1c42747c
     entrypoint: ["/bin/sh", "/tests/start.sh"]
+    # Expected native engine aborts already save backtraces in server.log.
+    # Avoid multi-gigabyte core files exhausting the disposable fixture disk.
+    ulimits:
+      core: 0
     volumes:
       - ./:/tests:ro
     ports:

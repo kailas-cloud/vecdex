@@ -197,14 +197,6 @@ jobs:
           go test ./pkg/sdk -run TestClusterForkWindowIntegration
           -count=1 -v -timeout 3m
 
-      - name: Reset disposable cluster before online topology
-        run: docker compose -p vecdex-public-cluster -f tests/cluster/docker-compose.yml up -d --force-recreate --wait
-
-      - name: Check online expansion, contraction and failover
-        run: >-
-          go test ./pkg/sdk -run '^TestClusterTopologyIntegration$'
-          -count=1 -v -timeout 5m
-
       - name: Reset disposable cluster before native engine regressions
         run: docker compose -p vecdex-public-cluster -f tests/cluster/docker-compose.yml up -d --force-recreate --wait
 
@@ -216,6 +208,7 @@ jobs:
         # Handoff deliberately leaves an importing slot as part of its evidence.
         run: >-
           python -m pytest -c tests/cluster/pytest.ini --confcutdir=tests/cluster
+          tests/cluster/engine_regressions/test_abort_signature.py
           tests/cluster/engine_regressions/test_transaction_visibility.py
           tests/cluster/engine_regressions/test_atomic_migration_capability.py
           tests/cluster/engine_regressions/test_slot_handoff.py

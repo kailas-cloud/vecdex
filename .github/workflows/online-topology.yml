@@ -1,0 +1,56 @@
+name: Online topology qualification
+
+# Search 1.2.1 online membership changes are not a supported operating mode.
+# Keep this application contract ordinary and explicit, separate from required
+# CI for the maintenance procedure and native strict engine regressions.
+on:
+  workflow_dispatch:
+
+jobs:
+  online-topology:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      VECDEX_E2E_CLUSTER_CONTAINER: vecdex-online-qualification-search-cluster-1
+      VECDEX_E2E_VALKEY_CLUSTER_ADDRS: 127.0.0.1:17389,127.0.0.1:17390,127.0.0.1:17391
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.27.3'
+
+      - name: Start official public Search cluster
+        run: docker compose -p vecdex-online-qualification -f tests/cluster/docker-compose.yml up -d --wait
+
+      - name: Qualify online expansion, contraction and failover
+        run: >-
+          go test ./pkg/sdk -run '^TestClusterTopologyIntegration$'
+          -count=1 -v -timeout 5m
+
+      - name: Save runtime provenance and node logs
+        if: always()
+        run: |
+          mkdir -p tests/reports
+          docker inspect "$VECDEX_E2E_CLUSTER_CONTAINER" > tests/reports/online-container.json
+          docker compose -p vecdex-online-qualification -f tests/cluster/docker-compose.yml logs > tests/reports/online-container.log
+          for cluster_port in {17389..17396}; do
+            docker exec "$VECDEX_E2E_CLUSTER_CONTAINER" cat "/tmp/search-$cluster_port/server.log" > "tests/reports/online-$cluster_port.log"
+          done
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: online-topology-qualification
+          path: tests/reports/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Cleanup qualification cluster
+        if: always()
+        run: docker compose -p vecdex-online-qualification -f tests/cluster/docker-compose.yml down -v

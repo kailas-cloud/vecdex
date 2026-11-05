@@ -25,6 +25,12 @@ adding the eighth member. `CLUSTER MEET` returning does not prove gossip has
 converged; the next CLI add-node checks cluster agreement. Repeated expansion
 with all eight members already present skips this seven-member barrier.
 
+This online application contract remains an ordinary failing/passing test. Run
+it locally with the opt-in above, or through the manually dispatched
+`Online topology qualification` workflow. Required PR CI covers the supported
+maintenance/recovery procedure, fork windows and native engine regressions;
+Search 1.2.1 online membership changes are outside the current support policy.
+
 Cleanup:
 
 ```sh

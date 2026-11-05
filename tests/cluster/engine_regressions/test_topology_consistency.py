@@ -24,6 +24,24 @@ def docker(container, *args, timeout=15):
                           text=True, timeout=timeout, check=False)
 
 
+def consistency_abort_signature(log):
+    if "crashed by signal: 6" not in log:
+        return None
+    if re.search(
+            r"/usr/lib/valkey/libsearch\.so[^\n]*LogMessageFatal[^\n]*\n"
+            r"/usr/lib/valkey/libsearch\.so[^\n]*PerformSlotConsistencyCheck[^\n]*\n"
+            r"/usr/lib/valkey/libsearch\.so[^\n]*SearchIndexPartition", log):
+        return "symbolized-consistency-check"
+    # The pinned official AMD64 build inlines the check. These exact relative
+    # frames identify its cold fatal path, not an arbitrary Search SIGABRT.
+    if re.search(
+            r"/usr/lib/valkey/libsearch\.so[^\n]*LogMessageFatalD1Ev[^\n]*\n"
+            r"/usr/lib/valkey/libsearch\.so\(\+0x3c725e\)[^\n]*\n"
+            r"/usr/lib/valkey/libsearch\.so[^\n]*SearchIndexPartition[^\n]*\+0x555\)", log):
+        return "pinned-amd64-inlined-consistency-check"
+    return None
+
+
 def test_native_consistent_search_survives_topology_changes(request, record_property):
     if os.environ.get("VECDEX_E2E_ENGINE_TOPOLOGY_REPRO") != "1":
         pytest.skip("separate opt-in to destructive engine-only topology regression required")
@@ -70,20 +88,20 @@ def test_native_consistent_search_survives_topology_changes(request, record_prop
                 stop.set()
                 for address, worker in zip(addresses[:3], workers, strict=True):
                     statistics[address] = worker.result(timeout=10)
-        proven_aborts = []
+        proven_aborts, signatures = [], {}
         for port in range(17389, 17397):
             result = docker(container, "cat", f"/tmp/search-{port}/server.log")
             assert result.returncode == 0, result.stderr
             (report_dir / f"engine-topology-{port}.log").write_text(result.stdout)
-            if ("crashed by signal: 6" in result.stdout and re.search(
-                    r"/usr/lib/valkey/libsearch\.so[^\n]*LogMessageFatal[^\n]*\n"
-                    r"/usr/lib/valkey/libsearch\.so[^\n]*PerformSlotConsistencyCheck[^\n]*\n"
-                    r"/usr/lib/valkey/libsearch\.so[^\n]*SearchIndexPartition", result.stdout)):
+            signature = consistency_abort_signature(result.stdout)
+            if signature:
                 proven_aborts.append(port)
+                signatures[str(port)] = signature
         evidence = {"image": image, "module_info": modules, "index": index,
                     "query": f"FT.SEARCH {index} @status:{{run}} ALLSHARDS CONSISTENT NOCONTENT LIMIT 0 1",
                     "configuration": {"search.writer-threads": 1, "search.max-worker-suspension-secs": 0},
-                    "topology": phases, "native_queries": statistics, "consistency_map_aborted_nodes": proven_aborts}
+                    "topology": phases, "native_queries": statistics, "consistency_map_aborted_nodes": proven_aborts,
+                    "crash_signatures": signatures}
         (report_dir / "engine-topology.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
         record_property("engine_evidence", json.dumps(evidence, sort_keys=True))
         if proven_aborts:

@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Required cluster CI covers the supported maintenance/recovery path and native engine regressions. Unsupported online topology qualification remains an ordinary test in a separate manually dispatched workflow.
 - PUT/PATCH and the Go SDK return compact write receipts (`id`, `version`, `created`). `Get` returns the full source. Receipts report the exact committed version even when another writer immediately updates the source.
 - HTTP resources use `/api/v2`; search is `POST /api/v2/collections/{collection}/search`. Document writes and responses use one arbitrary JSON `metadata` object. The Go SDK exposes the same metadata model and retains nested values and exact JSON integers.
 - Search has one source-document `limit` (default 10, maximum 100) and a combined `max_content_bytes` snippet budget (default 16 KiB). Search hits include a source version usable for CAS; `Get` returns full text. Removed `top_k`, public `tags`/`numerics`, and search `content` aliases.
@@ -35,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Shard joins wait for membership convergence after adding the primary and again before assigning its replica, avoiding CLI configuration-agreement and unknown-node races. Native engine abort matching also recognizes the exact inlined AMD64 signature from the pinned public image; unrelated crashes remain failures.
 - Search 1.2.1 readiness requires one active writer and fork suspension set to zero on every participant, including standalone nodes. Compose supplies both public configuration workarounds for upstream #1651 and #1260. Native transactions remain intact; Vecdex does not change server settings at runtime.
 - Hybrid fusion ranks source documents once per search mode, preserving the best matching fragment and stable ordering for equal fused scores.
 - Typed SDK search honors requested limits above ten.

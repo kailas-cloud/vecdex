@@ -395,6 +395,11 @@ The larger concurrent-query scale-out still reproduced the public coordinator
 crash. The pre-OOM 65–70% online trigger has not yet been qualified by that test.
 These distinctions are part of the support policy; native strict xfails do not
 turn the failed application contract into supported behavior.
+Required PR CI checks the supported recovery procedure and fork windows, followed
+by isolated native engine regressions. Online qualification is a separate manual
+workflow (`.github/workflows/online-topology.yml`); its application test remains
+ordinary and can fail. A green supported-path workflow does not qualify online
+scale-out or scale-in on this Search release.
 
 With the required writer/fork settings, the full HTTP profiles passed on the
 current application code: 344 tests with the mock embedder, 341 with ONNX, and

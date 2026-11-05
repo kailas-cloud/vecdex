@@ -22,7 +22,15 @@ On 2026-11-04 the official pinned image produced **1 passed, 1 xfailed**. The na
 
 On the same public image, `FT.INFO <index> PRIMARY ALLSHARDS CONSISTENT` immediately after distributed index creation aborted primary processes. During expansion, consistent FT.SEARCH also aborted a newly joined replica. Saved stacks ended in `Service::PerformSlotConsistencyCheck`. The [released source](https://github.com/valkey-io/valkey-search/blob/1.2.1/src/coordinator/server.cc) asserts that its cached cluster map and current shard exist instead of returning a retryable error when either is absent.
 
-Vecdex probes FT.INFO LOCAL on each participant to avoid the observed distributed INFO path. This alone does not prove consistent search safe during topology changes. The application topology contract remains an ordinary acceptance test. The separate `engine_regressions/test_topology_consistency.py` creates an empty native TAG index and searches it directly over RESP while the external CLI changes topology. No Vecdex process or SDK participates. Its strict xfail accepts only a signal-6 abort whose saved stack contains both `PerformSlotConsistencyCheck` and `SearchIndexPartition` in the official Search module. Network failures, other crashes and topology script failures without that stack remain failures.
+Vecdex probes FT.INFO LOCAL on each participant to avoid the observed distributed INFO path. This alone does not prove consistent search safe during topology changes. The application topology contract remains an ordinary acceptance test. The separate `engine_regressions/test_topology_consistency.py` creates an empty native TAG index and searches it directly over RESP while the external CLI changes topology. No Vecdex process or SDK participates. Its strict xfail requires a signal-6 abort with a known official-module signature. The symbolized signature contains both `PerformSlotConsistencyCheck` and `SearchIndexPartition`; the inlined AMD64 signature is described below. Network failures, other crashes and topology script failures without a matching stack remain failures.
+
+The pinned AMD64 build inlines the check: its known stack contains
+`LogMessageFatalD1Ev`, the exact module-relative cold frame `+0x3c725e`, then
+`SearchIndexPartition+0x555`. The native classifier accepts that exact signature
+as well as the symbolized ARM64 check, under the existing official image and
+Search-version gates. Different offsets, signals and incomplete stacks remain
+failures. Unit cases cover both signatures and unrelated crash evidence; the
+native JSON report records which signature matched.
 
 On 2026-11-04 this native reproducer aborted the newly joined primary 17395 and replica 17396 during expansion, before the contraction phase. There were 790 successful native queries before/during the failure. The full engine-only run completed in 25.27 seconds with **1 passed, 2 xfailed**. The ordinary application test independently passed expansion with 75 traffic cycles, then aborted primary 17395 during contraction. One successful expansion therefore does not establish safe online topology changes.
 
@@ -100,6 +108,10 @@ The `public-search-cluster` CI job runs native indexing, coordinator distributio
 and SDK contracts first, then the isolated engine reproducers. It recreates the fixture between destructive handoff and crash cases, uses only the
 official pinned fixture and uploads JUnit, JSON evidence, container provenance and
 all node logs as `official-search-cluster-evidence`, even on unexpected failure.
+The unsupported online application contract runs in the separate manual
+`Online topology qualification` workflow. It is not marked xfail and its failures
+remain failures. Required CI exercises the supported maintenance/recovery path
+and the independent native strict xfails for this pinned engine.
 
 ## Capacity and index-memory reclamation on the public image
 
