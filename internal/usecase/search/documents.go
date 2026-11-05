@@ -3,16 +3,14 @@ package search
 import (
 	"sort"
 
-	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/result"
 )
 
 type docCandidate struct {
-	id        string
-	score     float64
-	rank      int
-	chunkRank float64
-	res       result.Result
+	id    string
+	score float64
+	rank  int
+	res   *result.Result
 }
 
 func aggregateToDocuments(results []result.Result, topK int) []result.Result {
@@ -21,14 +19,14 @@ func aggregateToDocuments(results []result.Result, topK int) []result.Result {
 	}
 
 	bestByDoc := make(map[string]docCandidate, len(results))
-	for idx, r := range results {
-		docID := documentID(&r)
+	for idx := range results {
+		r := &results[idx]
+		docID := documentID(r)
 		candidate := docCandidate{
-			id:        docID,
-			score:     r.Score(),
-			rank:      idx,
-			chunkRank: chunkIndex(&r),
-			res:       r,
+			id:    docID,
+			score: r.Score(),
+			rank:  idx,
+			res:   r,
 		}
 
 		current, ok := bestByDoc[docID]
@@ -59,7 +57,7 @@ func aggregateToDocuments(results []result.Result, topK int) []result.Result {
 			candidate.res.Tags(),
 			candidate.res.Numerics(),
 			candidate.res.Vector(),
-		)
+		).WithSourceOf(candidate.res)
 	}
 
 	return docResults
@@ -72,9 +70,6 @@ func betterDocumentCandidate(candidate, current *docCandidate) bool {
 	if candidate.rank != current.rank {
 		return candidate.rank < current.rank
 	}
-	if candidate.chunkRank != current.chunkRank {
-		return candidate.chunkRank < current.chunkRank
-	}
 	return candidate.id < current.id
 }
 
@@ -82,18 +77,5 @@ func documentID(r *result.Result) string {
 	if r == nil {
 		return ""
 	}
-	if parentDocID, ok := r.Tags()[domcol.SystemParentDocID]; ok && parentDocID != "" {
-		return parentDocID
-	}
 	return r.ID()
-}
-
-func chunkIndex(r *result.Result) float64 {
-	if r == nil {
-		return 0
-	}
-	if idx, ok := r.Numerics()[domcol.SystemChunkIndex]; ok {
-		return idx
-	}
-	return 0
 }

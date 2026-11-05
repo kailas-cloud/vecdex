@@ -2,7 +2,10 @@ package valkey
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/rueidis"
@@ -24,7 +27,8 @@ type Config struct {
 
 // Store implements db.Store via rueidis for Valkey (valkey-search).
 type Store struct {
-	client rueidis.Client
+	client     rueidis.Client
+	queryRoute atomic.Uint64
 }
 
 // NewStore creates a Valkey store via rueidis.
@@ -41,12 +45,22 @@ func NewStore(cfg Config) (*Store, error) {
 		DisableCache:      true,
 		AlwaysRESP2:       true,           // FT.SEARCH result parsing expects RESP2 array format
 		ForceSingleClient: cfg.Standalone, // standalone Valkey — не пробуем CLUSTER topology
+		// A former primary can return as a replica without causing another MOVED.
+		// Refresh membership in the background so readiness can rediscover it.
+		ClusterOption: rueidis.ClusterOption{ShardsRefreshInterval: time.Second},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
 
-	return &Store{client: client}, nil
+	store := &Store{client: client}
+	var seed [8]byte
+	if _, err := rand.Read(seed[:]); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("initialize query routing: %w", err)
+	}
+	store.queryRoute.Store(binary.LittleEndian.Uint64(seed[:]))
+	return store, nil
 }
 
 // Ping checks connectivity.
@@ -63,20 +77,24 @@ func (s *Store) Close() {
 	s.client.Close()
 }
 
-// WaitForReady polls Ping until the store responds or timeout expires.
+// WaitForReady polls complete primary and Search readiness until the deadline.
 func (s *Store) WaitForReady(ctx context.Context, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	var last error
 
 	for {
 		select {
 		case <-ctx.Done():
+			if last != nil {
+				return fmt.Errorf("timeout waiting for valkey: %w: %w", last, ctx.Err())
+			}
 			return fmt.Errorf("timeout waiting for valkey: %w", ctx.Err())
 		case <-ticker.C:
-			if err := s.Ping(ctx); err == nil {
+			if last = s.Ready(ctx); last == nil {
 				return nil
 			}
 		}

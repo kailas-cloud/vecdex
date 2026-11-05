@@ -48,7 +48,7 @@ type mockDocumentUC struct {
 	getFn    func(ctx context.Context, col, id string) (domdoc.Document, error)
 	listFn   func(ctx context.Context, col, cursor string, limit int) ([]domdoc.Document, string, error)
 	deleteFn func(ctx context.Context, col, id string) error
-	patchFn  func(ctx context.Context, col, id string, p patch.Patch) (domdoc.Document, error)
+	patchFn  func(ctx context.Context, col, id string, p patch.Patch) (domdoc.WriteResult, error)
 	countFn  func(ctx context.Context, col string) (int, error)
 }
 
@@ -70,7 +70,7 @@ func (m *mockDocumentUC) Delete(ctx context.Context, col, id string) error {
 	return m.deleteFn(ctx, col, id)
 }
 
-func (m *mockDocumentUC) Patch(ctx context.Context, col, id string, p patch.Patch) (domdoc.Document, error) {
+func (m *mockDocumentUC) Patch(ctx context.Context, col, id string, p patch.Patch) (domdoc.WriteResult, error) {
 	return m.patchFn(ctx, col, id, p)
 }
 
@@ -81,15 +81,15 @@ func (m *mockDocumentUC) Count(ctx context.Context, col string) (int, error) {
 // --- batchUseCase mock ---
 
 type mockBatchUC struct {
-	upsertFn func(ctx context.Context, col string, docs []domdoc.Document) []dombatch.Result
-	deleteFn func(ctx context.Context, col string, ids []string) []dombatch.Result
+	upsertFn func(ctx context.Context, col string, docs []dombatch.UpsertItem) []dombatch.Result
+	deleteFn func(ctx context.Context, col string, ids []dombatch.DeleteItem) []dombatch.Result
 }
 
-func (m *mockBatchUC) Upsert(ctx context.Context, col string, docs []domdoc.Document) []dombatch.Result {
+func (m *mockBatchUC) Upsert(ctx context.Context, col string, docs []dombatch.UpsertItem) []dombatch.Result {
 	return m.upsertFn(ctx, col, docs)
 }
 
-func (m *mockBatchUC) Delete(ctx context.Context, col string, ids []string) []dombatch.Result {
+func (m *mockBatchUC) Delete(ctx context.Context, col string, ids []dombatch.DeleteItem) []dombatch.Result {
 	return m.deleteFn(ctx, col, ids)
 }
 

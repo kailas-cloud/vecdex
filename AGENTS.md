@@ -52,8 +52,13 @@ docker compose --profile valkey down -v
 - Run profiles separately or use different Compose project names to isolate their data. Reports share the same output path.
 - Nine strict xfails in `tests/test_10_rate_limiting.py` cover rate limiting that is not implemented yet. They are expected failures, not new regressions.
 - Set `VECDEX_TEST_VALKEY_ADDR=127.0.0.1:16379` to enable native transaction, lifecycle, catalog, cache TTL, and shared accounting regressions against an isolated local Valkey. These tests include an ACL that denies scripting.
+- Set `VECDEX_TEST_VALKEY_CLUSTER_ADDRS` to a comma-separated list of reachable seed addresses to run `TestPartitionCatalogNativeLive` against an isolated cluster with at least three primaries. This fixture writes and removes its own generation namespace, verifies v3 key co-location, native commits, physical distribution, and catalog pagination; it does not cover Search, replicas, or resharding.
+
+- `tests/cluster/README.md` describes the disposable Search fixture and `VECDEX_E2E_VALKEY_CLUSTER_ADDRS` SDK contracts. `VECDEX_E2E_CLUSTER_CONTAINER` explicitly opts into destructive topology changes on that fixture only. Review `tests/cluster/KNOWN_FAILURES.md` before interpreting scale-out results.
 
 ## Practical notes
+
+- Use only official public Valkey/Search releases and images. Do not patch or ship a custom engine build. Work around engine defects in Vecdex or supported configuration, and document remaining limits with native reproducers. Confirmed engine regressions may use strict xfail with evidence; application contracts must not be hidden by a blanket xfail.
 
 - `go test ./... -short` currently includes the `examples/` packages; CI excludes them in the coverage job but they pass locally.
 - On a fresh environment, `golangci-lint` may need network access once to resolve uncached Go modules.

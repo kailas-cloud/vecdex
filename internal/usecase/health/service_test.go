@@ -12,7 +12,7 @@ type mockValkeyPinger struct {
 	err error
 }
 
-func (m *mockValkeyPinger) Ping(_ context.Context) error { return m.err }
+func (m *mockValkeyPinger) Ready(_ context.Context) error { return m.err }
 
 type mockEmbeddingChecker struct {
 	err error

@@ -51,7 +51,7 @@ info:
 
     ## Versioning
 
-    The API is versioned via URL path (`/api/v1`). Within a version:
+    The API is versioned via URL path (`/api/v2`). Within a version:
     - New optional fields may be added to responses (additive).
     - New optional query/body parameters may be added.
     - New error codes may be added.
@@ -71,7 +71,9 @@ info:
     | `collection_not_found`     | 404  | Collection doesn't exist              |
     | `document_not_found`       | 404  | Document doesn't exist                |
     | `collection_already_exists`| 409  | Collection name already taken         |
-    | `revision_conflict`        | 409  | Resource modified since last read     |
+    | `version_conflict`        | 409  | Resource modified since last read     |
+    | `idempotency_conflict`    | 409  | Key reused with different source input |
+    | `idempotency_in_progress` | 409  | The same source operation is active   |
     | `rate_limited`             | 429  | Per-key rate limit exceeded           |
     | `embedding_quota_exceeded` | 402  | Embedding token budget exhausted      |
     | `not_implemented`          | 501  | Feature not yet implemented           |
@@ -118,19 +120,19 @@ info:
     semantics (one level, no nesting). Each condition targets a field by
     `key` and matches via `match` (exact, tag fields) or `range` (numeric
     fields).
-  version: 1.0.0
+  version: 2.0.0
   contact:
     name: memory team
 
 servers:
-  - url: http://localhost:8080/api/v1
+  - url: http://localhost:8080
     description: Local development
 
 security:
   - bearerAuth: []
 
 paths:
-  /collections:
+  /api/v2/collections:
     post:
       summary: Create collection
       description: |
@@ -204,7 +206,7 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
 
-  /collections/{collection}:
+  /api/v2/collections/{collection}:
     get:
       summary: Get collection
       description: Returns collection metadata.
@@ -250,7 +252,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /collections/{collection}/documents:
+  /api/v2/collections/{collection}/documents:
     get:
       summary: List documents
       description: |
@@ -287,7 +289,7 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
 
-  /collections/{collection}/documents/{id}:
+  /api/v2/collections/{collection}/documents/{id}:
     put:
       summary: Upsert document
       description: |
@@ -296,13 +298,14 @@ paths:
         On 201 Created, returns a `Location` header with the document URL.
 
         Supports optimistic concurrency via `If-Match` header. Pass the
-        `revision` from a previous read — if the document was modified
-        since, returns 409. Omit `If-Match` for unconditional write.
+        quoted `ETag` from a previous document read — if the document was
+        modified or deleted and recreated since, returns 409. Omit `If-Match` for unconditional write.
       operationId: upsertDocument
       parameters:
         - $ref: '#/components/parameters/CollectionName'
         - $ref: '#/components/parameters/DocumentId'
         - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/XRequestID'
       requestBody:
         required: true
@@ -312,9 +315,8 @@ paths:
               $ref: '#/components/schemas/UpsertDocumentRequest'
             example:
               content: "CreateCollection validates name and creates FT index"
-              tags:
+              metadata:
                 language: go
-              numerics:
                 start_line: 42
       responses:
         '201':
@@ -324,7 +326,7 @@ paths:
               description: URL of the created document
               schema:
                 type: string
-              example: /api/v1/collections/code-chunks/documents/chunk-1
+              example: /api/v2/collections/code-chunks/documents/chunk-1
             X-Request-ID:
               $ref: '#/components/headers/XRequestID'
             X-Embedding-Tokens:
@@ -336,7 +338,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DocumentResponse'
+                $ref: '#/components/schemas/WriteResult'
         '200':
           description: Document updated
           headers:
@@ -351,7 +353,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DocumentResponse'
+                $ref: '#/components/schemas/WriteResult'
         '400':
           $ref: '#/components/responses/BadRequest'
         '402':
@@ -359,7 +361,7 @@ paths:
         '404':
           $ref: '#/components/responses/CollectionNotFound'
         '409':
-          $ref: '#/components/responses/RevisionConflict'
+          $ref: '#/components/responses/VersionConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '502':
@@ -374,7 +376,7 @@ paths:
         fields are updated — omitted fields are untouched.
 
         - If `content` is provided, the document is re-vectorized.
-        - If only `tags` or `numerics` are provided, no re-vectorization
+        - If only `metadata` is provided, no re-vectorization
           occurs (cheap metadata update).
         - To remove a tag or numeric field, set its value to `null`.
 
@@ -390,6 +392,7 @@ paths:
         - $ref: '#/components/parameters/CollectionName'
         - $ref: '#/components/parameters/DocumentId'
         - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/XRequestID'
       requestBody:
         required: true
@@ -398,16 +401,16 @@ paths:
             schema:
               $ref: '#/components/schemas/PatchDocumentRequest'
             examples:
-              update_tags_only:
-                summary: Update tags without re-vectorization
+              update_metadata_only:
+                summary: Update metadata without re-vectorization
                 value:
-                  tags:
+                  metadata:
                     language: python
                     reviewed: "true"
-              remove_tag:
-                summary: Remove a tag
+              remove_metadata_member:
+                summary: Remove a metadata member
                 value:
-                  tags:
+                  metadata:
                     deprecated: null
               update_content:
                 summary: Update content (triggers re-vectorization)
@@ -431,7 +434,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DocumentResponse'
+                $ref: '#/components/schemas/WriteResult'
         '400':
           $ref: '#/components/responses/BadRequest'
         '402':
@@ -439,7 +442,7 @@ paths:
         '404':
           $ref: '#/components/responses/DocumentNotFound'
         '409':
-          $ref: '#/components/responses/RevisionConflict'
+          $ref: '#/components/responses/VersionConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '502':
@@ -474,11 +477,13 @@ paths:
 
     delete:
       summary: Delete document
-      description: Deletes a document from the collection.
+      description: Deletes a document. If-Match checks its exact source version.
       operationId: deleteDocument
       parameters:
         - $ref: '#/components/parameters/CollectionName'
         - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/XRequestID'
       responses:
         '204':
@@ -488,10 +493,12 @@ paths:
               $ref: '#/components/headers/XRequestID'
         '404':
           $ref: '#/components/responses/DocumentNotFound'
+        '409':
+          $ref: '#/components/responses/VersionConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
 
-  /collections/{collection}/documents/search:
+  /api/v2/collections/{collection}/search:
     post:
       summary: Search documents
       description: |
@@ -503,9 +510,9 @@ paths:
         - **keyword**: pure BM25 full-text search.
 
         Retrieval runs over chunk candidates internally, but the API returns documents.
-        `top_k` controls the document ranking window before final limiting.
+        `limit` controls the maximum number of source documents returned.
         `limit` controls how many documents are returned to the client.
-        There is no offset — if you need more results, increase `top_k`.
+        Fragment candidate expansion is internal; there is no second ranking-window control.
 
         Supports structured filters with `must`/`should`/`must_not` conditions.
         See `FilterExpression` for details.
@@ -527,19 +534,16 @@ paths:
                 summary: Simple search (hybrid by default)
                 value:
                   query: "where is collection created"
-                  top_k: 5
               keyword_exact:
                 summary: Keyword search for exact identifier
                 value:
                   query: "parseJSON"
                   mode: keyword
-                  top_k: 10
               semantic_only:
                 summary: Pure semantic search
                 value:
                   query: "function that handles errors gracefully"
                   mode: semantic
-                  top_k: 10
                   min_score: 0.5
               filtered:
                 summary: Search with must/should/must_not filters
@@ -561,7 +565,6 @@ paths:
                 summary: Search with numeric range filter
                 value:
                   query: "database queries"
-                  top_k: 50
                   limit: 10
                   filters:
                     must:
@@ -602,7 +605,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /collections/{collection}/documents/batch-upsert:
+  /api/v2/collections/{collection}/documents/batch-upsert:
     post:
       summary: Batch upsert documents
       description: |
@@ -610,14 +613,14 @@ paths:
         vectorized and upserted independently. Returns per-item status
         even on partial failure (HTTP 200 always).
 
-        **Quota exhaustion:**
-        - If the budget is **already exhausted** before processing begins,
-          returns top-level **402** with `code: embedding_quota_exceeded`.
-        - If exhaustion occurs **mid-batch**, returns **200** with per-item
-          statuses: successful items get `ok`, remaining items get per-item
-          `embedding_quota_exceeded` errors. Embedding headers reflect
-          the total tokens consumed by the successful portion.
-        - Check per-item statuses to detect partial success.
+        Each item may carry an unquoted `if_version` token. Conditions compare
+        the complete source incarnation and version; deleting and recreating an
+        ID does not satisfy an old condition. Conflicts return `version_conflict`
+        and the current version for that item. Successful upserts return `version`.
+
+        Accepted batches report quota and embedding failures per item. Embedding
+        headers reflect actual provider usage, including preparation that later
+        loses a conditional commit. The batch is not one atomic transaction.
       operationId: batchUpsert
       parameters:
         - $ref: '#/components/parameters/CollectionName'
@@ -657,12 +660,14 @@ paths:
         '502':
           $ref: '#/components/responses/EmbeddingProviderError'
 
-  /collections/{collection}/documents/batch-delete:
+  /api/v2/collections/{collection}/documents/batch-delete:
     post:
       summary: Batch delete documents
       description: |
-        Deletes up to 100 documents by ID. Returns per-item status
-        even on partial failure (HTTP 200 always).
+        Deletes up to 100 document selectors. Each has an ID and optional
+        unquoted `if_version`. A stale or absent source version fails that item;
+        other items continue. Accepted batches return HTTP 200 with per-item
+        status. The batch is not one atomic transaction.
       operationId: batchDelete
       parameters:
         - $ref: '#/components/parameters/CollectionName'
@@ -690,7 +695,7 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
 
-  /collections/{collection}/documents/{id}/similar:
+  /api/v2/collections/{collection}/documents/{id}/similar:
     post:
       summary: Find similar documents
       description: |
@@ -717,12 +722,10 @@ paths:
               simple:
                 summary: Find 5 similar documents
                 value:
-                  top_k: 20
                   limit: 5
               filtered:
                 summary: Similar with tag filter
                 value:
-                  top_k: 50
                   limit: 10
                   filters:
                     must:
@@ -748,7 +751,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /usage:
+  /api/v2/usage:
     get:
       summary: Get embedding usage and budget
       description: |
@@ -886,10 +889,10 @@ components:
       example: 550e8400-e29b-41d4-a716-446655440000
 
     ETag:
-      description: Resource revision for conditional requests. Use with If-Match on PUT/PATCH.
+      description: Resource validator. Document ETags carry opaque source versions for conditional PUT/PATCH/DELETE.
       schema:
         type: string
-      example: '"3"'
+      example: '"NvbWABcA9W_cQG2fz4EEbpyqP4LrYxak4KEuyAPqvAU"'
 
     RetryAfter:
       description: Seconds to wait before retrying
@@ -940,18 +943,34 @@ components:
         maxLength: 256
       example: chunk-1
 
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        A printable ASCII key (1–128 bytes) scoped to this source and collection
+        generation. Successful outcomes are retained for 24 hours. The same key
+        and input replay the original compact receipt without embedding or writing.
+        Different input returns idempotency_conflict. An active attempt returns
+        idempotency_in_progress; retry the same input after it completes.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+
     IfMatch:
       name: If-Match
       in: header
       required: false
       description: |
-        Revision-based optimistic concurrency control. Pass the quoted ETag from
-        a previous response, or its numeric revision for compatibility. A stale
-        revision returns 409 with code revision_conflict. Weak validators and
-        validator lists are not supported. Omit for an unconditional write.
+        Checks the exact document incarnation and revision. Pass the quoted ETag
+        from a previous document response. A stale version, including a deleted
+        or recreated document, returns 409 with code version_conflict. Weak
+        validators, numeric revision values, wildcards and validator lists are
+        not supported. Omit for an unconditional write.
       schema:
         type: string
-      example: '"3"'
+      example: '"NvbWABcA9W_cQG2fz4EEbpyqP4LrYxak4KEuyAPqvAU"'
 
     XRequestID:
       name: X-Request-ID
@@ -1078,7 +1097,7 @@ components:
             Field type for indexing:
             - tag: categorical/string filtering (exact match via `match`)
             - numeric: numeric range filtering (via `range` with gt/gte/lt/lte)
-            Document values for tag fields are passed in the `tags` object
+            Document values for tag fields are passed in the `metadata` object
             of the document body.
           example: tag
 
@@ -1107,96 +1126,98 @@ components:
 
     UpsertDocumentRequest:
       type: object
-      required:
-        - content
+      additionalProperties: false
+      required: [content]
       properties:
+        expires_at:
+          type: integer
+          format: int64
+          nullable: true
+          x-omitempty: true
+          minimum: 1
+          maximum: 253402300799999
+          description: Absolute UTC Unix milliseconds. Omitted or null makes PUT persistent.
         content:
           type: string
           maxLength: 163840
-          description: |
-            Document text content (will be auto-vectorized). Maximum size is
-            160 KB (~41k tokens for the default embedding model). Requests
-            exceeding this limit return 400 with code `validation_failed`.
-          example: "CreateCollection validates name and creates FT index"
-        tags:
+          description: Complete source text, preserved independently of search snippets.
+        metadata:
           type: object
-          additionalProperties:
-            type: string
-          description: Tag fields for filtering (must match collection schema)
-          example:
-            language: go
-        numerics:
-          type: object
-          additionalProperties:
-            type: number
-          description: Numeric fields for filtering (must match collection schema)
-          example:
-            start_line: 42
+          additionalProperties: true
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+          description: JSON metadata. Only declared top-level strings and numbers are indexed.
 
     PatchDocumentRequest:
       type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Text updates trigger embedding; metadata uses JSON Merge Patch. Null clears metadata.
       properties:
+        expires_at:
+          type: integer
+          format: int64
+          nullable: true
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+          x-omitempty: true
+          minimum: 1
+          maximum: 253402300799999
+          description: Absolute UTC Unix milliseconds. Omitted preserves the deadline; null clears it. A deadline change does not embed the source.
         content:
           type: string
           maxLength: 163840
-          description: |
-            New content text. If provided, triggers re-vectorization.
-            If omitted, existing content and vector are preserved.
-        tags:
+          description: Complete source text, preserved independently of search snippets.
+        metadata:
           type: object
-          additionalProperties:
-            nullable: true
-            type: string
-          description: |
-            Tags to merge. Existing tags not mentioned here are preserved.
-            Set a value to `null` to remove the tag.
-          example:
-            language: python
-            deprecated: null
-        numerics:
-          type: object
-          additionalProperties:
-            nullable: true
-            type: number
-          description: |
-            Numerics to merge. Existing numerics not mentioned here are preserved.
-            Set a value to `null` to remove the numeric.
-          example:
-            priority: 10
-      minProperties: 1
-      description: |
-        Partial update with merge semantics. All fields are optional —
-        only provided fields are updated. Set a tag/numeric value to `null`
-        to remove it. Empty nested objects (`{"tags": {}}`) are no-ops:
-        no error, no changes applied.
+          nullable: true
+          x-omitempty: true
+          additionalProperties: true
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+          description: JSON metadata. Only declared top-level strings and numbers are indexed.
 
-    DocumentResponse:
+    WriteResult:
       type: object
-      required:
-        - id
-        - content
-        - revision
+      required: [id, version, created]
       properties:
         id:
           type: string
-          example: chunk-1
+        version:
+          type: string
+          description: Opaque version of this committed mutation. Get returns the current document.
+        created:
+          type: boolean
+          description: Whether this PUT created a source. Always false for PATCH.
+
+    DocumentResponse:
+      type: object
+      required: [id, content, metadata, version]
+      properties:
+        expires_at:
+          type: integer
+          format: int64
+          nullable: true
+          x-omitempty: true
+          minimum: 1
+          maximum: 253402300799999
+          description: Absolute UTC Unix milliseconds. Absent for persistent sources. Expired sources are not returned.
+        id:
+          type: string
+        version:
+          type: string
+          minLength: 1
+          description: Opaque source version for conditional changes.
         content:
           type: string
-          example: "CreateCollection validates name and creates FT index"
-        revision:
-          type: integer
-          description: |
-            Monotonically increasing revision number. Use with `If-Match`
-            header on PUT/PATCH to prevent lost updates. Starts at 1.
-          example: 3
-        tags:
+          maxLength: 163840
+          description: Complete source text, preserved independently of search snippets.
+        metadata:
           type: object
-          additionalProperties:
-            type: string
-        numerics:
-          type: object
-          additionalProperties:
-            type: number
+          additionalProperties: true
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+          description: JSON metadata. Only declared top-level strings and numbers are indexed.
 
     DocumentCursorListResponse:
       type: object
@@ -1224,106 +1245,70 @@ components:
 
     SearchRequest:
       type: object
-      required:
-        - query
+      additionalProperties: false
+      required: [query]
       properties:
         query:
           type: string
+          minLength: 1
           maxLength: 4096
-          description: |
-            Search query text (auto-vectorized for semantic/hybrid modes).
-            Maximum 4096 characters. Queries exceeding this return 400.
-          example: "where is collection created"
         mode:
           type: string
           enum: [hybrid, semantic, keyword]
           default: hybrid
-          description: |
-            Search mode:
-            - **hybrid** (default): semantic + BM25 keyword search combined
-              via Reciprocal Rank Fusion. Catches both exact identifiers and
-              semantic meaning.
-            - **semantic**: pure vector KNN search.
-            - **keyword**: pure BM25 full-text search.
         filters:
           $ref: '#/components/schemas/FilterExpression'
-        top_k:
+        limit:
           type: integer
           minimum: 1
-          maximum: 500
+          maximum: 100
           default: 10
-          description: |
-            Document ranking window size before applying `limit`.
-            The server may retrieve more chunk candidates per search mode internally,
-            aggregate them into documents, and then keep the top `top_k` documents
-            before applying `limit`.
-          example: 50
+          description: Maximum source documents returned. Fragment candidate expansion is internal.
+        max_content_bytes:
+          type: integer
+          minimum: 1
+          maximum: 163840
+          default: 16384
+          description: Combined UTF-8 snippet bytes, shared across hits without splitting characters.
         min_score:
           type: number
           format: double
           minimum: 0
           maximum: 1
-          description: |
-            Minimum relevance score threshold. Results below this score are
-            excluded from the response. Applied as a post-filter on the server.
-            - In **semantic** mode: cosine similarity threshold (0.0–1.0).
-            - In **hybrid** mode: RRF score threshold (0.0–1.0, not cosine).
-            - In **keyword** mode: ignored (BM25 scores are not comparable
-              across queries, so thresholding is unreliable).
-          example: 0.5
+          description: Optional mode-specific threshold; ignored for keyword search.
         include_vectors:
           type: boolean
           default: false
-          description: |
-            Include embedding vectors in the response. Vectors are returned
-            regardless of search mode — they exist in storage even when
-            keyword mode doesn't use them for ranking.
-        limit:
-          type: integer
-          minimum: 1
-          maximum: 100
-          default: 20
-          description: |
-            Maximum documents to return from the `top_k` document window.
-            If top_k=100 and limit=10, the server ranks 100 documents and
-            returns the top 10. If limit > top_k, the server silently
-            caps to top_k (no error).
+          description: Include diagnostic vectors.
 
     SimilarRequest:
       type: object
+      additionalProperties: false
       properties:
         filters:
           $ref: '#/components/schemas/FilterExpression'
-        top_k:
-          type: integer
-          minimum: 1
-          maximum: 500
-          default: 10
-          description: |
-            Number of nearest neighbors for KNN (the computation window).
-            Same semantics as search top_k.
-          example: 20
         limit:
           type: integer
           minimum: 1
           maximum: 100
-          default: 20
-          description: |
-            Maximum results to return from the top_k window.
-          example: 5
+          default: 10
+          description: Maximum source documents returned. Fragment candidate expansion is internal.
+        max_content_bytes:
+          type: integer
+          minimum: 1
+          maximum: 163840
+          default: 16384
+          description: Combined UTF-8 snippet bytes, shared across hits without splitting characters.
         min_score:
           type: number
           format: double
           minimum: 0
           maximum: 1
-          description: |
-            Minimum cosine similarity threshold (0.0–1.0). Results below
-            this score are excluded.
-          example: 0.5
+          description: Optional mode-specific threshold; ignored for keyword search.
         include_vectors:
           type: boolean
           default: false
-          description: Include embedding vectors in the response.
+          description: Include diagnostic vectors.
 
     FilterExpression:
       type: object
@@ -1415,15 +1400,19 @@ components:
       properties:
         gt:
           type: number
+          format: double
           description: Greater than
         gte:
           type: number
+          format: double
           description: Greater than or equal
         lt:
           type: number
+          format: double
           description: Less than
         lte:
           type: number
+          format: double
           description: Less than or equal
       minProperties: 1
       example:
@@ -1432,44 +1421,33 @@ components:
 
     SearchResultItem:
       type: object
-      required:
-        - id
-        - score
-        - content
+      required: [id, version, score, snippet, metadata]
       properties:
         id:
           type: string
-          description: Document identifier. For chunked ingest, this is the parent document id.
-          example: article-1
+        version:
+          type: string
+          minLength: 1
+          description: Opaque source version, usable directly for a conditional update after search.
         score:
           type: number
           format: double
-          description: |
-            Relevance score. Meaning varies by mode:
-            - In **semantic** mode: cosine similarity (`1 - cosine_distance`), 0.0–1.0.
-            - In **keyword** mode: normalized BM25 score, 0.0–1.0.
-            - In **hybrid** mode: fused RRF score, 0.0–1.0. Not directly comparable
-              to cosine similarity — represents relative ranking quality.
-            Note: `min_score` thresholds mean different things in each mode.
-          example: 0.87
-        content:
+          description: Mode-specific relevance score; hybrid uses RRF.
+        snippet:
           type: string
-          description: Representative snippet for the ranked document. For chunked ingest, this is the best matching chunk.
-          example: "CreateCollection validates name and creates FT index"
-        tags:
+          description: Matching excerpt within max_content_bytes. Fetch the document for complete text.
+        metadata:
           type: object
-          additionalProperties:
-            type: string
-        numerics:
-          type: object
-          additionalProperties:
-            type: number
+          additionalProperties: true
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+          description: JSON metadata. Only declared top-level strings and numbers are indexed.
         vector:
           type: array
           items:
             type: number
             format: float
-          description: Embedding vector (only present when include_vectors=true)
+          description: Optional diagnostic embedding vector.
 
     SearchResultListResponse:
       type: object
@@ -1486,8 +1464,7 @@ components:
           type: integer
           description: |
             Number of document candidates that passed min_score filtering within
-            the `top_k` document window. May be greater than `limit` — in that
-            case, increase `limit` to see more results from the same ranked set.
+            the returned document window. This is not an exact corpus match count.
           example: 42
         limit:
           type: integer
@@ -1510,29 +1487,45 @@ components:
 
     BatchUpsertItem:
       type: object
-      required:
-        - id
-        - content
+      additionalProperties: false
+      required: [id, content]
       properties:
+        expires_at:
+          type: integer
+          format: int64
+          nullable: true
+          x-omitempty: true
+          minimum: 1
+          maximum: 253402300799999
+          description: Absolute UTC Unix milliseconds. Omitted or null makes PUT persistent.
         id:
           type: string
-          description: Document ID
           pattern: '^[a-zA-Z0-9_-]+$'
           minLength: 1
           maxLength: 256
-          example: chunk-1
         content:
           type: string
           maxLength: 163840
-          description: Document text content.
-        tags:
+          description: Complete source text, preserved independently of search snippets.
+        metadata:
           type: object
-          additionalProperties:
-            type: string
-        numerics:
-          type: object
-          additionalProperties:
-            type: number
+          additionalProperties: true
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+          description: JSON metadata. Only declared top-level strings and numbers are indexed.
+
+        if_version:
+          type: string
+          nullable: true
+          minLength: 1
+          description: When supplied, must match the current source version. Omit or null for an unconditional write.
+
+        idempotency_key:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 128
+          description: Optional 24-hour source operation key. Use per-item keys when retrying a partial batch.
 
     BatchUpsertResponse:
       type: object
@@ -1556,19 +1549,38 @@ components:
 
     BatchDeleteRequest:
       type: object
-      required:
-        - ids
+      additionalProperties: false
+      required: [documents]
       properties:
-        ids:
+        documents:
           type: array
           minItems: 1
           maxItems: 100
           items:
-            type: string
-            pattern: '^[a-zA-Z0-9_-]+$'
-            minLength: 1
-            maxLength: 256
-          example: ["chunk-1", "chunk-2"]
+            $ref: '#/components/schemas/BatchDeleteItem'
+
+    BatchDeleteItem:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          type: string
+          pattern: '^[a-zA-Z0-9_-]+$'
+          minLength: 1
+          maxLength: 256
+        if_version:
+          type: string
+          nullable: true
+          minLength: 1
+          description: When supplied, must match the current source version. Omit or null for an unconditional delete.
+
+        idempotency_key:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 128
+          description: Optional 24-hour source operation key. Use per-item keys when retrying a partial batch.
 
     BatchDeleteResponse:
       type: object
@@ -1602,6 +1614,9 @@ components:
         status:
           type: string
           enum: [ok, error]
+        version:
+          type: string
+          description: New opaque source version after a successful upsert; absent for deletes and failures.
         error:
           $ref: '#/components/schemas/ErrorResponse'
 
@@ -1622,7 +1637,9 @@ components:
             - collection_not_found
             - document_not_found
             - collection_already_exists
-            - revision_conflict
+            - version_conflict
+            - idempotency_conflict
+            - idempotency_in_progress
             - embedding_space_mismatch
             - rate_limited
             - embedding_quota_exceeded
@@ -1636,6 +1653,9 @@ components:
           type: string
           description: Human-readable error message
           example: "Invalid request body"
+        current_version:
+          type: string
+          description: Current source version on a conflict, when the document exists. Re-read before merging a change.
         details:
           type: array
           description: Field-level validation errors
@@ -1836,11 +1856,11 @@ components:
             code: collection_already_exists
             message: "Collection 'code-chunks' already exists"
 
-    RevisionConflict:
+    VersionConflict:
       description: |
-        Resource was modified since last read (optimistic concurrency).
-        The response includes the current revision so the client can
-        re-read and retry without an extra GET.
+        The source version no longer matches: the document was modified,
+        deleted, or recreated. The response includes current_version and ETag
+        when a current document exists. Re-read its content before merging.
       headers:
         X-Request-ID:
           $ref: '#/components/headers/XRequestID'
@@ -1851,8 +1871,8 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            code: revision_conflict
-            message: "Resource was modified. Re-read and retry with current revision."
+            code: version_conflict
+            message: "Document version changed. Re-read before retrying."
 
     RateLimited:
       description: Rate limit exceeded (reserved for future use)

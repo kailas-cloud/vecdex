@@ -1,202 +1,82 @@
 package request
 
 import (
+	"errors"
+	"math"
 	"strings"
 	"testing"
 
+	"github.com/kailas-cloud/vecdex/internal/domain"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/mode"
 )
 
-func emptyFilters() filter.Expression {
-	e, _ := filter.NewExpression(nil, nil, nil)
-	return e
-}
-
-func TestNew_Defaults(t *testing.T) {
-	r, err := New("hello", "", emptyFilters(), 0, 0, 0, false)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestSearchDefaultsHaveOneSourceLimitAndTextBudget(t *testing.T) {
+	r, err := New("query", "", filter.Expression{}, 0, 0, 0, false)
+	if err != nil || r.Mode() != mode.Hybrid || r.Limit() != 10 || r.MaxContentBytes() != 16384 {
+		t.Fatalf("defaults: %+v %v", r, err)
 	}
-	if r.Query() != "hello" {
-		t.Errorf("Query() = %q", r.Query())
-	}
-	if r.Mode() != mode.Hybrid {
-		t.Errorf("Mode() = %q, want hybrid (default)", r.Mode())
-	}
-	if r.TopK() != DefaultTopK {
-		t.Errorf("TopK() = %d, want %d", r.TopK(), DefaultTopK)
-	}
-	if r.Limit() != DefaultTopK {
-		// limit(20) > topK(10) => limit = topK
-		t.Errorf("Limit() = %d, want %d (clamped to topK)", r.Limit(), DefaultTopK)
-	}
-	if r.MinScore() != 0 {
-		t.Errorf("MinScore() = %f", r.MinScore())
-	}
-	if r.IncludeVectors() {
-		t.Error("IncludeVectors() = true")
+	if r.Query() != "query" || r.MinScore() != 0 || r.IncludeVectors() {
+		t.Fatal("unexpected normalized search")
 	}
 }
 
-func TestNew_ExplicitValues(t *testing.T) {
-	r, err := New("query", mode.Semantic, emptyFilters(), 50, 20, 0.5, true)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if r.Mode() != mode.Semantic {
-		t.Errorf("Mode() = %q", r.Mode())
-	}
-	if r.TopK() != 50 {
-		t.Errorf("TopK() = %d", r.TopK())
-	}
-	if r.Limit() != 20 {
-		t.Errorf("Limit() = %d", r.Limit())
-	}
-	if r.MinScore() != 0.5 {
-		t.Errorf("MinScore() = %f", r.MinScore())
-	}
-	if !r.IncludeVectors() {
-		t.Error("IncludeVectors() = false")
+func TestSearchExplicitLimitsAndFilters(t *testing.T) {
+	r, err := New("query", mode.Semantic, filter.Expression{}, 50, 2048, .5, true)
+	if err != nil || r.Limit() != 50 || r.MaxContentBytes() != 2048 || r.MinScore() != .5 || !r.IncludeVectors() {
+		t.Fatalf("explicit search: %+v %v", r, err)
 	}
 }
 
-func TestNew_EmptyQuery(t *testing.T) {
-	_, err := New("", mode.Hybrid, emptyFilters(), 10, 10, 0, false)
-	if err == nil {
-		t.Fatal("expected error")
+func TestInvalidSearchParametersAreRejectedConsistently(t *testing.T) {
+	cases := []struct {
+		name, query string
+		mode        mode.Mode
+		limit, size int
+		score       float64
+	}{
+		{name: "empty query"},
+		{name: "long query", query: strings.Repeat("x", MaxQueryLength+1)},
+		{name: "mode", query: "q", mode: "unknown"},
+		{name: "negative limit", query: "q", limit: -1},
+		{name: "large limit", query: "q", limit: 101},
+		{name: "negative text budget", query: "q", size: -1},
+		{name: "large text budget", query: "q", size: MaxContentBytes + 1},
+		{name: "negative score", query: "q", score: -.1},
+		{name: "large score", query: "q", score: 1.1},
+		{name: "NaN score", query: "q", score: math.NaN()},
 	}
-	if !strings.Contains(err.Error(), "required") {
-		t.Errorf("error = %q", err)
-	}
-}
-
-func TestNew_QueryTooLong(t *testing.T) {
-	_, err := New(strings.Repeat("x", MaxQueryLength+1), mode.Hybrid, emptyFilters(), 10, 10, 0, false)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "too long") {
-		t.Errorf("error = %q", err)
-	}
-}
-
-func TestNew_QueryAtMaxLength(t *testing.T) {
-	_, err := New(strings.Repeat("x", MaxQueryLength), mode.Hybrid, emptyFilters(), 10, 10, 0, false)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_InvalidMode(t *testing.T) {
-	_, err := New("query", "invalid", emptyFilters(), 10, 10, 0, false)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "invalid search mode") {
-		t.Errorf("error = %q", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(tc.query, tc.mode, filter.Expression{}, tc.limit, tc.size, tc.score, false)
+			if !errors.Is(err, domain.ErrInvalidSchema) {
+				t.Fatalf("invalid search accepted: %v", err)
+			}
+		})
 	}
 }
 
-func TestNew_AllValidModes(t *testing.T) {
+func TestSearchQueryLimitCountsUnicodeCharacters(t *testing.T) {
 	for _, m := range []mode.Mode{mode.Hybrid, mode.Semantic, mode.Keyword} {
-		_, err := New("q", m, emptyFilters(), 10, 10, 0, false)
-		if err != nil {
-			t.Errorf("unexpected error for mode %q: %v", m, err)
+		if _, err := New(strings.Repeat("界", MaxQueryLength), m,
+			filter.Expression{}, MaxLimit, MaxContentBytes, 0, false); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
 
-func TestNew_TopKClamping(t *testing.T) {
-	tests := []struct {
-		name     string
-		topK     int
-		wantTopK int
-	}{
-		{"negative", -1, DefaultTopK},
-		{"zero", 0, DefaultTopK},
-		{"normal", 100, 100},
-		{"over max", 1000, MaxTopK},
-		{"exactly max", MaxTopK, MaxTopK},
+func TestSimilarUsesTheSameLimits(t *testing.T) {
+	r, err := NewSimilar(filter.Expression{}, 0, 0, .5, true)
+	if err != nil || r.Limit() != DefaultLimit || r.MaxContentBytes() != DefaultMaxContentBytes ||
+		r.MinScore() != .5 || !r.IncludeVectors() {
+		t.Fatalf("similar defaults: %+v %v", r, err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r, err := New("q", mode.Hybrid, emptyFilters(), tt.topK, 1, 0, false)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if r.TopK() != tt.wantTopK {
-				t.Errorf("TopK() = %d, want %d", r.TopK(), tt.wantTopK)
-			}
-		})
-	}
-}
-
-func TestNew_LimitClamping(t *testing.T) {
-	tests := []struct {
-		name      string
-		topK      int
-		limit     int
-		wantLimit int
-	}{
-		{"negative limit", 100, -1, DefaultLimit},
-		{"zero limit", 100, 0, DefaultLimit},
-		{"normal", 100, 50, 50},
-		{"over max", 100, 200, MaxLimit},
-		{"limit > topK", 5, 10, 5},
-		{"limit = topK", 20, 20, 20},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r, err := New("q", mode.Hybrid, emptyFilters(), tt.topK, tt.limit, 0, false)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if r.Limit() != tt.wantLimit {
-				t.Errorf("Limit() = %d, want %d", r.Limit(), tt.wantLimit)
-			}
-		})
-	}
-}
-
-func TestNew_MinScoreValidation(t *testing.T) {
-	// Valid values
-	for _, s := range []float64{0, 0.5, 1} {
-		_, err := New("q", mode.Hybrid, emptyFilters(), 10, 10, s, false)
-		if err != nil {
-			t.Errorf("unexpected error for min_score=%f: %v", s, err)
+	for _, limit := range []int{-1, MaxLimit + 1} {
+		if _, err := NewSimilar(filter.Expression{}, limit, 0, 0, false); !errors.Is(err, domain.ErrInvalidSchema) {
+			t.Fatalf("invalid similar limit accepted: %v", err)
 		}
 	}
-
-	// Invalid values
-	for _, s := range []float64{-0.1, 1.1, -1, 2} {
-		_, err := New("q", mode.Hybrid, emptyFilters(), 10, 10, s, false)
-		if err == nil {
-			t.Errorf("expected error for min_score=%f", s)
-		}
-	}
-}
-
-func TestNew_WithFilters(t *testing.T) {
-	m, _ := filter.NewMatch("lang", "go")
-	expr, _ := filter.NewExpression([]filter.Condition{m}, nil, nil)
-
-	r, err := New("query", mode.Hybrid, expr, 10, 10, 0, false)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if r.Filters().IsEmpty() {
-		t.Error("Filters().IsEmpty() = true, want false")
-	}
-}
-
-func TestQueryLimitCountsUnicodeCharacters(t *testing.T) {
-	query := strings.Repeat("中文🚀", 1365)
-	request, err := New(query, mode.Keyword, filter.Expression{}, 10, 10, 0, false)
-	if err != nil || request.Query() != query {
-		t.Fatalf("valid multilingual query rejected: %v", err)
-	}
-	if _, err := New(query+"ab", mode.Keyword, filter.Expression{}, 10, 10, 0, false); err == nil {
-		t.Fatal("oversized multilingual query accepted")
+	if _, err := NewSimilar(filter.Expression{}, 10, 0, math.NaN(), false); err == nil {
+		t.Fatal("NaN similarity threshold accepted")
 	}
 }

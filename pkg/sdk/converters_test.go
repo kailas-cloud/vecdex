@@ -1,6 +1,7 @@
 package vecdex
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -70,8 +71,7 @@ func TestToInternalDocument(t *testing.T) {
 	doc := Document{
 		ID:       "doc-1",
 		Content:  "hello",
-		Tags:     map[string]string{"lang": "en"},
-		Numerics: map[string]float64{"score": 0.95},
+		Metadata: map[string]any{"lang": "en", "score": 0.95},
 	}
 
 	d, err := toInternalDocument(doc)
@@ -84,8 +84,8 @@ func TestToInternalDocument(t *testing.T) {
 	if d.Content() != "hello" {
 		t.Errorf("Content = %q, want hello", d.Content())
 	}
-	if d.Tags()["lang"] != "en" {
-		t.Errorf("Tags[lang] = %q, want en", d.Tags()["lang"])
+	if d.Metadata().Values()["lang"] != "en" {
+		t.Errorf("Metadata[lang] = %v, want en", d.Metadata().Values()["lang"])
 	}
 }
 
@@ -108,11 +108,10 @@ func TestToInternalDocument_ReservedID(t *testing.T) {
 func TestFromInternalDocument(t *testing.T) {
 	d, _ := toInternalDocument(Document{
 		ID: "x", Content: "hi",
-		Tags:     map[string]string{"k": "v"},
-		Numerics: map[string]float64{"n": 1.5},
+		Metadata: map[string]any{"k": "v", "n": 1.5},
 	})
 
-	out := fromInternalDocument(d)
+	out := fromInternalDocument(&d)
 	if out.ID != "x" {
 		t.Errorf("ID = %q, want x", out.ID)
 	}
@@ -260,14 +259,14 @@ func TestFromSearchResults_WithData(t *testing.T) {
 	if out[0].Score != 0.95 {
 		t.Errorf("Score = %f, want 0.95", out[0].Score)
 	}
-	if out[0].Content != "hello" {
-		t.Errorf("Content = %q, want hello", out[0].Content)
+	if out[0].Snippet != "hello" {
+		t.Errorf("Content = %q, want hello", out[0].Snippet)
 	}
-	if out[0].Tags["lang"] != "en" {
-		t.Errorf("Tags[lang] = %q, want en", out[0].Tags["lang"])
+	if out[0].Metadata["lang"] != "en" {
+		t.Errorf("Tags[lang] = %q, want en", out[0].Metadata["lang"])
 	}
-	if out[0].Numerics["score"] != 0.99 {
-		t.Errorf("Numerics[score] = %f, want 0.99", out[0].Numerics["score"])
+	if out[0].Metadata["score"] != 0.99 {
+		t.Errorf("Numerics[score] = %f, want 0.99", out[0].Metadata["score"])
 	}
 }
 
@@ -293,8 +292,8 @@ func TestFromSearchResults_MapCloning(t *testing.T) {
 	out := fromSearchResults([]result.Result{r})
 
 	// Mutate returned maps — original should be unaffected.
-	out[0].Tags["k"] = "mutated"
-	out[0].Numerics["n"] = 999
+	out[0].Metadata["k"] = "mutated"
+	out[0].Metadata["n"] = 999
 
 	if r.Tags()["k"] == "mutated" {
 		t.Error("mutating Tags on result affected domain object")
@@ -307,19 +306,18 @@ func TestFromSearchResults_MapCloning(t *testing.T) {
 func TestFromInternalDocument_MapCloning(t *testing.T) {
 	d, _ := toInternalDocument(Document{
 		ID: "x", Content: "hi",
-		Tags:     map[string]string{"k": "v"},
-		Numerics: map[string]float64{"n": 1.5},
+		Metadata: map[string]any{"k": "v", "n": 1.5},
 	})
 
-	out := fromInternalDocument(d)
-	out.Tags["k"] = "mutated"
-	out.Numerics["n"] = 999
+	out := fromInternalDocument(&d)
+	out.Metadata["k"] = "mutated"
+	out.Metadata["n"] = 999
 
-	if d.Tags()["k"] == "mutated" {
-		t.Error("mutating Tags affected domain document")
+	if d.Metadata().Values()["k"] != "v" {
+		t.Error("mutating metadata affected domain document")
 	}
-	if d.Numerics()["n"] == 999 {
-		t.Error("mutating Numerics affected domain document")
+	if d.Metadata().Values()["n"].(json.Number) != "1.5" {
+		t.Error("mutating numeric metadata affected domain document")
 	}
 }
 
@@ -333,11 +331,12 @@ func TestFromInternalCollection_Revision(t *testing.T) {
 	}
 }
 
-func TestFromInternalDocument_Revision(t *testing.T) {
+func TestFromInternalDocument_Version(t *testing.T) {
 	d, _ := toInternalDocument(Document{ID: "doc-1", Content: "hi"})
-	out := fromInternalDocument(d)
-	if out.Revision != 1 {
-		t.Errorf("Revision = %d, want 1 (default from New)", out.Revision)
+	d.SetVersion("opaque-source-version")
+	out := fromInternalDocument(&d)
+	if out.Version != "opaque-source-version" {
+		t.Errorf("Version = %q, want opaque-source-version", out.Version)
 	}
 }
 

@@ -40,7 +40,7 @@ func (s *Store) retryBudget(ctx context.Context, c *db.BudgetCommand) (domusage.
 			return domusage.Snapshot{}, fmt.Errorf("budget operation canceled: %w", err)
 		}
 		snapshot, committed, err := s.budgetAttempt(ctx, c)
-		if err != nil || committed {
+		if !canRetryTransaction(err) && (err != nil || committed) {
 			return snapshot, err
 		}
 		if err := transactionRetry(ctx, attempt); err != nil {

@@ -20,14 +20,14 @@ class TestRateLimitHeaders:
     """Response should include X-RateLimit-* headers."""
 
     def test_rate_limit_headers_on_success(self, client):
-        resp = client.get("/collections")
+        resp = client.get("/api/v2/collections")
         assert "x-ratelimit-limit" in resp.headers
         assert "x-ratelimit-remaining" in resp.headers
 
     def test_rate_limit_headers_on_search(self, client, populated_collection):
         coll = populated_collection["name"]
         resp = client.post(
-            f"/collections/{coll}/documents/search",
+            f"/api/v2/collections/{coll}/search",
             json={"query": "test", "mode": "semantic"},
         )
         assert "x-ratelimit-limit" in resp.headers
@@ -41,7 +41,7 @@ class TestRateLimit429:
         """Rapid-fire requests should eventually hit 429."""
         got_429 = False
         for _ in range(200):
-            resp = client.get("/collections")
+            resp = client.get("/api/v2/collections")
             if resp.status_code == 429:
                 got_429 = True
                 break
@@ -50,7 +50,7 @@ class TestRateLimit429:
     def test_429_has_retry_after(self, client):
         got_429 = False
         for _ in range(200):
-            resp = client.get("/collections")
+            resp = client.get("/api/v2/collections")
             if resp.status_code == 429:
                 got_429 = True
                 assert "retry-after" in resp.headers
@@ -60,7 +60,7 @@ class TestRateLimit429:
     def test_429_has_error_code(self, client):
         got_429 = False
         for _ in range(200):
-            resp = client.get("/collections")
+            resp = client.get("/api/v2/collections")
             if resp.status_code == 429:
                 got_429 = True
                 data = resp.json()
@@ -75,7 +75,7 @@ class TestRateLimitP0:
 
     def test_ratelimit_limit_on_2xx(self, client):
         """10.4: X-RateLimit-Limit on 2xx responses."""
-        resp = client.get("/collections")
+        resp = client.get("/api/v2/collections")
         assert resp.status_code == 200
         assert "x-ratelimit-limit" in resp.headers
         limit = int(resp.headers["x-ratelimit-limit"])
@@ -92,7 +92,7 @@ class TestRateLimitP1:
         got_429 = False
         for _ in range(50):
             resp = client.post(
-                f"/collections/{coll}/documents/search",
+                f"/api/v2/collections/{coll}/search",
                 json={"query": "test", "mode": "semantic"},
             )
             if resp.status_code == 429:
@@ -102,16 +102,16 @@ class TestRateLimitP1:
 
     def test_ratelimit_remaining_decrements(self, client):
         """10.7: X-RateLimit-Remaining decrements."""
-        r1 = client.get("/collections")
+        r1 = client.get("/api/v2/collections")
         remaining1 = int(r1.headers["x-ratelimit-remaining"])
-        r2 = client.get("/collections")
+        r2 = client.get("/api/v2/collections")
         remaining2 = int(r2.headers["x-ratelimit-remaining"])
         assert remaining2 < remaining1
 
     def test_ratelimit_reset_restores(self, client):
         """10.8: After reset — limit restored."""
         import time
-        r1 = client.get("/collections")
+        r1 = client.get("/api/v2/collections")
         assert "x-ratelimit-reset" in r1.headers
         reset_ts = int(r1.headers["x-ratelimit-reset"])
         # Wait for reset (can't actually wait in test, just verify header exists)

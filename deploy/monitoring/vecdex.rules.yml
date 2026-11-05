@@ -1,0 +1,94 @@
+# Load explicitly from Prometheus rule_files; Compose does not deploy monitoring.
+# Scope: the supported Valkey Search 1.2.1 configuration in docs/operations.md.
+groups:
+  - name: vecdex-valkey
+    rules:
+      - record: vecdex:valkey_memory_ratio
+        expr: |
+          (redis_memory_used_bytes{service="vecdex"} / redis_memory_max_bytes{service="vecdex"})
+          and (redis_memory_max_bytes{service="vecdex"} > 0)
+
+      - alert: VecdexValkeyUnavailable
+        expr: redis_up{service="vecdex"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Valkey is unavailable on {{ $labels.instance }}"
+
+      - alert: VecdexValkeyMemoryLimitMissing
+        expr: redis_memory_max_bytes{service="vecdex"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Valkey has no maxmemory limit on {{ $labels.instance }}"
+
+      - alert: VecdexValkeyMemoryWarning
+        expr: vecdex:valkey_memory_ratio >= 0.60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Valkey memory is at least 60% on {{ $labels.instance }}"
+
+      - alert: VecdexValkeyScaleOutRequired
+        expr: vecdex:valkey_memory_ratio >= 0.65
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Start the shard expansion procedure for {{ $labels.instance }}"
+
+      - alert: VecdexValkeyMemoryCritical
+        expr: vecdex:valkey_memory_ratio >= 0.80
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Valkey memory is at least 80% on {{ $labels.instance }}"
+
+      - alert: VecdexValkeyEviction
+        expr: increase(redis_evicted_keys_total{service="vecdex"}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Valkey evicted stored keys on {{ $labels.instance }}"
+
+      - alert: VecdexSearchWriterConfiguration
+        expr: redis_search_total_active_write_threads{service="vecdex"} != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Search 1.2.1 requires one active writer on {{ $labels.instance }}"
+
+      - alert: VecdexSearchSnapshotFailure
+        expr: increase(redis_search_rdb_save_failure_count{service="vecdex"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Search failed to save an index on {{ $labels.instance }}"
+
+  - name: vecdex-api
+    rules:
+      - alert: VecdexHTTPServerErrors
+        expr: |
+          (
+            sum by (job, cluster) (rate(vecdex_http_requests_total{service="vecdex",status=~"5.."}[5m]))
+            / sum by (job, cluster) (rate(vecdex_http_requests_total{service="vecdex"}[5m]))
+          ) > 0.05
+          and sum by (job, cluster) (rate(vecdex_http_requests_total{service="vecdex"}[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vecdex HTTP 5xx rate exceeds 5%"
+
+      - alert: VecdexEmbeddingBudgetExhausted
+        expr: vecdex_embedding_budget_tokens_remaining{service="vecdex"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Embedding budget is exhausted for {{ $labels.provider }} / {{ $labels.period }}"

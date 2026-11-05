@@ -44,6 +44,9 @@ func collectionToHash(col collection.Collection) (map[string]string, error) {
 
 // collectionFromHash hydrates a domain Collection from an HGETALL result map.
 func collectionFromHash(m map[string]string, defaultVectorDim int) (collection.Collection, error) {
+	if m["layout_version"] != "3" || m["partition_count"] != "256" {
+		return collection.Collection{}, fmt.Errorf("unsupported collection layout; recreate and reindex source documents")
+	}
 	if m["generation"] == "" {
 		return collection.Collection{}, fmt.Errorf("collection generation is missing; recreate this test collection")
 	}

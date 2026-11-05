@@ -5,6 +5,7 @@ package generated
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -42,13 +43,15 @@ const (
 	ErrorResponseCodeEmbeddingProviderError    ErrorResponseCode = "embedding_provider_error"
 	ErrorResponseCodeEmbeddingQuotaExceeded    ErrorResponseCode = "embedding_quota_exceeded"
 	ErrorResponseCodeEmbeddingSpaceMismatch    ErrorResponseCode = "embedding_space_mismatch"
+	ErrorResponseCodeIdempotencyConflict       ErrorResponseCode = "idempotency_conflict"
+	ErrorResponseCodeIdempotencyInProgress     ErrorResponseCode = "idempotency_in_progress"
 	ErrorResponseCodeInternalError             ErrorResponseCode = "internal_error"
 	ErrorResponseCodeKeywordSearchNotSupported ErrorResponseCode = "keyword_search_not_supported"
 	ErrorResponseCodeNotImplemented            ErrorResponseCode = "not_implemented"
 	ErrorResponseCodeRateLimited               ErrorResponseCode = "rate_limited"
-	ErrorResponseCodeRevisionConflict          ErrorResponseCode = "revision_conflict"
 	ErrorResponseCodeValidationFailed          ErrorResponseCode = "validation_failed"
 	ErrorResponseCodeVectorDimMismatch         ErrorResponseCode = "vector_dim_mismatch"
+	ErrorResponseCodeVersionConflict           ErrorResponseCode = "version_conflict"
 )
 
 // Defines values for FieldDefinitionType.
@@ -91,9 +94,20 @@ const (
 	GetUsageParamsPeriodTotal GetUsageParamsPeriod = "total"
 )
 
+// BatchDeleteItem defines model for BatchDeleteItem.
+type BatchDeleteItem struct {
+	Id string `json:"id"`
+
+	// IdempotencyKey Optional 24-hour source operation key. Use per-item keys when retrying a partial batch.
+	IdempotencyKey *string `json:"idempotency_key"`
+
+	// IfVersion When supplied, must match the current source version. Omit or null for an unconditional delete.
+	IfVersion *string `json:"if_version"`
+}
+
 // BatchDeleteRequest defines model for BatchDeleteRequest.
 type BatchDeleteRequest struct {
-	Ids []string `json:"ids"`
+	Documents []BatchDeleteItem `json:"documents"`
 }
 
 // BatchDeleteResponse defines model for BatchDeleteResponse.
@@ -111,6 +125,9 @@ type BatchResultItem struct {
 	Error  *ErrorResponse        `json:"error,omitempty"`
 	Id     string                `json:"id"`
 	Status BatchResultItemStatus `json:"status"`
+
+	// Version New opaque source version after a successful upsert; absent for deletes and failures.
+	Version *string `json:"version,omitempty"`
 }
 
 // BatchResultItemStatus defines model for BatchResultItem.Status.
@@ -118,13 +135,21 @@ type BatchResultItemStatus string
 
 // BatchUpsertItem defines model for BatchUpsertItem.
 type BatchUpsertItem struct {
-	// Content Document text content.
+	// Content Complete source text, preserved independently of search snippets.
 	Content string `json:"content"`
 
-	// Id Document ID
-	Id       string              `json:"id"`
-	Numerics *map[string]float32 `json:"numerics,omitempty"`
-	Tags     *map[string]string  `json:"tags,omitempty"`
+	// ExpiresAt Absolute UTC Unix milliseconds. Omitted or null makes PUT persistent.
+	ExpiresAt *int64 `json:"expires_at,omitempty"`
+	Id        string `json:"id"`
+
+	// IdempotencyKey Optional 24-hour source operation key. Use per-item keys when retrying a partial batch.
+	IdempotencyKey *string `json:"idempotency_key"`
+
+	// IfVersion When supplied, must match the current source version. Omit or null for an unconditional write.
+	IfVersion *string `json:"if_version"`
+
+	// Metadata JSON metadata. Only declared top-level strings and numbers are indexed.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
 // BatchUpsertRequest defines model for BatchUpsertRequest.
@@ -230,20 +255,27 @@ type DocumentCursorListResponse struct {
 
 // DocumentResponse defines model for DocumentResponse.
 type DocumentResponse struct {
-	Content  string              `json:"content"`
-	Id       string              `json:"id"`
-	Numerics *map[string]float32 `json:"numerics,omitempty"`
+	// Content Complete source text, preserved independently of search snippets.
+	Content string `json:"content"`
 
-	// Revision Monotonically increasing revision number. Use with `If-Match`
-	// header on PUT/PATCH to prevent lost updates. Starts at 1.
-	Revision int                `json:"revision"`
-	Tags     *map[string]string `json:"tags,omitempty"`
+	// ExpiresAt Absolute UTC Unix milliseconds. Absent for persistent sources. Expired sources are not returned.
+	ExpiresAt *int64 `json:"expires_at,omitempty"`
+	Id        string `json:"id"`
+
+	// Metadata JSON metadata. Only declared top-level strings and numbers are indexed.
+	Metadata json.RawMessage `json:"metadata"`
+
+	// Version Opaque source version for conditional changes.
+	Version string `json:"version"`
 }
 
 // ErrorResponse defines model for ErrorResponse.
 type ErrorResponse struct {
 	// Code Machine-readable error code
 	Code ErrorResponseCode `json:"code"`
+
+	// CurrentVersion Current source version on a conflict, when the document exists. Re-read before merging a change.
+	CurrentVersion *string `json:"current_version,omitempty"`
 
 	// Details Field-level validation errors
 	Details *[]ValidationError `json:"details,omitempty"`
@@ -264,7 +296,7 @@ type FieldDefinition struct {
 	// Type Field type for indexing:
 	// - tag: categorical/string filtering (exact match via `match`)
 	// - numeric: numeric range filtering (via `range` with gt/gte/lt/lte)
-	// Document values for tag fields are passed in the `tags` object
+	// Document values for tag fields are passed in the `metadata` object
 	// of the document body.
 	Type FieldDefinitionType `json:"type"`
 }
@@ -272,7 +304,7 @@ type FieldDefinition struct {
 // FieldDefinitionType Field type for indexing:
 // - tag: categorical/string filtering (exact match via `match`)
 // - numeric: numeric range filtering (via `range` with gt/gte/lt/lte)
-// Document values for tag fields are passed in the `tags` object
+// Document values for tag fields are passed in the `metadata` object
 // of the document body.
 type FieldDefinitionType string
 
@@ -353,22 +385,16 @@ type HealthResponseChecks string
 // - error: critical check failed (e.g., valkey connection)
 type HealthResponseStatus string
 
-// PatchDocumentRequest Partial update with merge semantics. All fields are optional —
-// only provided fields are updated. Set a tag/numeric value to `null`
-// to remove it. Empty nested objects (`{"tags": {}}`) are no-ops:
-// no error, no changes applied.
+// PatchDocumentRequest Text updates trigger embedding; metadata uses JSON Merge Patch. Null clears metadata.
 type PatchDocumentRequest struct {
-	// Content New content text. If provided, triggers re-vectorization.
-	// If omitted, existing content and vector are preserved.
+	// Content Complete source text, preserved independently of search snippets.
 	Content *string `json:"content,omitempty"`
 
-	// Numerics Numerics to merge. Existing numerics not mentioned here are preserved.
-	// Set a value to `null` to remove the numeric.
-	Numerics *map[string]*float32 `json:"numerics,omitempty"`
+	// ExpiresAt Absolute UTC Unix milliseconds. Omitted preserves the deadline; null clears it. A deadline change does not embed the source.
+	ExpiresAt json.RawMessage `json:"expires_at,omitempty"`
 
-	// Tags Tags to merge. Existing tags not mentioned here are preserved.
-	// Set a value to `null` to remove the tag.
-	Tags *map[string]*string `json:"tags,omitempty"`
+	// Metadata JSON metadata. Only declared top-level strings and numbers are indexed.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
 // RangeFilter Numeric range filter. At least one boundary must be specified.
@@ -377,16 +403,16 @@ type PatchDocumentRequest struct {
 // the same direction.
 type RangeFilter struct {
 	// Gt Greater than
-	Gt *float32 `json:"gt,omitempty"`
+	Gt *float64 `json:"gt,omitempty"`
 
 	// Gte Greater than or equal
-	Gte *float32 `json:"gte,omitempty"`
+	Gte *float64 `json:"gte,omitempty"`
 
 	// Lt Less than
-	Lt *float32 `json:"lt,omitempty"`
+	Lt *float64 `json:"lt,omitempty"`
 
 	// Lte Less than or equal
-	Lte *float32 `json:"lte,omitempty"`
+	Lte *float64 `json:"lte,omitempty"`
 }
 
 // SearchRequest defines model for SearchRequest.
@@ -415,72 +441,42 @@ type SearchRequest struct {
 	// Unknown field names (not in collection schema) also return 400.
 	Filters *FilterExpression `json:"filters,omitempty"`
 
-	// IncludeVectors Include embedding vectors in the response. Vectors are returned
-	// regardless of search mode — they exist in storage even when
-	// keyword mode doesn't use them for ranking.
+	// IncludeVectors Include diagnostic vectors.
 	IncludeVectors *bool `json:"include_vectors,omitempty"`
 
-	// Limit Maximum documents to return from the `top_k` document window.
-	// If top_k=100 and limit=10, the server ranks 100 documents and
-	// returns the top 10. If limit > top_k, the server silently
-	// caps to top_k (no error).
+	// Limit Maximum source documents returned. Fragment candidate expansion is internal.
 	Limit *int `json:"limit,omitempty"`
 
-	// MinScore Minimum relevance score threshold. Results below this score are
-	// excluded from the response. Applied as a post-filter on the server.
-	// - In **semantic** mode: cosine similarity threshold (0.0–1.0).
-	// - In **hybrid** mode: RRF score threshold (0.0–1.0, not cosine).
-	// - In **keyword** mode: ignored (BM25 scores are not comparable
-	//   across queries, so thresholding is unreliable).
-	MinScore *float64 `json:"min_score,omitempty"`
+	// MaxContentBytes Combined UTF-8 snippet bytes, shared across hits without splitting characters.
+	MaxContentBytes *int `json:"max_content_bytes,omitempty"`
 
-	// Mode Search mode:
-	// - **hybrid** (default): semantic + BM25 keyword search combined
-	//   via Reciprocal Rank Fusion. Catches both exact identifiers and
-	//   semantic meaning.
-	// - **semantic**: pure vector KNN search.
-	// - **keyword**: pure BM25 full-text search.
-	Mode *SearchRequestMode `json:"mode,omitempty"`
-
-	// Query Search query text (auto-vectorized for semantic/hybrid modes).
-	// Maximum 4096 characters. Queries exceeding this return 400.
-	Query string `json:"query"`
-
-	// TopK Document ranking window size before applying `limit`.
-	// The server may retrieve more chunk candidates per search mode internally,
-	// aggregate them into documents, and then keep the top `top_k` documents
-	// before applying `limit`.
-	TopK *int `json:"top_k,omitempty"`
+	// MinScore Optional mode-specific threshold; ignored for keyword search.
+	MinScore *float64           `json:"min_score,omitempty"`
+	Mode     *SearchRequestMode `json:"mode,omitempty"`
+	Query    string             `json:"query"`
 }
 
-// SearchRequestMode Search mode:
-//   - **hybrid** (default): semantic + BM25 keyword search combined
-//     via Reciprocal Rank Fusion. Catches both exact identifiers and
-//     semantic meaning.
-//   - **semantic**: pure vector KNN search.
-//   - **keyword**: pure BM25 full-text search.
+// SearchRequestMode defines model for SearchRequest.Mode.
 type SearchRequestMode string
 
 // SearchResultItem defines model for SearchResultItem.
 type SearchResultItem struct {
-	// Content Representative snippet for the ranked document. For chunked ingest, this is the best matching chunk.
-	Content string `json:"content"`
+	Id string `json:"id"`
 
-	// Id Document identifier. For chunked ingest, this is the parent document id.
-	Id       string              `json:"id"`
-	Numerics *map[string]float32 `json:"numerics,omitempty"`
+	// Metadata JSON metadata. Only declared top-level strings and numbers are indexed.
+	Metadata json.RawMessage `json:"metadata"`
 
-	// Score Relevance score. Meaning varies by mode:
-	// - In **semantic** mode: cosine similarity (`1 - cosine_distance`), 0.0–1.0.
-	// - In **keyword** mode: normalized BM25 score, 0.0–1.0.
-	// - In **hybrid** mode: fused RRF score, 0.0–1.0. Not directly comparable
-	//   to cosine similarity — represents relative ranking quality.
-	// Note: `min_score` thresholds mean different things in each mode.
-	Score float64            `json:"score"`
-	Tags  *map[string]string `json:"tags,omitempty"`
+	// Score Mode-specific relevance score; hybrid uses RRF.
+	Score float64 `json:"score"`
 
-	// Vector Embedding vector (only present when include_vectors=true)
+	// Snippet Matching excerpt within max_content_bytes. Fetch the document for complete text.
+	Snippet string `json:"snippet"`
+
+	// Vector Optional diagnostic embedding vector.
 	Vector *[]float32 `json:"vector,omitempty"`
+
+	// Version Opaque source version, usable directly for a conditional update after search.
+	Version string `json:"version"`
 }
 
 // SearchResultListResponse defines model for SearchResultListResponse.
@@ -491,8 +487,7 @@ type SearchResultListResponse struct {
 	Limit int `json:"limit"`
 
 	// Total Number of document candidates that passed min_score filtering within
-	// the `top_k` document window. May be greater than `limit` — in that
-	// case, increase `limit` to see more results from the same ranked set.
+	// the returned document window. This is not an exact corpus match count.
 	Total int `json:"total"`
 }
 
@@ -522,33 +517,29 @@ type SimilarRequest struct {
 	// Unknown field names (not in collection schema) also return 400.
 	Filters *FilterExpression `json:"filters,omitempty"`
 
-	// IncludeVectors Include embedding vectors in the response.
+	// IncludeVectors Include diagnostic vectors.
 	IncludeVectors *bool `json:"include_vectors,omitempty"`
 
-	// Limit Maximum results to return from the top_k window.
+	// Limit Maximum source documents returned. Fragment candidate expansion is internal.
 	Limit *int `json:"limit,omitempty"`
 
-	// MinScore Minimum cosine similarity threshold (0.0–1.0). Results below
-	// this score are excluded.
-	MinScore *float64 `json:"min_score,omitempty"`
+	// MaxContentBytes Combined UTF-8 snippet bytes, shared across hits without splitting characters.
+	MaxContentBytes *int `json:"max_content_bytes,omitempty"`
 
-	// TopK Number of nearest neighbors for KNN (the computation window).
-	// Same semantics as search top_k.
-	TopK *int `json:"top_k,omitempty"`
+	// MinScore Optional mode-specific threshold; ignored for keyword search.
+	MinScore *float64 `json:"min_score,omitempty"`
 }
 
 // UpsertDocumentRequest defines model for UpsertDocumentRequest.
 type UpsertDocumentRequest struct {
-	// Content Document text content (will be auto-vectorized). Maximum size is
-	// 160 KB (~41k tokens for the default embedding model). Requests
-	// exceeding this limit return 400 with code `validation_failed`.
+	// Content Complete source text, preserved independently of search snippets.
 	Content string `json:"content"`
 
-	// Numerics Numeric fields for filtering (must match collection schema)
-	Numerics *map[string]float32 `json:"numerics,omitempty"`
+	// ExpiresAt Absolute UTC Unix milliseconds. Omitted or null makes PUT persistent.
+	ExpiresAt *int64 `json:"expires_at,omitempty"`
 
-	// Tags Tag fields for filtering (must match collection schema)
-	Tags *map[string]string `json:"tags,omitempty"`
+	// Metadata JSON metadata. Only declared top-level strings and numbers are indexed.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
 // UsageMetrics defines model for UsageMetrics.
@@ -598,11 +589,24 @@ type ValidationError struct {
 	Message string `json:"message"`
 }
 
+// WriteResult defines model for WriteResult.
+type WriteResult struct {
+	// Created Whether this PUT created a source. Always false for PATCH.
+	Created bool   `json:"created"`
+	Id      string `json:"id"`
+
+	// Version Opaque version of this committed mutation. Get returns the current document.
+	Version string `json:"version"`
+}
+
 // CollectionName defines model for CollectionName.
 type CollectionName = string
 
 // DocumentId defines model for DocumentId.
 type DocumentId = string
+
+// IdempotencyKey defines model for IdempotencyKey.
+type IdempotencyKey = string
 
 // IfMatch defines model for IfMatch.
 type IfMatch = string
@@ -640,8 +644,8 @@ type NotImplemented = ErrorResponse
 // RateLimited defines model for RateLimited.
 type RateLimited = ErrorResponse
 
-// RevisionConflict defines model for RevisionConflict.
-type RevisionConflict = ErrorResponse
+// VersionConflict defines model for VersionConflict.
+type VersionConflict = ErrorResponse
 
 // ListCollectionsParams defines parameters for ListCollections.
 type ListCollectionsParams struct {
@@ -697,14 +701,22 @@ type BatchUpsertParams struct {
 	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
 }
 
-// SearchDocumentsParams defines parameters for SearchDocuments.
-type SearchDocumentsParams struct {
-	// XRequestID Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
-	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
-}
-
 // DeleteDocumentParams defines parameters for DeleteDocument.
 type DeleteDocumentParams struct {
+	// IfMatch Checks the exact document incarnation and revision. Pass the quoted ETag
+	// from a previous document response. A stale version, including a deleted
+	// or recreated document, returns 409 with code version_conflict. Weak
+	// validators, numeric revision values, wildcards and validator lists are
+	// not supported. Omit for an unconditional write.
+	IfMatch *IfMatch `json:"If-Match,omitempty"`
+
+	// IdempotencyKey A printable ASCII key (1–128 bytes) scoped to this source and collection
+	// generation. Successful outcomes are retained for 24 hours. The same key
+	// and input replay the original compact receipt without embedding or writing.
+	// Different input returns idempotency_conflict. An active attempt returns
+	// idempotency_in_progress; retry the same input after it completes.
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+
 	// XRequestID Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
 	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
 }
@@ -717,11 +729,19 @@ type GetDocumentParams struct {
 
 // PatchDocumentParams defines parameters for PatchDocument.
 type PatchDocumentParams struct {
-	// IfMatch Revision-based optimistic concurrency control. Pass the quoted ETag from
-	// a previous response, or its numeric revision for compatibility. A stale
-	// revision returns 409 with code revision_conflict. Weak validators and
-	// validator lists are not supported. Omit for an unconditional write.
+	// IfMatch Checks the exact document incarnation and revision. Pass the quoted ETag
+	// from a previous document response. A stale version, including a deleted
+	// or recreated document, returns 409 with code version_conflict. Weak
+	// validators, numeric revision values, wildcards and validator lists are
+	// not supported. Omit for an unconditional write.
 	IfMatch *IfMatch `json:"If-Match,omitempty"`
+
+	// IdempotencyKey A printable ASCII key (1–128 bytes) scoped to this source and collection
+	// generation. Successful outcomes are retained for 24 hours. The same key
+	// and input replay the original compact receipt without embedding or writing.
+	// Different input returns idempotency_conflict. An active attempt returns
+	// idempotency_in_progress; retry the same input after it completes.
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 
 	// XRequestID Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
 	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
@@ -729,11 +749,19 @@ type PatchDocumentParams struct {
 
 // UpsertDocumentParams defines parameters for UpsertDocument.
 type UpsertDocumentParams struct {
-	// IfMatch Revision-based optimistic concurrency control. Pass the quoted ETag from
-	// a previous response, or its numeric revision for compatibility. A stale
-	// revision returns 409 with code revision_conflict. Weak validators and
-	// validator lists are not supported. Omit for an unconditional write.
+	// IfMatch Checks the exact document incarnation and revision. Pass the quoted ETag
+	// from a previous document response. A stale version, including a deleted
+	// or recreated document, returns 409 with code version_conflict. Weak
+	// validators, numeric revision values, wildcards and validator lists are
+	// not supported. Omit for an unconditional write.
 	IfMatch *IfMatch `json:"If-Match,omitempty"`
+
+	// IdempotencyKey A printable ASCII key (1–128 bytes) scoped to this source and collection
+	// generation. Successful outcomes are retained for 24 hours. The same key
+	// and input replay the original compact receipt without embedding or writing.
+	// Different input returns idempotency_conflict. An active attempt returns
+	// idempotency_in_progress; retry the same input after it completes.
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 
 	// XRequestID Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
 	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
@@ -741,6 +769,12 @@ type UpsertDocumentParams struct {
 
 // FindSimilarDocumentsParams defines parameters for FindSimilarDocuments.
 type FindSimilarDocumentsParams struct {
+	// XRequestID Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+}
+
+// SearchDocumentsParams defines parameters for SearchDocuments.
+type SearchDocumentsParams struct {
 	// XRequestID Client-provided request ID for tracing. If omitted, the server generates a UUID v4.
 	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
 }
@@ -769,9 +803,6 @@ type BatchDeleteJSONRequestBody = BatchDeleteRequest
 // BatchUpsertJSONRequestBody defines body for BatchUpsert for application/json ContentType.
 type BatchUpsertJSONRequestBody = BatchUpsertRequest
 
-// SearchDocumentsJSONRequestBody defines body for SearchDocuments for application/json ContentType.
-type SearchDocumentsJSONRequestBody = SearchRequest
-
 // PatchDocumentJSONRequestBody defines body for PatchDocument for application/json ContentType.
 type PatchDocumentJSONRequestBody = PatchDocumentRequest
 
@@ -781,56 +812,59 @@ type UpsertDocumentJSONRequestBody = UpsertDocumentRequest
 // FindSimilarDocumentsJSONRequestBody defines body for FindSimilarDocuments for application/json ContentType.
 type FindSimilarDocumentsJSONRequestBody = SimilarRequest
 
+// SearchDocumentsJSONRequestBody defines body for SearchDocuments for application/json ContentType.
+type SearchDocumentsJSONRequestBody = SearchRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// List collections
-	// (GET /collections)
+	// (GET /api/v2/collections)
 	ListCollections(w http.ResponseWriter, r *http.Request, params ListCollectionsParams)
 	// Create collection
-	// (POST /collections)
+	// (POST /api/v2/collections)
 	CreateCollection(w http.ResponseWriter, r *http.Request, params CreateCollectionParams)
 	// Delete collection
-	// (DELETE /collections/{collection})
+	// (DELETE /api/v2/collections/{collection})
 	DeleteCollection(w http.ResponseWriter, r *http.Request, collection CollectionName, params DeleteCollectionParams)
 	// Get collection
-	// (GET /collections/{collection})
+	// (GET /api/v2/collections/{collection})
 	GetCollection(w http.ResponseWriter, r *http.Request, collection CollectionName, params GetCollectionParams)
 	// List documents
-	// (GET /collections/{collection}/documents)
+	// (GET /api/v2/collections/{collection}/documents)
 	ListDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, params ListDocumentsParams)
 	// Batch delete documents
-	// (POST /collections/{collection}/documents/batch-delete)
+	// (POST /api/v2/collections/{collection}/documents/batch-delete)
 	BatchDelete(w http.ResponseWriter, r *http.Request, collection CollectionName, params BatchDeleteParams)
 	// Batch upsert documents
-	// (POST /collections/{collection}/documents/batch-upsert)
+	// (POST /api/v2/collections/{collection}/documents/batch-upsert)
 	BatchUpsert(w http.ResponseWriter, r *http.Request, collection CollectionName, params BatchUpsertParams)
-	// Search documents
-	// (POST /collections/{collection}/documents/search)
-	SearchDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, params SearchDocumentsParams)
 	// Delete document
-	// (DELETE /collections/{collection}/documents/{id})
+	// (DELETE /api/v2/collections/{collection}/documents/{id})
 	DeleteDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params DeleteDocumentParams)
 	// Get document
-	// (GET /collections/{collection}/documents/{id})
+	// (GET /api/v2/collections/{collection}/documents/{id})
 	GetDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params GetDocumentParams)
 	// Partial update document
-	// (PATCH /collections/{collection}/documents/{id})
+	// (PATCH /api/v2/collections/{collection}/documents/{id})
 	PatchDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params PatchDocumentParams)
 	// Upsert document
-	// (PUT /collections/{collection}/documents/{id})
+	// (PUT /api/v2/collections/{collection}/documents/{id})
 	UpsertDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params UpsertDocumentParams)
 	// Find similar documents
-	// (POST /collections/{collection}/documents/{id}/similar)
+	// (POST /api/v2/collections/{collection}/documents/{id}/similar)
 	FindSimilarDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params FindSimilarDocumentsParams)
+	// Search documents
+	// (POST /api/v2/collections/{collection}/search)
+	SearchDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, params SearchDocumentsParams)
+	// Get embedding usage and budget
+	// (GET /api/v2/usage)
+	GetUsage(w http.ResponseWriter, r *http.Request, params GetUsageParams)
 	// Health check
 	// (GET /health)
 	HealthCheck(w http.ResponseWriter, r *http.Request)
 	// Prometheus metrics
 	// (GET /metrics)
 	Metrics(w http.ResponseWriter, r *http.Request)
-	// Get embedding usage and budget
-	// (GET /usage)
-	GetUsage(w http.ResponseWriter, r *http.Request, params GetUsageParams)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -838,80 +872,86 @@ type ServerInterface interface {
 type Unimplemented struct{}
 
 // List collections
-// (GET /collections)
+// (GET /api/v2/collections)
 func (_ Unimplemented) ListCollections(w http.ResponseWriter, r *http.Request, params ListCollectionsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Create collection
-// (POST /collections)
+// (POST /api/v2/collections)
 func (_ Unimplemented) CreateCollection(w http.ResponseWriter, r *http.Request, params CreateCollectionParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Delete collection
-// (DELETE /collections/{collection})
+// (DELETE /api/v2/collections/{collection})
 func (_ Unimplemented) DeleteCollection(w http.ResponseWriter, r *http.Request, collection CollectionName, params DeleteCollectionParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Get collection
-// (GET /collections/{collection})
+// (GET /api/v2/collections/{collection})
 func (_ Unimplemented) GetCollection(w http.ResponseWriter, r *http.Request, collection CollectionName, params GetCollectionParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // List documents
-// (GET /collections/{collection}/documents)
+// (GET /api/v2/collections/{collection}/documents)
 func (_ Unimplemented) ListDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, params ListDocumentsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Batch delete documents
-// (POST /collections/{collection}/documents/batch-delete)
+// (POST /api/v2/collections/{collection}/documents/batch-delete)
 func (_ Unimplemented) BatchDelete(w http.ResponseWriter, r *http.Request, collection CollectionName, params BatchDeleteParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Batch upsert documents
-// (POST /collections/{collection}/documents/batch-upsert)
+// (POST /api/v2/collections/{collection}/documents/batch-upsert)
 func (_ Unimplemented) BatchUpsert(w http.ResponseWriter, r *http.Request, collection CollectionName, params BatchUpsertParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Search documents
-// (POST /collections/{collection}/documents/search)
-func (_ Unimplemented) SearchDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, params SearchDocumentsParams) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
 // Delete document
-// (DELETE /collections/{collection}/documents/{id})
+// (DELETE /api/v2/collections/{collection}/documents/{id})
 func (_ Unimplemented) DeleteDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params DeleteDocumentParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Get document
-// (GET /collections/{collection}/documents/{id})
+// (GET /api/v2/collections/{collection}/documents/{id})
 func (_ Unimplemented) GetDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params GetDocumentParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Partial update document
-// (PATCH /collections/{collection}/documents/{id})
+// (PATCH /api/v2/collections/{collection}/documents/{id})
 func (_ Unimplemented) PatchDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params PatchDocumentParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Upsert document
-// (PUT /collections/{collection}/documents/{id})
+// (PUT /api/v2/collections/{collection}/documents/{id})
 func (_ Unimplemented) UpsertDocument(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params UpsertDocumentParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Find similar documents
-// (POST /collections/{collection}/documents/{id}/similar)
+// (POST /api/v2/collections/{collection}/documents/{id}/similar)
 func (_ Unimplemented) FindSimilarDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, id DocumentId, params FindSimilarDocumentsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Search documents
+// (POST /api/v2/collections/{collection}/search)
+func (_ Unimplemented) SearchDocuments(w http.ResponseWriter, r *http.Request, collection CollectionName, params SearchDocumentsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Get embedding usage and budget
+// (GET /api/v2/usage)
+func (_ Unimplemented) GetUsage(w http.ResponseWriter, r *http.Request, params GetUsageParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -924,12 +964,6 @@ func (_ Unimplemented) HealthCheck(w http.ResponseWriter, r *http.Request) {
 // Prometheus metrics
 // (GET /metrics)
 func (_ Unimplemented) Metrics(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Get embedding usage and budget
-// (GET /usage)
-func (_ Unimplemented) GetUsage(w http.ResponseWriter, r *http.Request, params GetUsageParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1341,61 +1375,6 @@ func (siw *ServerInterfaceWrapper) BatchUpsert(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
-// SearchDocuments operation middleware
-func (siw *ServerInterfaceWrapper) SearchDocuments(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-
-	// ------------- Path parameter "collection" -------------
-	var collection CollectionName
-
-	err = runtime.BindStyledParameterWithOptions("simple", "collection", chi.URLParam(r, "collection"), &collection, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "collection", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params SearchDocumentsParams
-
-	headers := r.Header
-
-	// ------------- Optional header parameter "X-Request-ID" -------------
-	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
-		var XRequestID XRequestID
-		n := len(valueList)
-		if n != 1 {
-			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
-			return
-		}
-
-		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
-		if err != nil {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
-			return
-		}
-
-		params.XRequestID = &XRequestID
-
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.SearchDocuments(w, r, collection, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // DeleteDocument operation middleware
 func (siw *ServerInterfaceWrapper) DeleteDocument(w http.ResponseWriter, r *http.Request) {
 
@@ -1429,6 +1408,44 @@ func (siw *ServerInterfaceWrapper) DeleteDocument(w http.ResponseWriter, r *http
 	var params DeleteDocumentParams
 
 	headers := r.Header
+
+	// ------------- Optional header parameter "If-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-Match")]; found {
+		var IfMatch IfMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-Match", valueList[0], &IfMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-Match", Err: err})
+			return
+		}
+
+		params.IfMatch = &IfMatch
+
+	}
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
 
 	// ------------- Optional header parameter "X-Request-ID" -------------
 	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
@@ -1577,6 +1594,25 @@ func (siw *ServerInterfaceWrapper) PatchDocument(w http.ResponseWriter, r *http.
 
 	}
 
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
 	// ------------- Optional header parameter "X-Request-ID" -------------
 	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
 		var XRequestID XRequestID
@@ -1657,6 +1693,25 @@ func (siw *ServerInterfaceWrapper) UpsertDocument(w http.ResponseWriter, r *http
 		}
 
 		params.IfMatch = &IfMatch
+
+	}
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
 
 	}
 
@@ -1754,25 +1809,52 @@ func (siw *ServerInterfaceWrapper) FindSimilarDocuments(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
-// HealthCheck operation middleware
-func (siw *ServerInterfaceWrapper) HealthCheck(w http.ResponseWriter, r *http.Request) {
+// SearchDocuments operation middleware
+func (siw *ServerInterfaceWrapper) SearchDocuments(w http.ResponseWriter, r *http.Request) {
 
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.HealthCheck(w, r)
-	}))
+	var err error
 
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
+	// ------------- Path parameter "collection" -------------
+	var collection CollectionName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "collection", chi.URLParam(r, "collection"), &collection, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "collection", Err: err})
+		return
 	}
 
-	handler.ServeHTTP(w, r)
-}
+	ctx := r.Context()
 
-// Metrics operation middleware
-func (siw *ServerInterfaceWrapper) Metrics(w http.ResponseWriter, r *http.Request) {
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SearchDocumentsParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.Metrics(w, r)
+		siw.Handler.SearchDocuments(w, r, collection, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1835,6 +1917,34 @@ func (siw *ServerInterfaceWrapper) GetUsage(w http.ResponseWriter, r *http.Reque
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetUsage(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// HealthCheck operation middleware
+func (siw *ServerInterfaceWrapper) HealthCheck(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.HealthCheck(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// Metrics operation middleware
+func (siw *ServerInterfaceWrapper) Metrics(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.Metrics(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1958,52 +2068,52 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	}
 
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/collections", wrapper.ListCollections)
+		r.Get(options.BaseURL+"/api/v2/collections", wrapper.ListCollections)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/collections", wrapper.CreateCollection)
+		r.Post(options.BaseURL+"/api/v2/collections", wrapper.CreateCollection)
 	})
 	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/collections/{collection}", wrapper.DeleteCollection)
+		r.Delete(options.BaseURL+"/api/v2/collections/{collection}", wrapper.DeleteCollection)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/collections/{collection}", wrapper.GetCollection)
+		r.Get(options.BaseURL+"/api/v2/collections/{collection}", wrapper.GetCollection)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/collections/{collection}/documents", wrapper.ListDocuments)
+		r.Get(options.BaseURL+"/api/v2/collections/{collection}/documents", wrapper.ListDocuments)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/collections/{collection}/documents/batch-delete", wrapper.BatchDelete)
+		r.Post(options.BaseURL+"/api/v2/collections/{collection}/documents/batch-delete", wrapper.BatchDelete)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/collections/{collection}/documents/batch-upsert", wrapper.BatchUpsert)
+		r.Post(options.BaseURL+"/api/v2/collections/{collection}/documents/batch-upsert", wrapper.BatchUpsert)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/collections/{collection}/documents/search", wrapper.SearchDocuments)
+		r.Delete(options.BaseURL+"/api/v2/collections/{collection}/documents/{id}", wrapper.DeleteDocument)
 	})
 	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/collections/{collection}/documents/{id}", wrapper.DeleteDocument)
+		r.Get(options.BaseURL+"/api/v2/collections/{collection}/documents/{id}", wrapper.GetDocument)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/collections/{collection}/documents/{id}", wrapper.GetDocument)
+		r.Patch(options.BaseURL+"/api/v2/collections/{collection}/documents/{id}", wrapper.PatchDocument)
 	})
 	r.Group(func(r chi.Router) {
-		r.Patch(options.BaseURL+"/collections/{collection}/documents/{id}", wrapper.PatchDocument)
+		r.Put(options.BaseURL+"/api/v2/collections/{collection}/documents/{id}", wrapper.UpsertDocument)
 	})
 	r.Group(func(r chi.Router) {
-		r.Put(options.BaseURL+"/collections/{collection}/documents/{id}", wrapper.UpsertDocument)
+		r.Post(options.BaseURL+"/api/v2/collections/{collection}/documents/{id}/similar", wrapper.FindSimilarDocuments)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/collections/{collection}/documents/{id}/similar", wrapper.FindSimilarDocuments)
+		r.Post(options.BaseURL+"/api/v2/collections/{collection}/search", wrapper.SearchDocuments)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v2/usage", wrapper.GetUsage)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/health", wrapper.HealthCheck)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/metrics", wrapper.Metrics)
-	})
-	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/usage", wrapper.GetUsage)
 	})
 
 	return r

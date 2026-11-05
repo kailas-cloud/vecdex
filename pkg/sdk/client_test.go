@@ -197,3 +197,16 @@ type mockEmbedder struct {
 func (m *mockEmbedder) Embed(ctx context.Context, text string) (EmbeddingResult, error) {
 	return m.fn(ctx, text)
 }
+
+func TestClusterSeedsAreIndependentCopies(t *testing.T) {
+	seeds := []string{"node-a:6379", "node-b:6379"}
+	option := WithValkeyAddresses(seeds, "password")
+	seeds[0] = "changed:6379"
+	first, second := &clientConfig{}, &clientConfig{}
+	option.apply(first)
+	first.addrs[1] = "changed-again:6379"
+	option.apply(second)
+	if second.addrs[0] != "node-a:6379" || second.addrs[1] != "node-b:6379" || second.password != "password" {
+		t.Fatalf("seed option was mutated: %+v", second.addrs)
+	}
+}

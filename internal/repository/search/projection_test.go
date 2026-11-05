@@ -12,7 +12,7 @@ import (
 
 func TestSearchProjectionExcludesUnrequestedVectors(t *testing.T) {
 	repo, store := newTestRepo(t)
-	ctx := domain.WithSearchMetadataFields(context.Background(), []string{"language", "__n:priority"})
+	ctx := domain.WithSearchMetadataFields(testContext(), []string{"language", "__n:priority"})
 	for _, include := range []bool{false, true} {
 		store.searchKNNFn = func(_ context.Context, q *db.KNNQuery) (*db.SearchResult, error) {
 			if slices.Contains(q.ReturnFields, "__vector") != include {

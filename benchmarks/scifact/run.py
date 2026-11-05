@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # pyright: reportMissingImports=false
-"""Run a chunked SciFact retrieval benchmark against a live vecdex instance."""
+"""Run a source-document SciFact retrieval benchmark against a live vecdex instance."""
 
 from __future__ import annotations
 
@@ -18,32 +18,19 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from datasets import load_dataset
-from tokenizers import Tokenizer
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TOKENIZER_PATH = REPO_ROOT / "models" / "all-MiniLM-L6-v2" / "tokenizer.json"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "output" / "latest"
 DEFAULT_BASE_URL = "http://localhost:8080"
 DEFAULT_API_KEY = "test-api-key"
 DEFAULT_COLLECTION = "scifact-benchmark"
 DEFAULT_QRELS_SPLIT = "test"
-DEFAULT_CHUNK_SIZE = 256
-DEFAULT_OVERLAP = 0
-CHUNK_GROUP_PRESETS = {
-    "A": {"chunk_size": 128, "overlap": 16},
-    "B": {"chunk_size": 256, "overlap": 32},
-}
-DEFAULT_TOP_K = 500
 DEFAULT_LIMIT = 100
 DEFAULT_MODES = ("semantic", "hybrid")
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_SMOKE_QUERIES = 5
 DEFAULT_SEARCH_RETRIES = 8
 DEFAULT_SEARCH_RETRY_SLEEP = 1.5
-PARENT_DOC_ID_TAG = "parent_doc_id"
-CHUNK_INDEX_NUMERIC = "chunk_index"
 
 
 def log(message: str) -> None:
@@ -51,12 +38,9 @@ def log(message: str) -> None:
 
 
 @dataclass(frozen=True)
-class ChunkDocument:
-    chunk_id: str
-    source_doc_id: str
-    chunk_idx: int
+class SourceDocument:
+    id: str
     content: str
-    token_count: int
 
 
 class VecdexClient:
@@ -79,7 +63,7 @@ class VecdexClient:
         return response.json()
 
     def delete_collection(self, name: str) -> None:
-        response = self._client.delete(f"/collections/{quote(name, safe='')}")
+        response = self._client.delete(f"/api/v2/collections/{quote(name, safe='')}")
         if response.status_code not in (204, 404):
             raise httpx.HTTPStatusError(
                 f"delete collection failed: {response.status_code} {response.text}",
@@ -88,13 +72,13 @@ class VecdexClient:
             )
 
     def create_collection(self, name: str) -> dict[str, Any]:
-        response = self._client.post("/collections", json={"name": name})
+        response = self._client.post("/api/v2/collections", json={"name": name})
         response.raise_for_status()
         return response.json()
 
     def batch_upsert(self, collection: str, documents: list[dict[str, Any]]) -> dict[str, Any]:
         response = self._client.post(
-            f"/collections/{quote(collection, safe='')}/documents/batch-upsert",
+            f"/api/v2/collections/{quote(collection, safe='')}/documents/batch-upsert",
             json={"documents": documents},
         )
         response.raise_for_status()
@@ -104,6 +88,12 @@ class VecdexClient:
             items = payload.get("items", [])
             errors = [item for item in items if item.get("status") == "error"]
             raise RuntimeError(f"batch upsert failed for {failed} items: {errors[:3]}")
+        items = payload.get("items", [])
+        if payload.get("succeeded") != len(documents) or len(items) != len(documents):
+            raise RuntimeError("batch upsert did not acknowledge every source")
+        for document, item in zip(documents, items, strict=True):
+            if item.get("id") != document["id"] or item.get("status") != "ok" or not item.get("version"):
+                raise RuntimeError(f"invalid source write receipt: {item}")
         return payload
 
     def search(
@@ -111,17 +101,15 @@ class VecdexClient:
         collection: str,
         query: str,
         mode: str,
-        top_k: int,
         limit: int,
     ) -> dict[str, Any]:
         response = self._client.post(
-            f"/collections/{quote(collection, safe='')}/documents/search",
+            f"/api/v2/collections/{quote(collection, safe='')}/search",
             json={
                 "query": query,
                 "mode": mode,
-                "top_k": top_k,
                 "limit": limit,
-                "include_vectors": False,
+                "max_content_bytes": 1,
             },
         )
         response.raise_for_status()
@@ -134,85 +122,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=DEFAULT_API_KEY, help="vecdex API key")
     parser.add_argument("--collection", default=DEFAULT_COLLECTION, help="collection name used for the benchmark")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="directory where benchmark artifacts are written")
-    parser.add_argument("--tokenizer-path", default=str(DEFAULT_TOKENIZER_PATH), help="path to tokenizer.json matching the local ONNX model")
     parser.add_argument("--dataset-cache-dir", default=None, help="optional Hugging Face datasets cache dir")
     parser.add_argument("--dataset", default="scifact", help="dataset label written to the report")
     parser.add_argument("--qrels-split", default=DEFAULT_QRELS_SPLIT, help="SciFact qrels split to evaluate")
-    parser.add_argument(
-        "--chunk-group",
-        choices=sorted(CHUNK_GROUP_PRESETS),
-        default=None,
-        help="named chunking preset: A=128/16, B=256/32 (overrides --chunk-size/--overlap)",
-    )
-    parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE, help="maximum tokens per chunk, including special tokens")
-    parser.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP, help="token overlap between adjacent chunks")
-    parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K, help="vecdex top_k search parameter")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="vecdex limit search parameter")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="batch upsert size")
     parser.add_argument("--modes", nargs="+", choices=("semantic", "hybrid", "keyword"), default=list(DEFAULT_MODES), help="search modes to evaluate")
     parser.add_argument("--smoke-queries", type=int, default=DEFAULT_SMOKE_QUERIES, help="number of test queries used by the search readiness probe")
-    parser.add_argument("--search-retries", type=int, default=DEFAULT_SEARCH_RETRIES, help="retries for readiness probe and empty-search retry wrapper")
+    parser.add_argument("--search-retries", type=int, default=DEFAULT_SEARCH_RETRIES, help="retries for the readiness probe")
     parser.add_argument("--search-retry-sleep", type=float, default=DEFAULT_SEARCH_RETRY_SLEEP, help="seconds between search retries")
     parser.add_argument("--http-timeout", type=float, default=120.0, help="HTTP timeout in seconds")
-    parser.add_argument("--ingest-only", action="store_true", help="stop after building and ingesting the full chunked corpus")
+    parser.add_argument("--ingest-only", action="store_true", help="stop after ingesting the full source corpus")
     return parser.parse_args()
 
 
 def main() -> int:
     benchmark_started_at = time.perf_counter()
     args = parse_args()
-    apply_chunk_group_preset(args)
     validate_args(args)
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer_path = Path(args.tokenizer_path).resolve()
-    if not tokenizer_path.is_file():
-        raise FileNotFoundError(f"tokenizer not found: {tokenizer_path}")
-
-    log(f"[info] tokenizer: {tokenizer_path}")
-    if args.chunk_group:
-        log(
-            f"[info] chunk group={args.chunk_group}: "
-            f"chunk_size={args.chunk_size} overlap={args.overlap}"
-        )
-    tokenizer = Tokenizer.from_file(str(tokenizer_path))
-    # Match the Go embedder's raw token counting before it applies fixed-size padding.
-    tokenizer.no_padding()
-    tokenizer.no_truncation()
-    special_tokens_per_text = len(tokenizer.encode("", add_special_tokens=True).ids)
-    max_content_tokens = args.chunk_size - special_tokens_per_text
-    if max_content_tokens <= 0:
-        raise ValueError(
-            f"chunk size {args.chunk_size} is too small for tokenizer special tokens ({special_tokens_per_text})"
-        )
-
     log("[info] loading SciFact corpus, queries, and qrels from Hugging Face")
     corpus, queries, qrels = load_scifact_data(args.dataset_cache_dir, args.qrels_split)
     log(
         f"[info] loaded corpus={len(corpus)} docs, queries={len(queries)} test queries, qrels={sum(len(v) for v in qrels.values())}"
     )
 
-    log("[info] building chunked corpus")
-    chunks, corpus_stats = build_chunk_documents(
-        corpus=corpus,
-        tokenizer=tokenizer,
-        chunk_size=args.chunk_size,
-        overlap=args.overlap,
-    )
-    log(
-        "[info] built "
-        f"{corpus_stats['chunk_count']} chunks from {corpus_stats['document_count']} docs "
-        f"(avg={corpus_stats['avg_chunks_per_doc']:.2f}, max_tokens={corpus_stats['max_chunk_tokens']})"
-    )
-
-    verify_qrels_coverage(corpus, qrels, chunks)
+    documents, corpus_stats = build_source_documents(corpus)
+    verify_qrels_coverage(corpus, qrels)
 
     client = VecdexClient(args.base_url, args.api_key, args.http_timeout)
     try:
         wait_for_health(client, retries=args.search_retries, sleep_sec=args.search_retry_sleep)
         reset_collection(client, args.collection)
-        ingest_stats = ingest_chunks(client, args.collection, chunks, batch_size=args.batch_size)
+        ingest_stats = ingest_documents(client, args.collection, documents, batch_size=args.batch_size)
         if args.ingest_only:
             log(f"[done] ingest complete for collection={args.collection}; skipping evaluation (--ingest-only)")
             return 0
@@ -221,7 +165,6 @@ def main() -> int:
             collection=args.collection,
             sample_queries=list(queries.items())[: args.smoke_queries],
             modes=args.modes,
-            top_k=args.top_k,
             limit=args.limit,
             retries=args.search_retries,
             sleep_sec=args.search_retry_sleep,
@@ -242,10 +185,7 @@ def main() -> int:
                 mode=mode,
                 queries=queries,
                 qrels=qrels,
-                top_k=args.top_k,
                 limit=args.limit,
-                retries=args.search_retries,
-                sleep_sec=args.search_retry_sleep,
             )
             per_query_rows.extend(mode_rows)
             summary_by_mode[mode] = mode_summary
@@ -266,16 +206,11 @@ def main() -> int:
             "collection": args.collection,
             "base_url": args.base_url,
             "config": {
-                "chunk_group": args.chunk_group,
-                "chunk_size": args.chunk_size,
-                "overlap": args.overlap,
-                "top_k": args.top_k,
+                "api_version": "v2",
+                "fragmentation": "server",
                 "limit": args.limit,
                 "batch_size": args.batch_size,
                 "modes": list(args.modes),
-                "tokenizer_path": str(tokenizer_path),
-                "special_tokens_per_text": special_tokens_per_text,
-                "max_content_tokens": max_content_tokens,
             },
             "corpus_stats": corpus_stats,
             "metrics_by_mode": summary_by_mode,
@@ -305,28 +240,17 @@ def main() -> int:
     return 0
 
 
-def apply_chunk_group_preset(args: argparse.Namespace) -> None:
-    if not args.chunk_group:
-        return
-
-    preset = CHUNK_GROUP_PRESETS[args.chunk_group]
-    args.chunk_size = int(preset["chunk_size"])
-    args.overlap = int(preset["overlap"])
-
-
 def validate_args(args: argparse.Namespace) -> None:
-    if args.chunk_size <= 0:
-        raise ValueError("--chunk-size must be positive")
-    if args.overlap < 0:
-        raise ValueError("--overlap cannot be negative")
-    if args.top_k <= 0 or args.top_k > 500:
-        raise ValueError("--top-k must be within vecdex limits (1..500)")
     if args.limit <= 0 or args.limit > 100:
         raise ValueError("--limit must be within vecdex limits (1..100)")
     if args.batch_size <= 0 or args.batch_size > 100:
         raise ValueError("--batch-size must be within vecdex batch upsert limits (1..100)")
     if args.search_retries <= 0:
         raise ValueError("--search-retries must be positive")
+    if args.smoke_queries <= 0:
+        raise ValueError("--smoke-queries must be positive")
+    if args.search_retry_sleep < 0:
+        raise ValueError("--search-retry-sleep cannot be negative")
 
 
 def load_scifact_data(cache_dir: str | None, qrels_split: str) -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, int]]]:
@@ -396,6 +320,8 @@ def load_with_fallbacks(
     specs: list[tuple[str, str | None, str]],
     **dataset_kwargs: Any,
 ) -> list[dict[str, Any]]:
+    from datasets import load_dataset
+
     last_error: Exception | None = None
     for dataset_name, config_name, split_name in specs:
         try:
@@ -436,152 +362,37 @@ def sortable_id(value: str) -> tuple[int, str]:
         return (1, value)
 
 
-def build_chunk_documents(
-    corpus: dict[str, str],
-    tokenizer: Tokenizer,
-    chunk_size: int,
-    overlap: int,
-) -> tuple[list[ChunkDocument], dict[str, Any]]:
-    special_tokens_per_text = len(tokenizer.encode("", add_special_tokens=True).ids)
-    max_content_tokens = chunk_size - special_tokens_per_text
-    if overlap >= max_content_tokens:
-        raise ValueError(
-            f"overlap={overlap} must be smaller than effective chunk capacity={max_content_tokens}"
-        )
-
-    chunks: list[ChunkDocument] = []
-    seen_chunk_ids: set[str] = set()
-    chunk_counts_by_doc: dict[str, int] = {}
-    max_chunk_tokens = 0
-    min_chunk_tokens: int | None = None
-    total_chunk_tokens = 0
-
+def build_source_documents(corpus: dict[str, str]) -> tuple[list[SourceDocument], dict[str, Any]]:
+    documents = []
+    sizes = []
     for doc_id, content in corpus.items():
         if not content.strip():
             raise RuntimeError(f"corpus doc {doc_id} has empty canonical text")
-
-        doc_chunks = chunk_text(
-            doc_id=doc_id,
-            text=content,
-            tokenizer=tokenizer,
-            chunk_size=chunk_size,
-            overlap=overlap,
-        )
-        if not doc_chunks:
-            raise RuntimeError(f"document {doc_id} produced zero chunks")
-
-        chunk_counts_by_doc[doc_id] = len(doc_chunks)
-        for chunk in doc_chunks:
-            if chunk.chunk_id in seen_chunk_ids:
-                raise RuntimeError(f"duplicate chunk id generated: {chunk.chunk_id}")
-            seen_chunk_ids.add(chunk.chunk_id)
-            max_chunk_tokens = max(max_chunk_tokens, chunk.token_count)
-            min_chunk_tokens = chunk.token_count if min_chunk_tokens is None else min(min_chunk_tokens, chunk.token_count)
-            total_chunk_tokens += chunk.token_count
-            chunks.append(chunk)
-
-    document_count = len(corpus)
-    chunk_count = len(chunks)
-    avg_chunks_per_doc = chunk_count / document_count if document_count else 0.0
-    avg_chunk_tokens = total_chunk_tokens / chunk_count if chunk_count else 0.0
-
-    return chunks, {
-        "document_count": document_count,
-        "chunk_count": chunk_count,
-        "avg_chunks_per_doc": avg_chunks_per_doc,
-        "avg_chunk_tokens": avg_chunk_tokens,
-        "max_chunk_tokens": max_chunk_tokens,
-        "min_chunk_tokens": min_chunk_tokens or 0,
-        "max_chunks_per_doc": max(chunk_counts_by_doc.values()) if chunk_counts_by_doc else 0,
-        "min_chunks_per_doc": min(chunk_counts_by_doc.values()) if chunk_counts_by_doc else 0,
+        size = len(content.encode("utf-8"))
+        if size > 163840:
+            raise RuntimeError(f"corpus doc {doc_id} exceeds the source size limit: {size} bytes")
+        documents.append(SourceDocument(id=doc_id, content=content))
+        sizes.append(size)
+    if not documents:
+        raise RuntimeError("the source corpus is empty")
+    return documents, {
+        "document_count": len(documents),
+        "content_bytes": sum(sizes),
+        "max_document_bytes": max(sizes),
+        "min_document_bytes": min(sizes),
     }
 
 
-def chunk_text(
-    doc_id: str,
-    text: str,
-    tokenizer: Tokenizer,
-    chunk_size: int,
-    overlap: int,
-) -> list[ChunkDocument]:
-    special_tokens_per_text = len(tokenizer.encode("", add_special_tokens=True).ids)
-    max_content_tokens = chunk_size - special_tokens_per_text
-
-    token_ids = list(tokenizer.encode(text, add_special_tokens=False).ids)
-    if not token_ids:
-        raise RuntimeError(f"document {doc_id} could not be tokenized")
-
-    chunks: list[ChunkDocument] = []
-    token_start = 0
-    chunk_idx = 0
-
-    while token_start < len(token_ids):
-        token_end = min(token_start + max_content_tokens, len(token_ids))
-        accepted: ChunkDocument | None = None
-        accepted_end = token_end
-
-        while token_end > token_start:
-            chunk_token_ids = token_ids[token_start:token_end]
-            chunk_content = tokenizer.decode(chunk_token_ids, skip_special_tokens=True).strip()
-            if not chunk_content:
-                token_end -= 1
-                continue
-
-            token_count = len(tokenizer.encode(chunk_content, add_special_tokens=True).ids)
-            if token_count <= chunk_size:
-                accepted = ChunkDocument(
-                    chunk_id=f"scifact-{doc_id}-c{chunk_idx}",
-                    source_doc_id=str(doc_id),
-                    chunk_idx=chunk_idx,
-                    content=chunk_content,
-                    token_count=token_count,
-                )
-                accepted_end = token_end
-                break
-
-            token_end -= 1
-
-        if accepted is None:
-            raise RuntimeError(
-                f"unable to build a valid chunk for doc {doc_id} starting at token index {token_start}"
-            )
-
-        chunks.append(accepted)
-        chunk_idx += 1
-
-        if accepted_end >= len(token_ids):
-            break
-
-        next_token_start = accepted_end - overlap
-        if next_token_start <= token_start:
-            raise RuntimeError(
-                f"invalid chunk progress for doc {doc_id}: start={token_start}, next={next_token_start}"
-            )
-        token_start = next_token_start
-
-    return chunks
-
-
-def verify_qrels_coverage(
-    corpus: dict[str, str],
-    qrels: dict[str, dict[str, int]],
-    chunks: list[ChunkDocument],
-) -> None:
-    chunked_doc_ids = {chunk.source_doc_id for chunk in chunks}
+def verify_qrels_coverage(corpus: dict[str, str], qrels: dict[str, dict[str, int]]) -> None:
     qrel_doc_ids = {
         doc_id
         for relevant_docs in qrels.values()
         for doc_id, score in relevant_docs.items()
         if score > 0
     }
-
-    missing_from_corpus = sorted(doc_id for doc_id in qrel_doc_ids if doc_id not in corpus)
-    if missing_from_corpus:
-        raise RuntimeError(f"qrels docs missing from corpus: {missing_from_corpus[:10]}")
-
-    missing_from_chunks = sorted(doc_id for doc_id in qrel_doc_ids if doc_id not in chunked_doc_ids)
-    if missing_from_chunks:
-        raise RuntimeError(f"qrels docs missing from chunked index: {missing_from_chunks[:10]}")
+    missing = sorted(qrel_doc_ids.difference(corpus))
+    if missing:
+        raise RuntimeError(f"qrels docs missing from corpus: {missing[:10]}")
 
 
 def wait_for_health(client: VecdexClient, retries: int, sleep_sec: float) -> None:
@@ -604,66 +415,28 @@ def reset_collection(client: VecdexClient, collection: str) -> None:
     client.create_collection(collection)
 
 
-def ingest_chunks(
+def ingest_documents(
     client: VecdexClient,
     collection: str,
-    chunks: list[ChunkDocument],
+    documents: list[SourceDocument],
     batch_size: int,
 ) -> dict[str, Any]:
-    total = len(chunks)
-    total_tokens = sum(chunk.token_count for chunk in chunks)
+    total = len(documents)
     started_at = time.perf_counter()
-    tokens_done = 0
-    log(
-        f"[info] ingest start: collection={collection} chunks={total} total_tokens={total_tokens} batch_size={batch_size}"
-    )
+    log(f"[info] ingest start: collection={collection} documents={total} batch_size={batch_size}")
     for start in range(0, total, batch_size):
-        batch = chunks[start : start + batch_size]
-        batch_started_at = time.perf_counter()
-        batch_no = start // batch_size + 1
-        batch_total = math.ceil(total / batch_size)
-        batch_tokens = sum(chunk.token_count for chunk in batch)
-        tokens_done += batch_tokens
-        first_chunk_id = batch[0].chunk_id
-        last_chunk_id = batch[-1].chunk_id
-        log(
-            f"[info] ingest batch {batch_no}/{batch_total} start: docs={len(batch)} tokens={batch_tokens} ids={first_chunk_id}..{last_chunk_id}"
-        )
-        documents = [
-            {
-                "id": chunk.chunk_id,
-                "content": chunk.content,
-                "tags": {PARENT_DOC_ID_TAG: chunk.source_doc_id},
-                "numerics": {CHUNK_INDEX_NUMERIC: chunk.chunk_idx},
-            }
-            for chunk in batch
-        ]
-        client.batch_upsert(collection, documents)
-        batch_elapsed = time.perf_counter() - batch_started_at
+        batch = documents[start : start + batch_size]
+        client.batch_upsert(collection, [{"id": doc.id, "content": doc.content} for doc in batch])
+        done = start + len(batch)
         elapsed = time.perf_counter() - started_at
-        done = min(start + batch_size, total)
-        remaining = total - done
-        chunks_per_sec = done / elapsed if elapsed > 0 else 0.0
-        tokens_per_sec = tokens_done / elapsed if elapsed > 0 else 0.0
-        eta_sec = remaining / chunks_per_sec if chunks_per_sec > 0 else 0.0
-        log(
-            "[info] ingest batch "
-            f"{batch_no}/{batch_total} done: progress={done}/{total} "
-            f"batch_elapsed={batch_elapsed:.2f}s total_elapsed={elapsed:.2f}s "
-            f"chunks_per_sec={chunks_per_sec:.2f} tokens_per_sec={tokens_per_sec:.2f} eta={eta_sec:.1f}s"
-        )
-
-    total_elapsed = time.perf_counter() - started_at
-    log(
-        f"[info] ingest complete: collection={collection} chunks={total} total_tokens={total_tokens} elapsed={total_elapsed:.2f}s"
-    )
+        log(f"[info] ingest progress={done}/{total} elapsed={elapsed:.2f}s")
+    elapsed = time.perf_counter() - started_at
     return {
-        "chunk_count": total,
-        "total_tokens": total_tokens,
+        "document_count": total,
+        "content_bytes": sum(len(doc.content.encode("utf-8")) for doc in documents),
         "batch_count": math.ceil(total / batch_size),
-        "elapsed_sec": total_elapsed,
-        "chunks_per_sec": total / total_elapsed if total_elapsed > 0 else 0.0,
-        "tokens_per_sec": total_tokens / total_elapsed if total_elapsed > 0 else 0.0,
+        "elapsed_sec": elapsed,
+        "documents_per_sec": total / elapsed if elapsed > 0 else 0.0,
     }
 
 
@@ -672,7 +445,6 @@ def probe_search_readiness(
     collection: str,
     sample_queries: list[tuple[str, str]],
     modes: list[str],
-    top_k: int,
     limit: int,
     retries: int,
     sleep_sec: float,
@@ -680,12 +452,11 @@ def probe_search_readiness(
     if not sample_queries:
         raise RuntimeError("no sample queries available for readiness probe")
 
-    sample_queries = sample_queries[: max(1, len(sample_queries))]
     for mode in modes:
-        query_id, query_text = sample_queries[0]
         for attempt in range(1, retries + 1):
+            query_id, query_text = sample_queries[(attempt - 1) % len(sample_queries)]
             try:
-                payload = client.search(collection, query_text, mode=mode, top_k=top_k, limit=limit)
+                payload = client.search(collection, query_text, mode=mode, limit=limit)
                 if payload.get("items"):
                     log(
                         f"[info] readiness probe passed for mode={mode} on query={query_id} attempt={attempt}"
@@ -708,25 +479,13 @@ def evaluate_mode(
     mode: str,
     queries: dict[str, str],
     qrels: dict[str, dict[str, int]],
-    top_k: int,
     limit: int,
-    retries: int,
-    sleep_sec: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     query_count = len(queries)
 
     for idx, (query_id, query_text) in enumerate(queries.items(), start=1):
-        payload = search_with_retry(
-            client=client,
-            collection=collection,
-            query=query_text,
-            mode=mode,
-            top_k=top_k,
-            limit=limit,
-            retries=retries,
-            sleep_sec=sleep_sec,
-        )
+        payload = client.search(collection, query_text, mode=mode, limit=limit)
         ranked_doc_ids = parse_ranked_doc_ids(payload)
         relevant = qrels.get(query_id, {})
         metrics = compute_metrics(ranked_doc_ids, relevant)
@@ -754,36 +513,18 @@ def evaluate_mode(
     return rows, summary
 
 
-def search_with_retry(
-    client: VecdexClient,
-    collection: str,
-    query: str,
-    mode: str,
-    top_k: int,
-    limit: int,
-    retries: int,
-    sleep_sec: float,
-) -> dict[str, Any]:
-    last_payload: dict[str, Any] | None = None
-    last_error: Exception | None = None
-
-    for attempt in range(1, retries + 1):
-        try:
-            payload = client.search(collection, query=query, mode=mode, top_k=top_k, limit=limit)
-            last_payload = payload
-            if payload.get("items") or attempt == retries:
-                return payload
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-        time.sleep(sleep_sec)
-
-    if last_payload is not None:
-        return last_payload
-    raise RuntimeError(f"search failed after {retries} retries for mode={mode}") from last_error
-
-
 def parse_ranked_doc_ids(payload: dict[str, Any]) -> list[str]:
-    return [str(item.get("id", "")) for item in payload.get("items", []) if item.get("id")]
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise RuntimeError("search response has no ranked items array")
+    ids = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]:
+            raise RuntimeError(f"search response contains an invalid source: {item}")
+        ids.append(item["id"])
+    if len(ids) != len(set(ids)):
+        raise RuntimeError("search response contains duplicate source IDs")
+    return ids
 
 
 def compute_metrics(ranked_doc_ids: list[str], relevant: dict[str, int]) -> dict[str, float]:
@@ -1044,7 +785,7 @@ def build_report(
     qrels: dict[str, dict[str, int]],
 ) -> str:
     lines: list[str] = []
-    lines.append("# SciFact Chunked Benchmark")
+    lines.append("# SciFact Source Benchmark")
     lines.append("")
     lines.append("## Run Summary")
     lines.append("")
@@ -1058,11 +799,10 @@ def build_report(
     lines.append("")
     corpus_stats = summary["corpus_stats"]
     lines.append(f"- Documents: {corpus_stats['document_count']}")
-    lines.append(f"- Chunks: {corpus_stats['chunk_count']}")
-    lines.append(f"- Avg chunks/doc: {corpus_stats['avg_chunks_per_doc']:.2f}")
-    lines.append(f"- Avg chunk tokens: {corpus_stats['avg_chunk_tokens']:.2f}")
-    lines.append(f"- Min chunk tokens: {corpus_stats['min_chunk_tokens']}")
-    lines.append(f"- Max chunk tokens: {corpus_stats['max_chunk_tokens']}")
+    lines.append(f"- Source bytes: {corpus_stats['content_bytes']}")
+    lines.append(f"- Min document bytes: {corpus_stats['min_document_bytes']}")
+    lines.append(f"- Max document bytes: {corpus_stats['max_document_bytes']}")
+    lines.append("- Fragmentation: server-managed")
     lines.append("")
     lines.append("## Metrics")
     lines.append("")

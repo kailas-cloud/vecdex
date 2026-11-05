@@ -23,7 +23,7 @@ def unique_name() -> str:
 
 @pytest.fixture(scope="session")
 def client() -> httpx.Client:
-    """Authenticated httpx client for API v1."""
+    """Authenticated httpx client for API v2."""
     c = httpx.Client(
         base_url=VECDEX_BASE_URL,
         headers={"Authorization": f"Bearer {VECDEX_API_KEY}"},
@@ -43,7 +43,7 @@ def raw_client() -> httpx.Client:
 
 @pytest.fixture(scope="session")
 def health_client() -> httpx.Client:
-    """Client without /api/v1 prefix for /health and /metrics."""
+    """Client for root endpoints for /health and /metrics."""
     c = httpx.Client(base_url=VECDEX_BASE_URL, timeout=330.0)
     yield c
     c.close()
@@ -71,7 +71,7 @@ def collection_factory(client: httpx.Client):
             body["fields"] = fields
         if type:
             body["type"] = type
-        resp = client.post("/collections", json=body)
+        resp = client.post("/api/v2/collections", json=body)
         assert resp.status_code == 201, f"Failed to create collection: {resp.text}"
         created.append(coll_name)
         return resp.json()
@@ -79,7 +79,7 @@ def collection_factory(client: httpx.Client):
     yield _create
 
     for name in created:
-        client.delete(f"/collections/{name}")
+        client.delete(f"/api/v2/collections/{name}")
 
 
 @pytest.fixture()
@@ -97,42 +97,36 @@ def populated_collection(client: httpx.Client, collection_factory):
         {
             "id": "doc-1",
             "content": "Python is a programming language used for web development",
-            "tags": {"category": "programming"},
-            "numerics": {"priority": 10},
+            "metadata": {"category": "programming", "priority": 10},
         },
         {
             "id": "doc-2",
             "content": "Go is a statically typed language designed at Google",
-            "tags": {"category": "programming"},
-            "numerics": {"priority": 8},
+            "metadata": {"category": "programming", "priority": 8},
         },
         {
             "id": "doc-3",
             "content": "Kubernetes orchestrates containerized applications",
-            "tags": {"category": "infrastructure"},
-            "numerics": {"priority": 9},
+            "metadata": {"category": "infrastructure", "priority": 9},
         },
         {
             "id": "doc-4",
             "content": "Valkey is an in-memory data store for caching",
-            "tags": {"category": "database"},
-            "numerics": {"priority": 7},
+            "metadata": {"category": "database", "priority": 7},
         },
         {
             "id": "doc-5",
             "content": "Docker packages applications into containers",
-            "tags": {"category": "infrastructure"},
-            "numerics": {"priority": 6},
+            "metadata": {"category": "infrastructure", "priority": 6},
         },
     ]
 
     for doc in docs:
         resp = client.put(
-            f"/collections/{coll_name}/documents/{doc['id']}",
+            f"/api/v2/collections/{coll_name}/documents/{doc['id']}",
             json={
                 "content": doc["content"],
-                "tags": doc.get("tags"),
-                "numerics": doc.get("numerics"),
+                "metadata": doc["metadata"],
             },
         )
         assert resp.status_code in (200, 201), f"Failed to upsert {doc['id']}: {resp.text}"
@@ -146,10 +140,11 @@ def populated_collection(client: httpx.Client, collection_factory):
 @retry(stop=stop_after_attempt(5), wait=wait_fixed(0.3))
 def search_with_retry(client: httpx.Client, collection: str, **kwargs) -> httpx.Response:
     """Search with retry for indexing lag."""
-    resp = client.post(f"/collections/{collection}/documents/search", json=kwargs)
+    expect_results = kwargs.pop("_expect_results", True)
+    resp = client.post(f"/api/v2/collections/{collection}/search", json=kwargs)
     assert resp.status_code == 200
     data = resp.json()
-    if kwargs.get("_expect_results", True) and len(data.get("items", [])) == 0:
+    if expect_results and len(data.get("items", [])) == 0:
         raise AssertionError("No search results yet, retrying...")
     return resp
 

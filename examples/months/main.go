@@ -18,7 +18,7 @@ import (
 	"os"
 )
 
-const baseURL = "http://localhost:8080/api/v1"
+const baseURL = "http://localhost:8080/api/v2"
 
 type month struct {
 	id      string
@@ -117,12 +117,12 @@ func main() {
 
 func createCollection() {
 	body := map[string]interface{}{
-		"type": "json",
+		"name": "months",
 		"fields": []map[string]string{
 			{"name": "season", "type": "tag"},
 		},
 	}
-	resp := doRequest("POST", baseURL+"/months", body)
+	resp := doRequest("POST", baseURL+"/collections", body)
 	switch resp.StatusCode {
 	case 201:
 		fmt.Println("  Collection created (201)")
@@ -136,10 +136,10 @@ func createCollection() {
 
 func createDocument(m month) {
 	body := map[string]interface{}{
-		"content": m.content,
-		"tags":    map[string]string{"season": m.season},
+		"content":  m.content,
+		"metadata": map[string]string{"season": m.season},
 	}
-	resp := doRequest("POST", fmt.Sprintf("%s/months/%s", baseURL, m.id), body)
+	resp := doRequest("PUT", fmt.Sprintf("%s/collections/months/documents/%s", baseURL, m.id), body)
 	switch resp.StatusCode {
 	case 201:
 		fmt.Printf("  + %s (%s)\n", m.id, m.season)
@@ -154,13 +154,17 @@ func createDocument(m month) {
 func search(query string, filters map[string]string, k int) {
 	body := map[string]interface{}{
 		"query": query,
-		"k":     k,
+		"limit": k,
 	}
 	if filters != nil {
-		body["filters"] = filters
+		conditions := make([]map[string]string, 0, len(filters))
+		for key, value := range filters {
+			conditions = append(conditions, map[string]string{"key": key, "match": value})
+		}
+		body["filters"] = map[string]any{"must": conditions}
 	}
 
-	resp := doRequest("POST", baseURL+"/months/search", body)
+	resp := doRequest("POST", baseURL+"/collections/months/search", body)
 
 	if resp.StatusCode != 200 {
 		printBody("  Search error", resp)
@@ -170,11 +174,11 @@ func search(query string, filters map[string]string, k int) {
 
 	var result struct {
 		Results []struct {
-			ID      string            `json:"id"`
-			Score   float64           `json:"score"`
-			Content string            `json:"content"`
-			Tags    map[string]string `json:"tags"`
-		} `json:"results"`
+			ID       string         `json:"id"`
+			Score    float64        `json:"score"`
+			Snippet  string         `json:"snippet"`
+			Metadata map[string]any `json:"metadata"`
+		} `json:"items"`
 		Total int `json:"total"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -186,17 +190,17 @@ func search(query string, filters map[string]string, k int) {
 	fmt.Printf("  Found %d results:\n", result.Total)
 	for i, r := range result.Results {
 		// Truncate content for readability
-		content := r.Content
+		content := r.Snippet
 		if len(content) > 80 {
 			content = content[:80] + "..."
 		}
 		fmt.Printf("  %d. %-10s (score: %.4f, season: %s)\n     %s\n",
-			i+1, r.ID, r.Score, r.Tags["season"], content)
+			i+1, r.ID, r.Score, r.Metadata["season"], content)
 	}
 }
 
 func deleteCollection() {
-	req, _ := http.NewRequestWithContext(context.Background(), "DELETE", baseURL+"/months", http.NoBody)
+	req, _ := http.NewRequestWithContext(context.Background(), "DELETE", baseURL+"/collections/months", http.NoBody)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Fatalf("DELETE failed: %v", err)

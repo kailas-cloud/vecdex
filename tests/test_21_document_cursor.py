@@ -6,7 +6,7 @@ pytestmark = pytest.mark.p0
 
 def test_document_cursor_ignores_offset_shifts(client, collection_factory):
     name = collection_factory()["name"]
-    base = f"/collections/{name}"
+    base = f"/api/v2/collections/{name}"
     documents = f"{base}/documents"
     for identity in ("a", "b", "c", "d", "e"):
         assert client.put(f"{documents}/{identity}", json={"content": f"cursor document {identity}"}).status_code == 201
@@ -33,12 +33,12 @@ def test_document_cursor_ignores_offset_shifts(client, collection_factory):
 
 def test_document_cursor_rejects_recreated_collection(client, collection_factory):
     name = collection_factory()["name"]
-    base = f"/collections/{name}"
+    base = f"/api/v2/collections/{name}"
     for identity in ("a", "b"):
         assert client.put(f"{base}/documents/{identity}", json={"content": identity}).status_code == 201
     cursor = client.get(f"{base}/documents", params={"limit": 1}).json()["next_cursor"]
     assert client.delete(base).status_code == 204
-    assert client.post("/collections", json={"name": name, "type": "text"}).status_code == 201
+    assert client.post("/api/v2/collections", json={"name": name, "type": "text"}).status_code == 201
     assert client.put(f"{base}/documents/new", json={"content": "new generation"}).status_code == 201
     stale = client.get(f"{base}/documents", params={"limit": 1, "cursor": cursor})
     assert stale.status_code == 400, stale.text

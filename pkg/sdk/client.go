@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
@@ -42,13 +43,13 @@ type documentUseCase interface {
 	Get(ctx context.Context, col, id string) (domdoc.Document, error)
 	List(ctx context.Context, col, cursor string, limit int) ([]domdoc.Document, string, error)
 	Delete(ctx context.Context, col, id string) error
-	Patch(ctx context.Context, col, id string, p patch.Patch) (domdoc.Document, error)
+	Patch(ctx context.Context, col, id string, p patch.Patch) (domdoc.WriteResult, error)
 	Count(ctx context.Context, col string) (int, error)
 }
 
 type batchUseCase interface {
-	Upsert(ctx context.Context, col string, docs []domdoc.Document) []dombatch.Result
-	Delete(ctx context.Context, col string, ids []string) []dombatch.Result
+	Upsert(ctx context.Context, col string, docs []dombatch.UpsertItem) []dombatch.Result
+	Delete(ctx context.Context, col string, items []dombatch.DeleteItem) []dombatch.Result
 }
 
 type searchUseCase interface {
@@ -57,14 +58,17 @@ type searchUseCase interface {
 
 // Client is the vecdex SDK entry point.
 type Client struct {
-	store     db.Store
-	collSvc   collectionUseCase
-	docSvc    documentUseCase
-	searchSvc searchUseCase
-	batchSvc  batchUseCase
-	healthSvc healthUseCase
-	usageSvc  usageUseCase
-	obs       *observer
+	http            *httpBackend
+	closeOnce       sync.Once
+	stopMaintenance func()
+	store           db.Store
+	collSvc         collectionUseCase
+	docSvc          documentUseCase
+	searchSvc       searchUseCase
+	batchSvc        batchUseCase
+	healthSvc       healthUseCase
+	usageSvc        usageUseCase
+	obs             *observer
 }
 
 // New creates a vecdex Client and connects to Valkey.
@@ -146,29 +150,44 @@ func wireClient(store db.Store, cfg *clientConfig, obs *observer) (*Client, erro
 	healthSvc := healthuc.New(store, nil)
 	usageSvc := usageuc.New(nil) // nil = unlimited mode (no budget tracking in SDK)
 
+	stopMaintenance := collRepo.StartMaintenance(context.Background(), func(err error) {
+		if cfg.logger != nil {
+			cfg.logger.Warn("Storage recovery pass failed", "error", err)
+		}
+	})
 	return &Client{
-		store:     store,
-		collSvc:   collSvc,
-		docSvc:    docSvc,
-		searchSvc: searchSvc,
-		batchSvc:  batchSvc,
-		healthSvc: healthSvc,
-		usageSvc:  usageSvc,
-		obs:       obs,
+		stopMaintenance: stopMaintenance,
+		store:           store,
+		collSvc:         collSvc,
+		docSvc:          docSvc,
+		searchSvc:       searchSvc,
+		batchSvc:        batchSvc,
+		healthSvc:       healthSvc,
+		usageSvc:        usageSvc,
+		obs:             obs,
 	}, nil
 }
 
 // Close releases all resources.
 func (c *Client) Close() {
-	if c.store != nil {
-		c.store.Close()
-	}
+	c.closeOnce.Do(func() {
+		if c.stopMaintenance != nil {
+			c.stopMaintenance()
+		}
+		if c.store != nil {
+			c.store.Close()
+		}
+	})
 }
 
 // Ping checks Valkey connectivity.
 func (c *Client) Ping(ctx context.Context) (err error) {
 	start := time.Now()
 	defer func() { c.obs.observe("ping", start, err) }()
+	if c.http != nil {
+		_, err = c.http.call(ctx, "GET", "/health", nil, nil)
+		return err
+	}
 
 	if err = c.store.Ping(ctx); err != nil {
 		return fmt.Errorf("ping: %w", err)

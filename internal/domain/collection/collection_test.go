@@ -135,15 +135,18 @@ func TestNew_DuplicateFieldNames(t *testing.T) {
 	}
 }
 
-func TestNew_ReservedSystemFieldNames(t *testing.T) {
-	tests := []string{SystemParentDocID, SystemChunkIndex}
-	for _, name := range tests {
-		_, err := New("col", TypeText, []field.Field{field.Reconstruct(name, field.Tag)}, 1024)
-		if err == nil {
-			t.Fatalf("expected error for reserved field %q", name)
-		}
-		if !strings.Contains(err.Error(), "reserved") {
-			t.Fatalf("error = %q, want reserved", err)
+func TestNew_FormerChunkFieldsAreOrdinaryIndexes(t *testing.T) {
+	fields := []field.Field{
+		field.Reconstruct("parent_doc_id", field.Tag),
+		field.Reconstruct("chunk_index", field.Numeric),
+	}
+	col, err := New("col", TypeText, fields, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fields {
+		if !col.HasField(f.Name(), f.FieldType()) {
+			t.Fatalf("explicit field %s was not declared", f.Name())
 		}
 	}
 }
@@ -193,11 +196,11 @@ func TestHasField(t *testing.T) {
 	if col.HasField("missing", field.Tag) {
 		t.Error("HasField(missing, tag) = true, want false")
 	}
-	if !col.HasField(SystemParentDocID, field.Tag) {
-		t.Error("HasField(system parent_doc_id, tag) = false, want true")
+	if col.HasField("parent_doc_id", field.Tag) {
+		t.Error("parent_doc_id is implicitly indexed")
 	}
-	if !col.HasField(SystemChunkIndex, field.Numeric) {
-		t.Error("HasField(system chunk_index, numeric) = false, want true")
+	if col.HasField("chunk_index", field.Numeric) {
+		t.Error("chunk_index is implicitly indexed")
 	}
 }
 
@@ -218,11 +221,7 @@ func TestFieldByName(t *testing.T) {
 		t.Error("FieldByName(missing) found, want not found")
 	}
 
-	found, ok = col.FieldByName(SystemParentDocID)
-	if !ok {
-		t.Fatal("FieldByName(system parent_doc_id) not found")
-	}
-	if found.Name() != SystemParentDocID || found.FieldType() != field.Tag {
-		t.Errorf("system found = (%q, %q)", found.Name(), found.FieldType())
+	if _, ok := col.FieldByName("parent_doc_id"); ok {
+		t.Fatal("parent_doc_id is implicitly declared")
 	}
 }

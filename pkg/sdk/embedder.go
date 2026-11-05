@@ -4,6 +4,8 @@ import "context"
 
 // Embedder converts text to vector embeddings.
 // Required for document upserts and semantic or hybrid search.
+// Return ErrEmbeddingInputTooLong for an explicit model context-limit rejection;
+// document ingestion then splits the complete source into private fragments.
 type Embedder interface {
 	Embed(ctx context.Context, text string) (EmbeddingResult, error)
 }

@@ -45,43 +45,73 @@ type FieldInfo struct {
 
 // Document is an untyped document for the low-level API.
 type Document struct {
-	ID       string
-	Content  string
-	Revision int
-	Tags     map[string]string
-	Numerics map[string]float64
+	// ExpiresAt is an absolute UTC Unix millisecond deadline; nil is persistent.
+	ExpiresAt *int64
+	Metadata  map[string]any
+	// Version is an opaque token for IfVersion conditional writes.
+	Version string
+	ID      string
+	Content string
 }
 
 // DocumentPatch is a partial document update.
-// Nil fields are unchanged. A nil value in Tags/Numerics means delete that key.
+// Nil fields are unchanged. Metadata follows JSON Merge Patch.
 type DocumentPatch struct {
+	// ExpiresAt leaves the deadline unchanged when nil; a pointer to zero clears it.
+	ExpiresAt *int64
+	// Metadata merges JSON members; a pointer to a nil map clears all metadata.
+	Metadata *map[string]any
 	Content  *string
-	Tags     map[string]*string
-	Numerics map[string]*float64
+}
+
+// WriteResult identifies the exact committed source version. Get returns the
+// current complete document; a receipt does not retain a historical source copy.
+type WriteResult struct {
+	ID      string
+	Version string
+	Created bool
 }
 
 // SearchResult is a single search hit.
 type SearchResult struct {
+	Version  string
+	Metadata map[string]any
 	ID       string
 	Score    float64
-	Content  string
-	Tags     map[string]string
-	Numerics map[string]float64
+	Snippet  string
 	Vector   []float32 // nil when not requested (IncludeVectors=false)
 }
 
 // SearchResponse wraps search results with metadata.
 type SearchResponse struct {
 	Results []SearchResult
-	Total   int // candidates passing min_score in top_k window (before limit)
+	Total   int // ranked source documents after score filtering
 	Limit   int
 }
 
 // BatchResult is the outcome of one item in a batch operation.
 type BatchResult struct {
-	ID  string
-	OK  bool
-	Err error
+	Version string // committed source version on a successful upsert
+	ID      string
+	OK      bool
+	Err     error
+}
+
+// BatchUpsertItem writes one source. An empty IfVersion is unconditional.
+type BatchUpsertItem struct {
+	ExpiresAt      *int64
+	IdempotencyKey string
+	ID             string
+	Content        string
+	Metadata       map[string]any
+	IfVersion      string
+}
+
+// BatchDeleteItem deletes one source. An empty IfVersion is unconditional.
+type BatchDeleteItem struct {
+	IdempotencyKey string
+	ID             string
+	IfVersion      string
 }
 
 // BatchResponse wraps batch results with summary counts.

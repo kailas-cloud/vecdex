@@ -2,12 +2,15 @@ package vecdex
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/kailas-cloud/vecdex/internal/domain"
 	dombatch "github.com/kailas-cloud/vecdex/internal/domain/batch"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
+	"github.com/kailas-cloud/vecdex/internal/domain/metadata"
 )
 
 // DocumentService manages documents within a single collection.
@@ -18,22 +21,26 @@ type DocumentService struct {
 	obs        *observer
 }
 
-// Upsert creates or updates a document. Returns true if created.
+// Upsert creates or updates a document. Returns the committed source version.
 func (s *DocumentService) Upsert(
-	ctx context.Context, doc Document,
-) (_ bool, err error) {
+	ctx context.Context, doc Document, conditions ...WriteOption,
+) (_ WriteResult, err error) {
 	start := time.Now()
 	defer func() { s.obs.observe("document.upsert", start, err) }()
 
+	ctx, err = applyWriteOptions(ctx, conditions)
+	if err != nil {
+		return WriteResult{}, err
+	}
 	d, err := toInternalDocument(doc)
 	if err != nil {
-		return false, fmt.Errorf("upsert: %w", err)
+		return WriteResult{}, fmt.Errorf("upsert: %w", err)
 	}
 	created, err := s.docSvc.Upsert(ctx, s.collection, &d)
 	if err != nil {
-		return false, fmt.Errorf("upsert: %w", err)
+		return WriteResult{}, fmt.Errorf("upsert: %w", err)
 	}
-	return created, nil
+	return WriteResult{ID: d.ID(), Version: d.Version(), Created: created}, nil
 }
 
 // Get retrieves a document by ID.
@@ -47,7 +54,7 @@ func (s *DocumentService) Get(
 	if err != nil {
 		return Document{}, fmt.Errorf("get document: %w", err)
 	}
-	return fromInternalDocument(d), nil
+	return fromInternalDocument(&d), nil
 }
 
 // List returns a paginated list of documents.
@@ -63,18 +70,22 @@ func (s *DocumentService) List(
 	}
 	out := make([]Document, len(docs))
 	for i, d := range docs {
-		out[i] = fromInternalDocument(d)
+		out[i] = fromInternalDocument(&d)
 	}
 	return ListResult{Documents: out, NextCursor: next}, nil
 }
 
 // Delete removes a document by ID.
 func (s *DocumentService) Delete(
-	ctx context.Context, id string,
+	ctx context.Context, id string, conditions ...WriteOption,
 ) (err error) {
 	start := time.Now()
 	defer func() { s.obs.observe("document.delete", start, err) }()
 
+	ctx, err = applyWriteOptions(ctx, conditions)
+	if err != nil {
+		return err
+	}
 	if err = s.docSvc.Delete(ctx, s.collection, id); err != nil {
 		return fmt.Errorf("delete document: %w", err)
 	}
@@ -83,20 +94,24 @@ func (s *DocumentService) Delete(
 
 // Patch applies a partial update to a document.
 func (s *DocumentService) Patch(
-	ctx context.Context, id string, p DocumentPatch,
-) (_ Document, err error) {
+	ctx context.Context, id string, p DocumentPatch, conditions ...WriteOption,
+) (_ WriteResult, err error) {
 	start := time.Now()
 	defer func() { s.obs.observe("document.patch", start, err) }()
 
+	ctx, err = applyWriteOptions(ctx, conditions)
+	if err != nil {
+		return WriteResult{}, err
+	}
 	dp, err := toInternalPatch(p)
 	if err != nil {
-		return Document{}, fmt.Errorf("patch: %w", err)
+		return WriteResult{}, fmt.Errorf("patch: %w", err)
 	}
 	d, err := s.docSvc.Patch(ctx, s.collection, id, dp)
 	if err != nil {
-		return Document{}, fmt.Errorf("patch: %w", err)
+		return WriteResult{}, fmt.Errorf("patch: %w", err)
 	}
-	return fromInternalDocument(d), nil
+	return WriteResult{ID: d.ID, Version: d.Version, Created: d.Created}, nil
 }
 
 // Count returns the number of documents in the collection.
@@ -115,16 +130,29 @@ func (s *DocumentService) Count(
 
 // BatchUpsert creates or updates documents in batch.
 func (s *DocumentService) BatchUpsert(
-	ctx context.Context, docs []Document,
+	ctx context.Context, docs []BatchUpsertItem,
 ) (_ BatchResponse, err error) {
 	start := time.Now()
 	defer func() { s.obs.observe("document.batch_upsert", start, err) }()
+	if len(docs) == 0 {
+		return BatchResponse{}, nil
+	}
 
-	items := make([]domdoc.Document, len(docs))
+	items := make([]dombatch.UpsertItem, len(docs))
 	for i, d := range docs {
-		items[i], err = toInternalDocument(d)
+		items[i].Document, err = toInternalDocument(Document{
+			ID: d.ID, Content: d.Content, Metadata: d.Metadata, ExpiresAt: d.ExpiresAt,
+		})
 		if err != nil {
 			return BatchResponse{}, fmt.Errorf("document %d: %w", i, err)
+		}
+		if d.IfVersion != "" {
+			version := d.IfVersion
+			items[i].IfVersion = &version
+		}
+		if d.IdempotencyKey != "" {
+			key := d.IdempotencyKey
+			items[i].IdempotencyKey = &key
 		}
 	}
 	results := s.batchSvc.Upsert(ctx, s.collection, items)
@@ -133,61 +161,102 @@ func (s *DocumentService) BatchUpsert(
 
 // BatchDelete removes documents by IDs.
 func (s *DocumentService) BatchDelete(
-	ctx context.Context, ids []string,
+	ctx context.Context, items []BatchDeleteItem,
 ) BatchResponse {
 	start := time.Now()
 	defer func() { s.obs.observe("document.batch_delete", start, nil) }()
+	if len(items) == 0 {
+		return BatchResponse{}
+	}
 
-	results := s.batchSvc.Delete(ctx, s.collection, ids)
+	commands := make([]dombatch.DeleteItem, len(items))
+	for i, item := range items {
+		commands[i].ID = item.ID
+		if item.IfVersion != "" {
+			version := item.IfVersion
+			commands[i].IfVersion = &version
+		}
+		if item.IdempotencyKey != "" {
+			key := item.IdempotencyKey
+			commands[i].IdempotencyKey = &key
+		}
+	}
+	results := s.batchSvc.Delete(ctx, s.collection, commands)
 	return toBatchResponse(results)
 }
 
 func toInternalDocument(d Document) (domdoc.Document, error) {
-	doc, err := domdoc.New(d.ID, d.Content, d.Tags, d.Numerics)
+	doc, err := domdoc.New(d.ID, d.Content, nil, nil)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("validate document: %w", err)
+	}
+	values := d.Metadata
+	if values == nil {
+		values = map[string]any{}
+	}
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return domdoc.Document{}, fmt.Errorf("encode metadata: %w: %w", domain.ErrInvalidSchema, err)
+	}
+	value, err := metadata.Parse(raw)
+	if err != nil {
+		return domdoc.Document{}, fmt.Errorf("decode document metadata: %w", err)
+	}
+	doc.SetMetadata(value)
+	if d.ExpiresAt != nil {
+		if *d.ExpiresAt <= 0 {
+			return domdoc.Document{}, fmt.Errorf("expires_at must be positive: %w", domain.ErrInvalidSchema)
+		}
+		if err := doc.SetExpiresAt(*d.ExpiresAt); err != nil {
+			return domdoc.Document{}, fmt.Errorf("validate source expiration: %w", err)
+		}
 	}
 	return doc, nil
 }
 
-func fromInternalDocument(d domdoc.Document) Document {
+func fromInternalDocument(d *domdoc.Document) Document {
 	return Document{
-		ID:       d.ID(),
-		Content:  d.Content(),
-		Revision: d.Revision(),
-		Tags:     cloneTags(d.Tags()),
-		Numerics: cloneNumerics(d.Numerics()),
+		ExpiresAt: optionalExpiresAt(d.ExpiresAt()),
+		Metadata:  sourceMetadataValues(d.Metadata(), d.Tags(), d.Numerics()),
+		ID:        d.ID(), Content: d.Content(), Version: d.Version(),
 	}
 }
 
-func cloneTags(m map[string]string) map[string]string {
-	if m == nil {
-		return nil
+func sourceMetadataValues(value metadata.Object, tags map[string]string, numerics map[string]float64) map[string]any {
+	if value.Present() {
+		return value.Values()
 	}
-	c := make(map[string]string, len(m))
-	for k, v := range m {
-		c[k] = v
+	values := make(map[string]any, len(tags)+len(numerics))
+	for key, item := range tags {
+		values[key] = item
 	}
-	return c
-}
-
-func cloneNumerics(m map[string]float64) map[string]float64 {
-	if m == nil {
-		return nil
+	for key, item := range numerics {
+		values[key] = item
 	}
-	c := make(map[string]float64, len(m))
-	for k, v := range m {
-		c[k] = v
-	}
-	return c
+	return values
 }
 
 func toInternalPatch(p DocumentPatch) (patch.Patch, error) {
-	pp, err := patch.New(p.Content, p.Tags, p.Numerics)
-	if err != nil {
-		return patch.Patch{}, fmt.Errorf("validate patch: %w", err)
+	var raw json.RawMessage
+	if p.Metadata != nil {
+		encoded, err := json.Marshal(*p.Metadata)
+		if err != nil {
+			return patch.Patch{}, fmt.Errorf("encode metadata patch: %w: %w", domain.ErrInvalidSchema, err)
+		}
+		raw = encoded
 	}
-	return pp, nil
+	value, err := patch.NewSource(p.Content, raw, p.ExpiresAt)
+	if err != nil {
+		return patch.Patch{}, fmt.Errorf("validate metadata patch: %w", err)
+	}
+	return value, nil
+}
+
+func optionalExpiresAt(value int64) *int64 {
+	if value == 0 {
+		return nil
+	}
+	return &value
 }
 
 func toBatchResponse(results []dombatch.Result) BatchResponse {
@@ -196,9 +265,10 @@ func toBatchResponse(results []dombatch.Result) BatchResponse {
 	for i, r := range results {
 		ok := r.Status() == dombatch.StatusOK
 		out[i] = BatchResult{
-			ID:  r.ID(),
-			OK:  ok,
-			Err: r.Err(),
+			Version: r.Version(),
+			ID:      r.ID(),
+			OK:      ok,
+			Err:     r.Err(),
 		}
 		if ok {
 			succeeded++

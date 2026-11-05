@@ -10,10 +10,17 @@ import (
 //nolint:interfacebloat // facade by design -- consumers use narrow sub-interfaces (ISP)
 type Store interface {
 	HashMutator
+	WriteRequestStore
+	ExpiryStore
+	MutationWorkStore
 	CatalogStore
+	PartitionCatalogStore
 	BudgetStore
+	BudgetSnapshotStore
+	CreditStore
 	KVBatchStore
 	Pinger
+	Readiness
 	HashStore
 	KVStore
 	IndexManager
@@ -35,8 +42,9 @@ type HashSetItem struct {
 
 // HashStore provides hash-based key-value operations.
 //
-//nolint:interfacebloat // absorbs Del/Exists/Scan from removed JSONStore
+//nolint:interfacebloat // facade; repositories depend on narrower hash interfaces
 type HashStore interface {
+	HGetFieldsMulti(ctx context.Context, keys, fields []string) ([][]string, error)
 	HGetFieldMulti(ctx context.Context, keys []string, field string) ([]string, error)
 	HSet(ctx context.Context, key string, fields map[string]string) error
 	HSetMulti(ctx context.Context, items []HashSetItem) error
@@ -45,7 +53,6 @@ type HashStore interface {
 	Del(ctx context.Context, key string) error
 	HDel(ctx context.Context, key string, fields ...string) error
 	Exists(ctx context.Context, key string) (bool, error)
-	Scan(ctx context.Context, pattern string) ([]string, error)
 }
 
 // KVStore provides simple key-value operations.
@@ -62,6 +69,7 @@ type IndexManager interface {
 	CreateIndex(ctx context.Context, def *IndexDefinition) error
 	DropIndex(ctx context.Context, name string) error
 	IndexExists(ctx context.Context, name string) (bool, error)
+	WaitForIndex(ctx context.Context, name string) error
 	SupportsTextSearch(ctx context.Context) bool
 }
 
@@ -69,6 +77,9 @@ type IndexManager interface {
 type Searcher interface {
 	SearchKNN(ctx context.Context, q *KNNQuery) (*SearchResult, error)
 	SearchBM25(ctx context.Context, q *TextQuery) (*SearchResult, error)
-	SearchList(ctx context.Context, index, query string, offset, limit int, fields []string) (*SearchResult, error)
-	SearchCount(ctx context.Context, index, query string) (int, error)
+}
+
+// Readiness checks all database and search dependencies required to serve requests.
+type Readiness interface {
+	Ready(ctx context.Context) error
 }

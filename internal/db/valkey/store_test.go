@@ -224,7 +224,7 @@ func TestScan_SinglePage(t *testing.T) {
 		)))
 
 	s := NewStoreForTest(c)
-	keys, err := s.Scan(context.Background(), "prefix:*")
+	keys, err := s.ScanForTest(context.Background(), "prefix:*")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -347,23 +347,23 @@ func TestCreateIndex_Success(t *testing.T) {
 }
 
 func TestCreateIndex_AlreadyExists(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	c := mock.NewClient(ctrl)
-
-	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "FT.CREATE"
-		})).
-		Return(mock.Result(mock.RedisError("Index already exists")))
-
-	s := NewStoreForTest(c)
-	idx := &db.IndexDefinition{
-		Name:   "test:idx",
-		Fields: []db.IndexField{{Name: "f", Type: db.IndexFieldTag}},
-	}
-	err := s.CreateIndex(context.Background(), idx)
-	if !errors.Is(err, db.ErrIndexExists) {
-		t.Errorf("expected ErrIndexExists, got %v", err)
+	for _, message := range []string{
+		"Index already exists",
+		"Index with name 'test:idx' already exists",
+		"Index test:idx in database 0 already exists.",
+	} {
+		t.Run(message, func(t *testing.T) {
+			c := mock.NewClient(gomock.NewController(t))
+			c.EXPECT().Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
+				return cmd[0] == "FT.CREATE"
+			})).Return(mock.Result(mock.RedisError(message)))
+			err := NewStoreForTest(c).CreateIndex(context.Background(), &db.IndexDefinition{
+				Name: "test:idx", Fields: []db.IndexField{{Name: "f", Type: db.IndexFieldTag}},
+			})
+			if !errors.Is(err, db.ErrIndexExists) {
+				t.Errorf("expected ErrIndexExists, got %v", err)
+			}
+		})
 	}
 }
 
@@ -449,7 +449,12 @@ func TestSearchKNN_Success(t *testing.T) {
 
 	c.EXPECT().
 		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "FT.SEARCH"
+			for i := 0; i+2 < len(cmd); i++ {
+				if cmd[i] == "LIMIT" {
+					return cmd[0] == "FT.SEARCH" && cmd[i+1] == "0" && cmd[i+2] == "50"
+				}
+			}
+			return false
 		})).
 		Return(mock.Result(mock.RedisArray(
 			mock.RedisInt64(1),
@@ -466,7 +471,7 @@ func TestSearchKNN_Success(t *testing.T) {
 	result, err := s.SearchKNN(context.Background(), &db.KNNQuery{
 		IndexName: "idx",
 		Vector:    []float32{0.1, 0.2},
-		K:         10,
+		K:         50,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -501,39 +506,20 @@ func TestSearchKNN_Validation(t *testing.T) {
 }
 
 func TestSearchBM25_Success(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	c := mock.NewClient(ctrl)
-
+	c := mock.NewClient(gomock.NewController(t))
+	fields := mock.RedisArray(mock.RedisString("__content"), mock.RedisString("text"))
+	reply := mock.RedisArray(mock.RedisInt64(1), mock.RedisString("doc:1"), fields)
 	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "FT.SEARCH"
-		})).
-		Return(mock.Result(mock.RedisArray(
-			mock.RedisInt64(1),
-			mock.RedisString("doc:1"),
-			mock.RedisArray(
-				mock.RedisString("__content"),
-				mock.RedisString("text"),
-			),
-		)))
-
-	s := NewStoreForTest(c)
-	result, err := s.SearchBM25(context.Background(), &db.TextQuery{
-		IndexName: "idx",
-		Query:     "test",
-		TopK:      10,
-	})
+		Do(gomock.Any(), mock.MatchFn(func(args []string) bool { return args[0] == "FT.SEARCH" })).
+		Return(mock.Result(reply))
+	result, err := NewStoreForTest(
+		c,
+	).SearchBM25(context.Background(), &db.TextQuery{IndexName: "idx", Query: "test", TopK: 10})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
-	if result.Total != 1 {
-		t.Fatalf("expected total 1, got %d", result.Total)
-	}
-	if len(result.Entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(result.Entries))
-	}
-	if result.Entries[0].Score != 1 {
-		t.Fatalf("expected normalized rank score 1, got %f", result.Entries[0].Score)
+	if result.Total != 1 || len(result.Entries) != 1 || result.Entries[0].Score != 1 {
+		t.Fatalf("unexpected result: %+v", result)
 	}
 }
 
@@ -554,137 +540,6 @@ func TestSearchBM25_Validation(t *testing.T) {
 	_, err = s.SearchBM25(ctx, &db.TextQuery{IndexName: "idx", Query: "test", TopK: 0})
 	if err == nil {
 		t.Error("expected error for topK=0")
-	}
-}
-
-// --- Valkey-specific: SearchList fallback to SCAN for query="*" ---
-
-func TestSearchList_WildcardFallback(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	c := mock.NewClient(ctrl)
-
-	// SCAN returns keys
-	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "SCAN"
-		})).
-		Return(mock.Result(mock.RedisArray(
-			mock.RedisInt64(0),
-			mock.RedisArray(mock.RedisString("vecdex:col:doc1"), mock.RedisString("vecdex:col:doc2")),
-		)))
-
-	// HGETALL for each key
-	c.EXPECT().
-		Do(gomock.Any(), mock.Match("HGETALL", "vecdex:col:doc1")).
-		Return(mock.Result(mock.RedisMap(map[string]rueidis.RedisMessage{
-			"__content": mock.RedisString("hello"),
-		})))
-
-	c.EXPECT().
-		Do(gomock.Any(), mock.Match("HGETALL", "vecdex:col:doc2")).
-		Return(mock.Result(mock.RedisMap(map[string]rueidis.RedisMessage{
-			"__content": mock.RedisString("world"),
-		})))
-
-	s := NewStoreForTest(c)
-	result, err := s.SearchList(context.Background(), "vecdex:col:idx", "*", 0, 10, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Total != 2 {
-		t.Fatalf("expected total 2, got %d", result.Total)
-	}
-	if len(result.Entries) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(result.Entries))
-	}
-	if result.Entries[0].Fields["__content"] != "hello" {
-		t.Errorf("unexpected content: %s", result.Entries[0].Fields["__content"])
-	}
-}
-
-func TestSearchList_NonWildcard(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	c := mock.NewClient(ctrl)
-
-	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "FT.SEARCH"
-		})).
-		Return(mock.Result(mock.RedisArray(
-			mock.RedisInt64(1),
-			mock.RedisString("doc:1"),
-			mock.RedisArray(mock.RedisString("f"), mock.RedisString("v")),
-		)))
-
-	s := NewStoreForTest(c)
-	result, err := s.SearchList(context.Background(), "idx", "@tag:{val}", 0, 10, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Total != 1 {
-		t.Fatalf("expected total 1, got %d", result.Total)
-	}
-}
-
-// --- Valkey-specific: SearchCount fallback to SCAN for query="*" ---
-
-func TestSearchCount_WildcardFallback(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	c := mock.NewClient(ctrl)
-
-	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "SCAN"
-		})).
-		Return(mock.Result(mock.RedisArray(
-			mock.RedisInt64(0),
-			mock.RedisArray(mock.RedisString("k1"), mock.RedisString("k2"), mock.RedisString("k3")),
-		)))
-
-	s := NewStoreForTest(c)
-	count, err := s.SearchCount(context.Background(), "vecdex:col:idx", "*")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if count != 3 {
-		t.Errorf("expected 3, got %d", count)
-	}
-}
-
-func TestSearchCount_NonWildcard(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	c := mock.NewClient(ctrl)
-
-	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			return cmd[0] == "FT.SEARCH"
-		})).
-		Return(mock.Result(mock.RedisArray(mock.RedisInt64(5))))
-
-	s := NewStoreForTest(c)
-	count, err := s.SearchCount(context.Background(), "idx", "@tag:{val}")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if count != 5 {
-		t.Errorf("expected 5, got %d", count)
-	}
-}
-
-// --- Valkey-specific: indexToKeyPrefix ---
-
-func TestIndexToKeyPrefix(t *testing.T) {
-	tests := []struct {
-		input, want string
-	}{
-		{"vecdex:myCollection:idx", "vecdex:myCollection:"},
-		{"other:index", "other:index:"},
-	}
-	for _, tc := range tests {
-		got := indexToKeyPrefix(tc.input)
-		if got != tc.want {
-			t.Errorf("indexToKeyPrefix(%q) = %q, want %q", tc.input, got, tc.want)
-		}
 	}
 }
 
@@ -766,7 +621,9 @@ func TestVectorToBytes(t *testing.T) {
 // --- buildCreateArgs / buildFieldArgs ---
 
 func TestBuildCreateArgs_Validation(t *testing.T) {
-	_, err := buildCreateArgs(&db.IndexDefinition{Name: "", Fields: []db.IndexField{{Name: "f", Type: db.IndexFieldTag}}})
+	_, err := buildCreateArgs(
+		&db.IndexDefinition{Name: "", Fields: []db.IndexField{{Name: "f", Type: db.IndexFieldTag}}},
+	)
 	if err == nil {
 		t.Error("expected error for empty name")
 	}
@@ -786,7 +643,11 @@ func TestBuildFieldArgs_AllTypes(t *testing.T) {
 		{"tag", db.IndexField{Name: "f", Type: db.IndexFieldTag}, "TAG"},
 		{"numeric", db.IndexField{Name: "f", Type: db.IndexFieldNumeric}, "NUMERIC"},
 		{"text", db.IndexField{Name: "f", Type: db.IndexFieldText}, "TEXT"},
-		{"vector", db.IndexField{Name: "f", Type: db.IndexFieldVector, VectorDim: 128, VectorAlgo: db.VectorHNSW}, "VECTOR"},
+		{
+			"vector",
+			db.IndexField{Name: "f", Type: db.IndexFieldVector, VectorDim: 128, VectorAlgo: db.VectorHNSW},
+			"VECTOR",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

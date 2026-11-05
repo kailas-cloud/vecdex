@@ -19,53 +19,53 @@ class TestCRUDLifecycle:
 
         # Create
         resp = client.put(
-            f"/collections/{name}/documents/lifecycle-1",
-            json={"content": "lifecycle test document", "tags": {"lang": "go"}},
+            f"/api/v2/collections/{name}/documents/lifecycle-1",
+            json={"content": "lifecycle test document", "metadata": {"lang": "go"}},
         )
         assert resp.status_code == 201
 
         # Read
-        resp = client.get(f"/collections/{name}/documents/lifecycle-1")
+        resp = client.get(f"/api/v2/collections/{name}/documents/lifecycle-1")
         assert resp.status_code == 200
         assert resp.json()["content"] == "lifecycle test document"
 
         # Update
         resp = client.put(
-            f"/collections/{name}/documents/lifecycle-1",
-            json={"content": "updated lifecycle document", "tags": {"lang": "rust"}},
+            f"/api/v2/collections/{name}/documents/lifecycle-1",
+            json={"content": "updated lifecycle document", "metadata": {"lang": "rust"}},
         )
         assert resp.status_code == 200
 
         # Verify update
-        resp = client.get(f"/collections/{name}/documents/lifecycle-1")
+        resp = client.get(f"/api/v2/collections/{name}/documents/lifecycle-1")
         assert resp.json()["content"] == "updated lifecycle document"
-        assert resp.json().get("tags", {}).get("lang") == "rust"
+        assert resp.json().get("metadata", {}).get("lang") == "rust"
 
         # Delete
-        resp = client.delete(f"/collections/{name}/documents/lifecycle-1")
+        resp = client.delete(f"/api/v2/collections/{name}/documents/lifecycle-1")
         assert resp.status_code == 204
 
         # Verify deletion
-        resp = client.get(f"/collections/{name}/documents/lifecycle-1")
+        resp = client.get(f"/api/v2/collections/{name}/documents/lifecycle-1")
         assert resp.status_code == 404
 
     def test_collection_lifecycle(self, client):
         name = unique_name()
 
         # Create
-        resp = client.post("/collections", json={"name": name})
+        resp = client.post("/api/v2/collections", json={"name": name})
         assert resp.status_code == 201
 
         # Read
-        resp = client.get(f"/collections/{name}")
+        resp = client.get(f"/api/v2/collections/{name}")
         assert resp.status_code == 200
 
         # Delete
-        resp = client.delete(f"/collections/{name}")
+        resp = client.delete(f"/api/v2/collections/{name}")
         assert resp.status_code == 204
 
         # Verify deletion
-        resp = client.get(f"/collections/{name}")
+        resp = client.get(f"/api/v2/collections/{name}")
         assert resp.status_code == 404
 
 
@@ -76,10 +76,11 @@ class TestSearchConsistency:
     def test_upserted_document_is_searchable(self, client, collection_factory):
         coll = collection_factory()
         name = coll["name"]
-        client.put(
-            f"/collections/{name}/documents/searchable-1",
+        created = client.put(
+            f"/api/v2/collections/{name}/documents/searchable-1",
             json={"content": "unique xylophone melody for testing"},
         )
+        assert created.status_code == 201, created.text
         time.sleep(0.5)
         resp = search_with_retry(
             client, name, query="xylophone melody", mode="semantic"
@@ -92,7 +93,7 @@ class TestSearchConsistency:
         coll = collection_factory()
         name = coll["name"]
         client.put(
-            f"/collections/{name}/documents/will-delete",
+            f"/api/v2/collections/{name}/documents/will-delete",
             json={"content": "ephemeral zephyr content for removal"},
         )
         time.sleep(0.5)
@@ -100,12 +101,12 @@ class TestSearchConsistency:
         search_with_retry(client, name, query="ephemeral zephyr", mode="semantic")
 
         # Delete
-        client.delete(f"/collections/{name}/documents/will-delete")
+        client.delete(f"/api/v2/collections/{name}/documents/will-delete")
         time.sleep(0.5)
 
         # Verify not in search
         resp = client.post(
-            f"/collections/{name}/documents/search",
+            f"/api/v2/collections/{name}/search",
             json={"query": "ephemeral zephyr", "mode": "semantic"},
         )
         assert resp.status_code == 200
@@ -125,12 +126,12 @@ class TestFilteredSearch:
 
         # Create docs with different tags
         client.put(
-            f"/collections/{name}/documents/prod-1",
-            json={"content": "production server configuration", "tags": {"env": "prod"}},
+            f"/api/v2/collections/{name}/documents/prod-1",
+            json={"content": "production server configuration", "metadata": {"env": "prod"}},
         )
         client.put(
-            f"/collections/{name}/documents/dev-1",
-            json={"content": "development server configuration", "tags": {"env": "dev"}},
+            f"/api/v2/collections/{name}/documents/dev-1",
+            json={"content": "development server configuration", "metadata": {"env": "dev"}},
         )
         time.sleep(0.5)
 
@@ -143,7 +144,7 @@ class TestFilteredSearch:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("tags", {}).get("env") == "prod"
+            assert item.get("metadata", {}).get("env") == "prod"
 
 
 @pytest.mark.p0
@@ -156,7 +157,7 @@ class TestBatchWorkflow:
 
         # Batch upsert
         resp = client.post(
-            f"/collections/{name}/documents/batch-upsert",
+            f"/api/v2/collections/{name}/documents/batch-upsert",
             json={
                 "documents": [
                     {"id": "bw-1", "content": "quantum computing fundamentals"},
@@ -184,21 +185,21 @@ class TestBatchWorkflow:
         # Create docs
         for i in range(3):
             client.put(
-                f"/collections/{name}/documents/bd-{i}",
+                f"/api/v2/collections/{name}/documents/bd-{i}",
                 json={"content": f"batch delete test document number {i}"},
             )
         time.sleep(0.5)
 
         # Batch delete
         resp = client.post(
-            f"/collections/{name}/documents/batch-delete",
-            json={"ids": ["bd-0", "bd-1", "bd-2"]},
+            f"/api/v2/collections/{name}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in ["bd-0", "bd-1", "bd-2"]]},
         )
         assert resp.json()["succeeded"] == 3
 
         # Verify documents gone
         for i in range(3):
-            resp = client.get(f"/collections/{name}/documents/bd-{i}")
+            resp = client.get(f"/api/v2/collections/{name}/documents/bd-{i}")
             assert resp.status_code == 404
 
 
@@ -213,32 +214,32 @@ class TestPatchFlow:
         name = coll["name"]
 
         client.put(
-            f"/collections/{name}/documents/patch-1",
-            json={"content": "original content stays", "tags": {"status": "draft"}},
+            f"/api/v2/collections/{name}/documents/patch-1",
+            json={"content": "original content stays", "metadata": {"status": "draft"}},
         )
 
         client.patch(
-            f"/collections/{name}/documents/patch-1",
-            json={"tags": {"status": "published"}},
+            f"/api/v2/collections/{name}/documents/patch-1",
+            json={"metadata": {"status": "published"}},
         )
 
-        resp = client.get(f"/collections/{name}/documents/patch-1")
+        resp = client.get(f"/api/v2/collections/{name}/documents/patch-1")
         data = resp.json()
         assert data["content"] == "original content stays"
-        assert data.get("tags", {}).get("status") == "published"
+        assert data.get("metadata", {}).get("status") == "published"
 
     def test_patch_content_updates_searchable_text(self, client, collection_factory):
         coll = collection_factory()
         name = coll["name"]
 
         client.put(
-            f"/collections/{name}/documents/patch-2",
+            f"/api/v2/collections/{name}/documents/patch-2",
             json={"content": "old content about nothing"},
         )
         time.sleep(0.5)
 
         client.patch(
-            f"/collections/{name}/documents/patch-2",
+            f"/api/v2/collections/{name}/documents/patch-2",
             json={"content": "specialized quantum chromodynamics analysis"},
         )
         time.sleep(0.5)
@@ -264,18 +265,18 @@ class TestPatchVsPutP1:
         )
         name = coll["name"]
         client.put(
-            f"/collections/{name}/documents/replace-1",
-            json={"content": "v1", "tags": {"a": "1", "b": "2"}},
+            f"/api/v2/collections/{name}/documents/replace-1",
+            json={"content": "v1", "metadata": {"a": "1", "b": "2"}},
         )
         client.put(
-            f"/collections/{name}/documents/replace-1",
-            json={"content": "v2", "tags": {"a": "updated"}},
+            f"/api/v2/collections/{name}/documents/replace-1",
+            json={"content": "v2", "metadata": {"a": "updated"}},
         )
-        data = client.get(f"/collections/{name}/documents/replace-1").json()
+        data = client.get(f"/api/v2/collections/{name}/documents/replace-1").json()
         assert data["content"] == "v2"
-        assert data.get("tags", {}).get("a") == "updated"
+        assert data.get("metadata", {}).get("a") == "updated"
         # b should be gone after PUT replace
-        assert data.get("tags", {}).get("b") is None
+        assert data.get("metadata", {}).get("b") is None
 
     def test_patch_merges_tags(self, client, collection_factory):
         """PATCH only touches specified fields."""
@@ -287,16 +288,16 @@ class TestPatchVsPutP1:
         )
         name = coll["name"]
         client.put(
-            f"/collections/{name}/documents/merge-1",
-            json={"content": "v1", "tags": {"a": "1", "b": "2"}},
+            f"/api/v2/collections/{name}/documents/merge-1",
+            json={"content": "v1", "metadata": {"a": "1", "b": "2"}},
         )
         client.patch(
-            f"/collections/{name}/documents/merge-1",
-            json={"tags": {"a": "updated"}},
+            f"/api/v2/collections/{name}/documents/merge-1",
+            json={"metadata": {"a": "updated"}},
         )
-        data = client.get(f"/collections/{name}/documents/merge-1").json()
-        assert data.get("tags", {}).get("a") == "updated"
-        assert data.get("tags", {}).get("b") == "2"
+        data = client.get(f"/api/v2/collections/{name}/documents/merge-1").json()
+        assert data.get("metadata", {}).get("a") == "updated"
+        assert data.get("metadata", {}).get("b") == "2"
 
 
 @pytest.mark.p1
@@ -308,15 +309,15 @@ class TestMultiCollectionP1:
         coll1 = collection_factory()
         coll2 = collection_factory()
         client.put(
-            f"/collections/{coll1['name']}/documents/shared-id",
+            f"/api/v2/collections/{coll1['name']}/documents/shared-id",
             json={"content": "collection one content"},
         )
         client.put(
-            f"/collections/{coll2['name']}/documents/shared-id",
+            f"/api/v2/collections/{coll2['name']}/documents/shared-id",
             json={"content": "collection two content"},
         )
-        d1 = client.get(f"/collections/{coll1['name']}/documents/shared-id").json()
-        d2 = client.get(f"/collections/{coll2['name']}/documents/shared-id").json()
+        d1 = client.get(f"/api/v2/collections/{coll1['name']}/documents/shared-id").json()
+        d2 = client.get(f"/api/v2/collections/{coll2['name']}/documents/shared-id").json()
         assert d1["content"] == "collection one content"
         assert d2["content"] == "collection two content"
 
@@ -324,15 +325,15 @@ class TestMultiCollectionP1:
         coll1 = collection_factory()
         coll2 = collection_factory()
         client.put(
-            f"/collections/{coll1['name']}/documents/doc-x",
+            f"/api/v2/collections/{coll1['name']}/documents/doc-x",
             json={"content": "keep me"},
         )
         client.put(
-            f"/collections/{coll2['name']}/documents/doc-x",
+            f"/api/v2/collections/{coll2['name']}/documents/doc-x",
             json={"content": "keep me too"},
         )
-        client.delete(f"/collections/{coll1['name']}")
-        resp = client.get(f"/collections/{coll2['name']}/documents/doc-x")
+        client.delete(f"/api/v2/collections/{coll1['name']}")
+        resp = client.get(f"/api/v2/collections/{coll2['name']}/documents/doc-x")
         assert resp.status_code == 200
         assert resp.json()["content"] == "keep me too"
 
@@ -346,14 +347,14 @@ class TestSearchAfterUpdateP1:
         name = coll["name"]
 
         client.put(
-            f"/collections/{name}/documents/evolve-1",
+            f"/api/v2/collections/{name}/documents/evolve-1",
             json={"content": "original topic about gardening and flowers"},
         )
         time.sleep(0.5)
 
         # Update to completely different topic
         client.put(
-            f"/collections/{name}/documents/evolve-1",
+            f"/api/v2/collections/{name}/documents/evolve-1",
             json={"content": "quantum physics and particle accelerators"},
         )
         time.sleep(0.5)
@@ -379,8 +380,8 @@ class TestFullLifecycleFlow:
         # PUT 5 docs
         for i in range(5):
             resp = client.put(
-                f"/collections/{name}/documents/fl-{i}",
-                json={"content": f"lifecycle document number {i}", "tags": {"type": "test"}},
+                f"/api/v2/collections/{name}/documents/fl-{i}",
+                json={"content": f"lifecycle document number {i}", "metadata": {"type": "test"}},
             )
             assert resp.status_code == 201
 
@@ -391,14 +392,14 @@ class TestFullLifecycleFlow:
         assert len(resp.json()["items"]) > 0
 
         # DELETE 2 docs
-        client.delete(f"/collections/{name}/documents/fl-0")
-        client.delete(f"/collections/{name}/documents/fl-1")
+        client.delete(f"/api/v2/collections/{name}/documents/fl-0")
+        client.delete(f"/api/v2/collections/{name}/documents/fl-1")
 
         time.sleep(0.3)
 
         # Search again — deleted docs should be gone
         resp = client.post(
-            f"/collections/{name}/documents/search",
+            f"/api/v2/collections/{name}/search",
             json={"query": "lifecycle document", "mode": "semantic"},
         )
         ids = [item["id"] for item in resp.json()["items"]]
@@ -406,8 +407,8 @@ class TestFullLifecycleFlow:
         assert "fl-1" not in ids
 
         # DELETE collection
-        client.delete(f"/collections/{name}")
-        resp = client.get(f"/collections/{name}")
+        client.delete(f"/api/v2/collections/{name}")
+        resp = client.get(f"/api/v2/collections/{name}")
         assert resp.status_code == 404
 
 
@@ -423,15 +424,15 @@ class TestPatchSearchFlow:
         name = coll["name"]
 
         client.put(
-            f"/collections/{name}/documents/ps-1",
-            json={"content": "patchable document for search", "tags": {"status": "draft"}},
+            f"/api/v2/collections/{name}/documents/ps-1",
+            json={"content": "patchable document for search", "metadata": {"status": "draft"}},
         )
         time.sleep(0.5)
 
         # Patch status
         client.patch(
-            f"/collections/{name}/documents/ps-1",
-            json={"tags": {"status": "published"}},
+            f"/api/v2/collections/{name}/documents/ps-1",
+            json={"metadata": {"status": "published"}},
         )
         time.sleep(0.3)
 
@@ -454,21 +455,21 @@ class TestPatchSearchFlow:
         name = coll["name"]
 
         client.put(
-            f"/collections/{name}/documents/del-tag-1",
-            json={"content": "tagged document for removal test", "tags": {"env": "prod"}},
+            f"/api/v2/collections/{name}/documents/del-tag-1",
+            json={"content": "tagged document for removal test", "metadata": {"env": "prod"}},
         )
         time.sleep(0.5)
 
         # Remove tag
         client.patch(
-            f"/collections/{name}/documents/del-tag-1",
-            json={"tags": {"env": None}},
+            f"/api/v2/collections/{name}/documents/del-tag-1",
+            json={"metadata": {"env": None}},
         )
         time.sleep(0.3)
 
         # Search with old tag filter should not find it
         resp = client.post(
-            f"/collections/{name}/documents/search",
+            f"/api/v2/collections/{name}/search",
             json={
                 "query": "tagged document",
                 "mode": "semantic",
@@ -491,7 +492,7 @@ class TestBatchPaginationFlow:
         # Batch upsert 50 docs
         docs = [{"id": f"bp-{i}", "content": f"batch paginate doc {i}"} for i in range(50)]
         resp = client.post(
-            f"/collections/{name}/documents/batch-upsert",
+            f"/api/v2/collections/{name}/documents/batch-upsert",
             json={"documents": docs},
         )
         assert resp.json()["succeeded"] == 50
@@ -503,7 +504,7 @@ class TestBatchPaginationFlow:
             params = {"limit": 10}
             if cursor:
                 params["cursor"] = cursor
-            resp = client.get(f"/collections/{name}/documents", params=params)
+            resp = client.get(f"/api/v2/collections/{name}/documents", params=params)
             data = resp.json()
             all_ids.extend(item["id"] for item in data["items"])
             if not data["has_more"]:
@@ -514,13 +515,13 @@ class TestBatchPaginationFlow:
 
         # Batch delete all
         resp = client.post(
-            f"/collections/{name}/documents/batch-delete",
-            json={"ids": all_ids},
+            f"/api/v2/collections/{name}/documents/batch-delete",
+            json={"documents": [{"id": doc_id} for doc_id in all_ids]},
         )
         assert resp.json()["succeeded"] == 50
 
         # List → 0
-        resp = client.get(f"/collections/{name}/documents")
+        resp = client.get(f"/api/v2/collections/{name}/documents")
         assert len(resp.json()["items"]) == 0
 
 
@@ -533,10 +534,10 @@ class TestDocumentCountFlow:
         coll = collection_factory()
         name = coll["name"]
 
-        client.put(f"/collections/{name}/documents/dup-1", json={"content": "v1"})
-        client.put(f"/collections/{name}/documents/dup-1", json={"content": "v2"})
+        client.put(f"/api/v2/collections/{name}/documents/dup-1", json={"content": "v1"})
+        client.put(f"/api/v2/collections/{name}/documents/dup-1", json={"content": "v2"})
 
-        data = client.get(f"/collections/{name}").json()
+        data = client.get(f"/api/v2/collections/{name}").json()
         count = data.get("document_count") or data.get("documentCount", 0)
         assert count == 1
 
@@ -550,7 +551,7 @@ class TestSearchModeComparisonP1:
         coll = populated_collection["name"]
         for mode in ("semantic", "keyword", "hybrid"):
             resp = client.post(
-                f"/collections/{coll}/documents/search",
+                f"/api/v2/collections/{coll}/search",
                 json={"query": "programming", "mode": mode},
             )
             assert resp.status_code == 200
@@ -576,19 +577,19 @@ class TestPutPatchMergeFlow:
 
         # PUT with a and b
         client.put(
-            f"/collections/{name}/documents/merge-flow",
-            json={"content": "merge test", "tags": {"a": "1", "b": "2"}},
+            f"/api/v2/collections/{name}/documents/merge-flow",
+            json={"content": "merge test", "metadata": {"a": "1", "b": "2"}},
         )
 
         # PATCH adds c, updates b
         client.patch(
-            f"/collections/{name}/documents/merge-flow",
-            json={"tags": {"b": "updated", "c": "3"}},
+            f"/api/v2/collections/{name}/documents/merge-flow",
+            json={"metadata": {"b": "updated", "c": "3"}},
         )
 
         # GET confirms
-        data = client.get(f"/collections/{name}/documents/merge-flow").json()
-        tags = data.get("tags", {})
+        data = client.get(f"/api/v2/collections/{name}/documents/merge-flow").json()
+        tags = data.get("metadata", {})
         assert tags.get("a") == "1"
         assert tags.get("b") == "updated"
         assert tags.get("c") == "3"
@@ -604,17 +605,17 @@ class TestPutPatchMergeFlow:
         name = coll["name"]
 
         client.put(
-            f"/collections/{name}/documents/replace-flow",
-            json={"content": "v1", "tags": {"a": "1", "b": "2"}},
+            f"/api/v2/collections/{name}/documents/replace-flow",
+            json={"content": "v1", "metadata": {"a": "1", "b": "2"}},
         )
         client.put(
-            f"/collections/{name}/documents/replace-flow",
-            json={"content": "v2", "tags": {"a": "new"}},
+            f"/api/v2/collections/{name}/documents/replace-flow",
+            json={"content": "v2", "metadata": {"a": "new"}},
         )
 
-        data = client.get(f"/collections/{name}/documents/replace-flow").json()
-        assert data.get("tags", {}).get("a") == "new"
-        assert data.get("tags", {}).get("b") is None
+        data = client.get(f"/api/v2/collections/{name}/documents/replace-flow").json()
+        assert data.get("metadata", {}).get("a") == "new"
+        assert data.get("metadata", {}).get("b") is None
 
 
 @pytest.mark.p1
@@ -625,15 +626,15 @@ class TestUsageTrackingFlow:
         """12.10.1: Usage tracking: tokens increase after PUT."""
         coll = collection_factory()
 
-        before = client.get("/usage", params={"period": "day"}).json()
+        before = client.get("/api/v2/usage", params={"period": "day"}).json()
         before_tokens = before.get("usage", {}).get("tokens", 0)
 
         client.put(
-            f"/collections/{coll['name']}/documents/usage-track",
+            f"/api/v2/collections/{coll['name']}/documents/usage-track",
             json={"content": "usage tracking flow test content for embedding"},
         )
 
-        after = client.get("/usage", params={"period": "day"}).json()
+        after = client.get("/api/v2/usage", params={"period": "day"}).json()
         after_tokens = after.get("usage", {}).get("tokens", 0)
         assert after_tokens >= before_tokens
 
@@ -650,16 +651,16 @@ class TestPreKNNFilterFlow:
         name = coll["name"]
 
         client.put(
-            f"/collections/{name}/documents/prod-1",
-            json={"content": "production server config", "tags": {"env": "prod"}},
+            f"/api/v2/collections/{name}/documents/prod-1",
+            json={"content": "production server config", "metadata": {"env": "prod"}},
         )
         client.put(
-            f"/collections/{name}/documents/dev-1",
-            json={"content": "development server config", "tags": {"env": "dev"}},
+            f"/api/v2/collections/{name}/documents/dev-1",
+            json={"content": "development server config", "metadata": {"env": "dev"}},
         )
         client.put(
-            f"/collections/{name}/documents/staging-1",
-            json={"content": "staging server config", "tags": {"env": "staging"}},
+            f"/api/v2/collections/{name}/documents/staging-1",
+            json={"content": "staging server config", "metadata": {"env": "staging"}},
         )
         time.sleep(0.5)
 
@@ -672,7 +673,7 @@ class TestPreKNNFilterFlow:
         )
         data = resp.json()
         for item in data["items"]:
-            assert item.get("tags", {}).get("env") == "prod"
+            assert item.get("metadata", {}).get("env") == "prod"
 
 
 @pytest.mark.p0
@@ -687,8 +688,8 @@ class TestTagWithSpacesSearchFlow:
         name = coll["name"]
 
         client.put(
-            f"/collections/{name}/documents/space-tag",
-            json={"content": "spaced tag document", "tags": {"label": "hello world"}},
+            f"/api/v2/collections/{name}/documents/space-tag",
+            json={"content": "spaced tag document", "metadata": {"label": "hello world"}},
         )
         time.sleep(0.5)
 

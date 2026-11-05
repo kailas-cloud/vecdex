@@ -5,11 +5,12 @@ import (
 	"fmt"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
-	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
+	"github.com/kailas-cloud/vecdex/internal/domain/metadata"
 	"github.com/kailas-cloud/vecdex/internal/usecase/ingestion"
+	"github.com/kailas-cloud/vecdex/internal/usecase/write"
 )
 
 // Service handles document CRUD with automatic vectorization.
@@ -56,16 +57,28 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc
 		return false, fmt.Errorf("get collection: %w", err)
 	}
 
-	if err := col.CheckEmbeddingSpace(s.embeddingSpace); err != nil {
-		return false, fmt.Errorf("upsert embedding space: %w", err)
-	}
 	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
+	if err := doc.ProjectMetadata(col.Fields()); err != nil {
+		return false, fmt.Errorf("project source metadata: %w", err)
+	}
 	if err := s.validateDocFields(doc, col); err != nil {
 		return false, err
 	}
 
 	if doc.Content() == "" {
 		return false, fmt.Errorf("content is required: %w", domain.ErrInvalidSchema)
+	}
+	ctx, replay, done, err := write.Upsert(ctx, s.repo, collectionName, doc)
+	if err != nil {
+		return false, fmt.Errorf("upsert request: %w", err)
+	}
+	defer done()
+	if replay != nil {
+		doc.SetVersion(replay.Version)
+		return replay.Created, nil
+	}
+	if err := col.CheckEmbeddingSpace(s.embeddingSpace); err != nil {
+		return false, fmt.Errorf("upsert embedding space: %w", err)
 	}
 
 	prepared, err := ingestion.Prepare(ctx, s.docEmbedder, doc.Content(), col.VectorDim())
@@ -125,12 +138,22 @@ func (s *Service) List(
 
 // Delete removes a document.
 func (s *Service) Delete(ctx context.Context, collectionName, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, ingestion.DocumentTimeout)
+	defer cancel()
 	col, err := s.colls.Get(ctx, collectionName)
 	if err != nil {
 		return fmt.Errorf("get collection: %w", err)
 	}
 
 	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
+	ctx, replay, done, err := write.Delete(ctx, s.repo, collectionName, id)
+	if err != nil {
+		return fmt.Errorf("delete request: %w", err)
+	}
+	defer done()
+	if replay != nil {
+		return nil
+	}
 	if err := s.repo.Delete(ctx, collectionName, id); err != nil {
 		return fmt.Errorf("delete document: %w", err)
 	}
@@ -138,18 +161,36 @@ func (s *Service) Delete(ctx context.Context, collectionName, id string) error {
 }
 
 // Patch applies a partial update to a document.
-func (s *Service) Patch(ctx context.Context, collectionName, id string, p patch.Patch) (domdoc.Document, error) {
+func (s *Service) Patch(ctx context.Context, collectionName, id string, p patch.Patch) (domdoc.WriteResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, ingestion.DocumentTimeout)
 	defer cancel()
 	col, err := s.colls.Get(ctx, collectionName)
 	if err != nil {
-		return domdoc.Document{}, fmt.Errorf("get collection: %w", err)
+		return domdoc.WriteResult{}, fmt.Errorf("get collection: %w", err)
 	}
 
 	ctx = domain.WithCollectionGeneration(ctx, col.Generation())
+	if p.HasMetadata() {
+		update, err := metadata.Merge(metadata.Object{}, p.Metadata())
+		if err != nil {
+			return domdoc.WriteResult{}, fmt.Errorf("validate metadata patch: %w", err)
+		}
+		if _, _, err := update.Project(col.Fields()); err != nil {
+			return domdoc.WriteResult{}, fmt.Errorf("validate metadata indexes: %w", err)
+		}
+		p = p.WithMetadataFields(col.Fields())
+	}
 	// Validate patched fields against collection schema
 	if err := s.validatePatchFields(p, col); err != nil {
-		return domdoc.Document{}, err
+		return domdoc.WriteResult{}, err
+	}
+	ctx, replay, done, err := write.Patch(ctx, s.repo, collectionName, id, p)
+	if err != nil {
+		return domdoc.WriteResult{}, fmt.Errorf("patch request: %w", err)
+	}
+	defer done()
+	if replay != nil {
+		return *replay, nil
 	}
 
 	// Re-vectorize when content changes.
@@ -157,27 +198,22 @@ func (s *Service) Patch(ctx context.Context, collectionName, id string, p patch.
 	var fragments []domdoc.Fragment
 	if p.HasContent() {
 		if err := col.CheckEmbeddingSpace(s.embeddingSpace); err != nil {
-			return domdoc.Document{}, fmt.Errorf("patch embedding space: %w", err)
+			return domdoc.WriteResult{}, fmt.Errorf("patch embedding space: %w", err)
 		}
 		prepared, err := ingestion.Prepare(ctx, s.docEmbedder, *p.Content(), col.VectorDim())
 		domain.UsageFromContext(ctx).AddEmbedding(prepared.TotalTokens, prepared.UsageUnknown)
 		if err != nil {
-			return domdoc.Document{}, fmt.Errorf("prepare updated document: %w", err)
+			return domdoc.WriteResult{}, fmt.Errorf("prepare updated document: %w", err)
 		}
 		newVector = prepared.Vector
 		fragments = prepared.Fragments
 	}
 
-	if err := s.repo.Patch(ctx, collectionName, id, p, newVector, fragments); err != nil {
-		return domdoc.Document{}, fmt.Errorf("patch document: %w", err)
-	}
-
-	// Return the updated document
-	updated, err := s.repo.Get(ctx, collectionName, id)
+	result, err := s.repo.Patch(ctx, collectionName, id, p, newVector, fragments)
 	if err != nil {
-		return domdoc.Document{}, fmt.Errorf("get patched document: %w", err)
+		return domdoc.WriteResult{}, fmt.Errorf("patch document: %w", err)
 	}
-	return updated, nil
+	return result, nil
 }
 
 // Count returns the number of documents in a collection.
@@ -215,11 +251,8 @@ func (s *Service) validatePatchFields(
 func validateSchemaFields(
 	tagKeys, numericKeys []string, fields []field.Field,
 ) error {
-	fieldTypes := make(map[string]field.Type, len(fields)+len(domcol.SystemFields()))
+	fieldTypes := make(map[string]field.Type, len(fields))
 	for _, f := range fields {
-		fieldTypes[f.Name()] = f.FieldType()
-	}
-	for _, f := range domcol.SystemFields() {
 		fieldTypes[f.Name()] = f.FieldType()
 	}
 

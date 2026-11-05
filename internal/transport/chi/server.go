@@ -18,6 +18,7 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
+	"github.com/kailas-cloud/vecdex/internal/domain/metadata"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/mode"
 	"github.com/kailas-cloud/vecdex/internal/domain/search/request"
@@ -76,7 +77,9 @@ func NewServer(
 		maxBatchSize: defaultMaxBatchSize,
 	}
 	s.errorHandlers = []errorHandler{
-		revisionConflictHandler,
+		sentinelHandler(domain.ErrIdempotencyConflict, http.StatusConflict, gen.ErrorResponseCodeIdempotencyConflict),
+		sentinelHandler(domain.ErrIdempotencyInProgress, http.StatusConflict, gen.ErrorResponseCodeIdempotencyInProgress),
+		versionConflictHandler,
 		sentinelHandler(
 			domain.ErrEmbeddingSpaceMismatch,
 			http.StatusConflict,
@@ -111,7 +114,7 @@ func (s *Server) WithMaxBatchSize(size int) *Server {
 // CreateCollection handles POST /collections.
 func (s *Server) CreateCollection(w http.ResponseWriter, r *http.Request, params gen.CreateCollectionParams) {
 	var req gen.CreateCollectionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
 		return
 	}
@@ -248,14 +251,20 @@ func (s *Server) UpsertDocument(
 	id gen.DocumentId,
 	params gen.UpsertDocumentParams,
 ) {
-	revision, err := expectedRevision(params.IfMatch)
+	sourceVersion, err := expectedVersion(params.IfMatch)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
+		return
+	}
+
+	requestCtx, err := idempotencyContext(r.Context(), params.IdempotencyKey)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
 		return
 	}
 
 	var req gen.UpsertDocumentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
 		return
 	}
@@ -266,8 +275,8 @@ func (s *Server) UpsertDocument(
 		return
 	}
 
-	ctx, usage := domain.NewContextWithUsage(r.Context())
-	created, err := s.documents.Upsert(domain.WithExpectedRevision(ctx, revision), collection, &doc)
+	ctx, usage := domain.NewContextWithUsage(requestCtx)
+	created, err := s.documents.Upsert(domain.WithExpectedVersion(ctx, sourceVersion), collection, &doc)
 	setEmbeddingHeaders(w, usage)
 	if err != nil {
 		s.handleDomainError(w, err)
@@ -277,12 +286,12 @@ func (s *Server) UpsertDocument(
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
-		w.Header().Set("Location", fmt.Sprintf("/collections/%s/documents/%s", collection, id))
+		w.Header().Set("Location", fmt.Sprintf("/api/v2/collections/%s/documents/%s", collection, id))
 	}
 	setEmbeddingHeaders(w, usage)
-	w.Header().Set("ETag", strconv.Quote(strconv.Itoa(doc.Revision())))
+	w.Header().Set("ETag", strconv.Quote(doc.Version()))
 
-	writeJSON(w, status, documentToGen(&doc))
+	writeJSON(w, status, gen.WriteResult{Id: id, Version: doc.Version(), Created: created})
 }
 
 // GetDocument handles GET /collections/{collection}/documents/{id}.
@@ -299,8 +308,13 @@ func (s *Server) GetDocument(
 		return
 	}
 
-	w.Header().Set("ETag", strconv.Quote(strconv.Itoa(doc.Revision())))
-	writeJSON(w, http.StatusOK, documentToGen(&doc))
+	w.Header().Set("ETag", strconv.Quote(doc.Version()))
+	body, err := documentToGen(&doc)
+	if err != nil {
+		s.handleDomainError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // DeleteDocument handles DELETE /collections/{collection}/documents/{id}.
@@ -311,7 +325,18 @@ func (s *Server) DeleteDocument(
 	id gen.DocumentId,
 	params gen.DeleteDocumentParams,
 ) {
-	if err := s.documents.Delete(r.Context(), collection, id); err != nil {
+	sourceVersion, err := expectedVersion(params.IfMatch)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
+		return
+	}
+	requestCtx, err := idempotencyContext(r.Context(), params.IdempotencyKey)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
+		return
+	}
+
+	if err := s.documents.Delete(domain.WithExpectedVersion(requestCtx, sourceVersion), collection, id); err != nil {
 		s.handleDomainError(w, err)
 		return
 	}
@@ -342,8 +367,12 @@ func (s *Server) ListDocuments(
 	}
 
 	items := make([]gen.DocumentResponse, len(docs))
-	for i, d := range docs {
-		items[i] = documentToGen(&d)
+	for i := range docs {
+		items[i], err = documentToGen(&docs[i])
+		if err != nil {
+			s.handleDomainError(w, err)
+			return
+		}
 	}
 
 	resp := gen.DocumentCursorListResponse{
@@ -365,14 +394,20 @@ func (s *Server) PatchDocument(
 	id gen.DocumentId,
 	params gen.PatchDocumentParams,
 ) {
-	revision, err := expectedRevision(params.IfMatch)
+	sourceVersion, err := expectedVersion(params.IfMatch)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
+		return
+	}
+
+	requestCtx, err := idempotencyContext(r.Context(), params.IdempotencyKey)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
 		return
 	}
 
 	var req gen.PatchDocumentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
 		return
 	}
@@ -383,8 +418,8 @@ func (s *Server) PatchDocument(
 		return
 	}
 
-	ctx, usage := domain.NewContextWithUsage(r.Context())
-	doc, err := s.documents.Patch(domain.WithExpectedRevision(ctx, revision), collection, id, p)
+	ctx, usage := domain.NewContextWithUsage(requestCtx)
+	doc, err := s.documents.Patch(domain.WithExpectedVersion(ctx, sourceVersion), collection, id, p)
 	setEmbeddingHeaders(w, usage)
 	if err != nil {
 		s.handleDomainError(w, err)
@@ -392,8 +427,8 @@ func (s *Server) PatchDocument(
 	}
 
 	setEmbeddingHeaders(w, usage)
-	w.Header().Set("ETag", strconv.Quote(strconv.Itoa(doc.Revision())))
-	writeJSON(w, http.StatusOK, documentToGen(&doc))
+	w.Header().Set("ETag", strconv.Quote(doc.Version))
+	writeJSON(w, http.StatusOK, gen.WriteResult{Id: doc.ID, Version: doc.Version, Created: doc.Created})
 }
 
 // SearchDocuments handles POST /collections/{collection}/search.
@@ -404,7 +439,7 @@ func (s *Server) SearchDocuments(
 	params gen.SearchDocumentsParams,
 ) {
 	var req gen.SearchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
 		return
 	}
@@ -425,13 +460,14 @@ func (s *Server) SearchDocuments(
 
 	items := make([]gen.SearchResultItem, len(results))
 	for i := range results {
-		items[i] = searchResultToGen(&results[i])
+		items[i], err = searchResultToGen(&results[i])
+		if err != nil {
+			s.handleDomainError(w, err)
+			return
+		}
 	}
 
-	limit := len(items)
-	if req.Limit != nil {
-		limit = *req.Limit
-	}
+	limit := searchReq.Limit()
 
 	setEmbeddingHeaders(w, usage)
 	writeJSON(w, http.StatusOK, gen.SearchResultListResponse{
@@ -451,7 +487,7 @@ func (s *Server) FindSimilarDocuments(
 ) {
 	var req gen.SimilarRequest
 	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		if err := decodeJSONBody(r, &req); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
 			return
 		}
@@ -471,13 +507,14 @@ func (s *Server) FindSimilarDocuments(
 
 	items := make([]gen.SearchResultItem, len(results))
 	for i := range results {
-		items[i] = searchResultToGen(&results[i])
+		items[i], err = searchResultToGen(&results[i])
+		if err != nil {
+			s.handleDomainError(w, err)
+			return
+		}
 	}
 
-	limit := len(items)
-	if req.Limit != nil {
-		limit = *req.Limit
-	}
+	limit := simReq.Limit()
 
 	writeJSON(w, http.StatusOK, gen.SearchResultListResponse{
 		Items: items,
@@ -493,8 +530,14 @@ func (s *Server) BatchUpsert(
 	collection gen.CollectionName,
 	params gen.BatchUpsertParams,
 ) {
+	if r.Header.Get("Idempotency-Key") != "" {
+		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed,
+			"Use idempotency_key per document in batches")
+		return
+	}
+
 	var req gen.BatchUpsertRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
 		return
 	}
@@ -505,14 +548,15 @@ func (s *Server) BatchUpsert(
 		return
 	}
 
-	docs := make([]domdoc.Document, 0, len(req.Documents))
+	docs := make([]dombatch.UpsertItem, 0, len(req.Documents))
 	for _, item := range req.Documents {
 		doc, err := batchItemToDoc(item)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed, err.Error())
 			return
 		}
-		docs = append(docs, doc)
+		docs = append(docs, dombatch.UpsertItem{
+			Document: doc, IfVersion: item.IfVersion, IdempotencyKey: item.IdempotencyKey})
 	}
 
 	ctx, usage := domain.NewContextWithUsage(r.Context())
@@ -544,19 +588,29 @@ func (s *Server) BatchDelete(
 	collection gen.CollectionName,
 	params gen.BatchDeleteParams,
 ) {
+	if r.Header.Get("Idempotency-Key") != "" {
+		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed,
+			"Use idempotency_key per document in batches")
+		return
+	}
+
 	var req gen.BatchDeleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeBadRequest, "Invalid request body: "+err.Error())
 		return
 	}
 
-	if len(req.Ids) == 0 || len(req.Ids) > s.maxBatchSize {
+	if len(req.Documents) == 0 || len(req.Documents) > s.maxBatchSize {
 		writeError(w, http.StatusBadRequest, gen.ErrorResponseCodeValidationFailed,
-			fmt.Sprintf("ids count must be between 1 and %d", s.maxBatchSize))
+			fmt.Sprintf("documents count must be between 1 and %d", s.maxBatchSize))
 		return
 	}
 
-	results := s.batch.Delete(r.Context(), collection, req.Ids)
+	commands := make([]dombatch.DeleteItem, len(req.Documents))
+	for i, item := range req.Documents {
+		commands[i] = dombatch.DeleteItem{ID: item.Id, IfVersion: item.IfVersion, IdempotencyKey: item.IdempotencyKey}
+	}
+	results := s.batch.Delete(r.Context(), collection, commands)
 
 	succeeded, failed := 0, 0
 	items := make([]gen.BatchResultItem, len(results))
@@ -692,6 +746,8 @@ func writeError(w http.ResponseWriter, status int, code gen.ErrorResponseCode, m
 // safeDomainMessage returns a sentinel error message for the client without exposing internals.
 func safeDomainMessage(err error) string {
 	sentinels := []error{
+		domain.ErrIdempotencyConflict,
+		domain.ErrIdempotencyInProgress,
 		domain.ErrNotFound,
 		domain.ErrDocumentNotFound,
 		domain.ErrAlreadyExists,
@@ -725,22 +781,18 @@ func sentinelHandler(sentinel error, status int, code gen.ErrorResponseCode) err
 	}
 }
 
-// revisionConflictHandler handles ErrRevisionConflict with ETag header and extra fields.
-func revisionConflictHandler(w http.ResponseWriter, err error, msg string) bool {
+// versionConflictHandler exposes the current opaque validator when it exists.
+func versionConflictHandler(w http.ResponseWriter, err error, msg string) bool {
 	if !errors.Is(err, domain.ErrRevisionConflict) {
 		return false
 	}
-	var rce *domain.RevisionConflictError
-	if errors.As(err, &rce) {
-		w.Header().Set("ETag", strconv.Quote(strconv.Itoa(rce.CurrentRevision)))
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"code":             gen.ErrorResponseCodeRevisionConflict,
-			"message":          msg,
-			"current_revision": rce.CurrentRevision,
-		})
-		return true
+	response := gen.ErrorResponse{Code: gen.ErrorResponseCodeVersionConflict, Message: msg}
+	var conflict *domain.VersionConflictError
+	if errors.As(err, &conflict) && conflict.CurrentVersion != "" {
+		w.Header().Set("ETag", strconv.Quote(conflict.CurrentVersion))
+		response.CurrentVersion = &conflict.CurrentVersion
 	}
-	writeError(w, http.StatusConflict, gen.ErrorResponseCodeRevisionConflict, msg)
+	writeJSON(w, http.StatusConflict, response)
 	return true
 }
 
@@ -808,97 +860,54 @@ func fieldsFromGen(ff *[]gen.FieldDefinition) ([]field.Field, error) {
 	return fields, nil
 }
 
-func documentToGen(doc *domdoc.Document) gen.DocumentResponse {
-	var tags *map[string]string
-	if len(doc.Tags()) > 0 {
-		t := doc.Tags()
-		tags = &t
+func documentToGen(doc *domdoc.Document) (gen.DocumentResponse, error) {
+	value, err := sourceMetadataJSON(doc.Metadata(), doc.Tags(), doc.Numerics())
+	if err != nil {
+		return gen.DocumentResponse{}, err
 	}
-
-	var numerics *map[string]float32
-	if len(doc.Numerics()) > 0 {
-		n := make(map[string]float32, len(doc.Numerics()))
-		for k, v := range doc.Numerics() {
-			n[k] = float32(v)
-		}
-		numerics = &n
-	}
-
-	return gen.DocumentResponse{
-		Id:       doc.ID(),
-		Content:  doc.Content(),
-		Revision: doc.Revision(),
-		Tags:     tags,
-		Numerics: numerics,
-	}
+	return gen.DocumentResponse{Id: doc.ID(), Content: doc.Content(), Version: doc.Version(), Metadata: value,
+		ExpiresAt: optionalExpiresAt(doc.ExpiresAt())}, nil
 }
 
-func documentFromUpsert(
-	id string, req gen.UpsertDocumentRequest,
-) (domdoc.Document, error) {
-	tags := make(map[string]string)
-	if req.Tags != nil {
-		tags = *req.Tags
-	}
-
-	numerics := make(map[string]float64)
-	if req.Numerics != nil {
-		for k, v := range *req.Numerics {
-			numerics[k] = float64(v)
-		}
-	}
-
-	doc, err := domdoc.New(id, req.Content, tags, numerics)
+func documentFromUpsert(id string, req gen.UpsertDocumentRequest) (domdoc.Document, error) {
+	doc, err := domdoc.New(id, req.Content, nil, nil)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("build document: %w", err)
+	}
+	raw := req.Metadata
+	if raw == nil {
+		raw = json.RawMessage(`{}`)
+	}
+	if err := attachDocumentMetadata(&doc, raw); err != nil {
+		return domdoc.Document{}, err
+	}
+	if req.ExpiresAt != nil {
+		if *req.ExpiresAt <= 0 {
+			return domdoc.Document{}, fmt.Errorf("expires_at must be positive: %w", domain.ErrInvalidSchema)
+		}
+		if err := doc.SetExpiresAt(*req.ExpiresAt); err != nil {
+			return domdoc.Document{}, fmt.Errorf("build source expiration: %w", err)
+		}
 	}
 	return doc, nil
 }
 
 func batchItemToDoc(item gen.BatchUpsertItem) (domdoc.Document, error) {
-	tags := make(map[string]string)
-	if item.Tags != nil {
-		tags = *item.Tags
-	}
-
-	numerics := make(map[string]float64)
-	if item.Numerics != nil {
-		for k, v := range *item.Numerics {
-			numerics[k] = float64(v)
-		}
-	}
-
-	doc, err := domdoc.New(item.Id, item.Content, tags, numerics)
-	if err != nil {
-		return domdoc.Document{}, fmt.Errorf("build batch item: %w", err)
-	}
-	return doc, nil
+	return documentFromUpsert(item.Id, gen.UpsertDocumentRequest{
+		Content: item.Content, Metadata: item.Metadata, ExpiresAt: item.ExpiresAt,
+	})
 }
 
 func patchFromGen(req gen.PatchDocumentRequest) (patch.Patch, error) {
-	var tags map[string]*string
-	if req.Tags != nil {
-		tags = *req.Tags
-	}
-
-	var numerics map[string]*float64
-	if req.Numerics != nil {
-		numerics = make(map[string]*float64, len(*req.Numerics))
-		for k, v := range *req.Numerics {
-			if v == nil {
-				numerics[k] = nil
-			} else {
-				f := float64(*v)
-				numerics[k] = &f
-			}
-		}
-	}
-
-	p, err := patch.New(req.Content, tags, numerics)
+	expiresAt, err := expiryPatchFromJSON(req.ExpiresAt)
 	if err != nil {
-		return patch.Patch{}, fmt.Errorf("build patch: %w", err)
+		return patch.Patch{}, err
 	}
-	return p, nil
+	value, err := patch.NewSource(req.Content, req.Metadata, expiresAt)
+	if err != nil {
+		return patch.Patch{}, fmt.Errorf("build document patch: %w", err)
+	}
+	return value, nil
 }
 
 func searchRequestFromGen(
@@ -914,17 +923,17 @@ func searchRequestFromGen(
 		return request.Request{}, fmt.Errorf("parse filters: %w", err)
 	}
 
-	if err := validateTopKLimit(req.TopK, req.Limit); err != nil {
+	if err := validateSearchLimits(req.Limit, req.MaxContentBytes); err != nil {
 		return request.Request{}, err
 	}
 
-	topK := derefInt(req.TopK)
+	contentBytes := derefInt(req.MaxContentBytes)
 	limit := derefInt(req.Limit)
 	minScore := derefFloat(req.MinScore)
 	includeVectors := derefBool(req.IncludeVectors)
 
 	r, err := request.New(
-		req.Query, m, filters, topK, limit, minScore, includeVectors,
+		req.Query, m, filters, limit, contentBytes, minScore, includeVectors,
 	)
 	if err != nil {
 		return request.Request{}, fmt.Errorf("build search request: %w", err)
@@ -937,12 +946,12 @@ func similarRequestFromGen(req gen.SimilarRequest) (request.SimilarRequest, erro
 	if err != nil {
 		return request.SimilarRequest{}, fmt.Errorf("parse filters: %w", err)
 	}
-	if err := validateTopKLimit(req.TopK, req.Limit); err != nil {
+	if err := validateSearchLimits(req.Limit, req.MaxContentBytes); err != nil {
 		return request.SimilarRequest{}, err
 	}
 
 	sr, err := request.NewSimilar(
-		filters, derefInt(req.TopK), derefInt(req.Limit),
+		filters, derefInt(req.Limit), derefInt(req.MaxContentBytes),
 		derefFloat(req.MinScore), derefBool(req.IncludeVectors),
 	)
 	if err != nil {
@@ -1019,10 +1028,10 @@ func filterConditionFromGen(
 func rangeConditionFromGen(
 	key string, r *gen.RangeFilter,
 ) (filter.Condition, error) {
-	gt := f64Ptr(r.Gt)
-	gte := f64Ptr(r.Gte)
-	lt := f64Ptr(r.Lt)
-	lte := f64Ptr(r.Lte)
+	gt := r.Gt
+	gte := r.Gte
+	lt := r.Lt
+	lte := r.Lte
 
 	rf, err := filter.NewRangeFilter(gt, gte, lt, lte)
 	if err != nil {
@@ -1035,20 +1044,12 @@ func rangeConditionFromGen(
 	return cond, nil
 }
 
-func f64Ptr(v *float32) *float64 {
-	if v == nil {
-		return nil
-	}
-	f := float64(*v)
-	return &f
-}
-
-func validateTopKLimit(topK, limit *int) error {
-	if topK != nil && (*topK <= 0 || *topK > request.MaxTopK) {
-		return fmt.Errorf("top_k must be between 1 and %d", request.MaxTopK)
-	}
+func validateSearchLimits(limit, contentBytes *int) error {
 	if limit != nil && (*limit <= 0 || *limit > request.MaxLimit) {
 		return fmt.Errorf("limit must be between 1 and %d", request.MaxLimit)
+	}
+	if contentBytes != nil && (*contentBytes <= 0 || *contentBytes > request.MaxContentBytes) {
+		return fmt.Errorf("max_content_bytes must be between 1 and %d", request.MaxContentBytes)
 	}
 	return nil
 }
@@ -1074,32 +1075,17 @@ func derefBool(p *bool) bool {
 	return *p
 }
 
-func searchResultToGen(r *result.Result) gen.SearchResultItem {
-	item := gen.SearchResultItem{
-		Id:      r.ID(),
-		Score:   r.Score(),
-		Content: r.Content(),
+func searchResultToGen(r *result.Result) (gen.SearchResultItem, error) {
+	value, err := sourceMetadataJSON(r.Metadata(), r.Tags(), r.Numerics())
+	if err != nil {
+		return gen.SearchResultItem{}, err
 	}
-
-	if len(r.Tags()) > 0 {
-		t := r.Tags()
-		item.Tags = &t
-	}
-
-	if len(r.Numerics()) > 0 {
-		n := make(map[string]float32, len(r.Numerics()))
-		for k, v := range r.Numerics() {
-			n[k] = float32(v)
-		}
-		item.Numerics = &n
-	}
-
+	item := gen.SearchResultItem{Id: r.ID(), Version: r.Version(), Score: r.Score(), Snippet: r.Content(), Metadata: value}
 	if len(r.Vector()) > 0 {
 		v := r.Vector()
 		item.Vector = &v
 	}
-
-	return item
+	return item, nil
 }
 
 func batchResultToGen(r dombatch.Result) gen.BatchResultItem {
@@ -1107,10 +1093,18 @@ func batchResultToGen(r dombatch.Result) gen.BatchResultItem {
 		Id:     r.ID(),
 		Status: gen.BatchResultItemStatus(r.Status()),
 	}
+	if r.Version() != "" {
+		sourceVersion := r.Version()
+		item.Version = &sourceVersion
+	}
 	if r.Err() != nil {
 		errResp := gen.ErrorResponse{
 			Code:    batchErrorCode(r.Err()),
 			Message: safeDomainMessage(r.Err()),
+		}
+		var conflict *domain.VersionConflictError
+		if errors.As(r.Err(), &conflict) && conflict.CurrentVersion != "" {
+			errResp.CurrentVersion = &conflict.CurrentVersion
 		}
 		item.Error = &errResp
 	}
@@ -1119,6 +1113,12 @@ func batchResultToGen(r dombatch.Result) gen.BatchResultItem {
 
 func batchErrorCode(err error) gen.ErrorResponseCode {
 	switch {
+	case errors.Is(err, domain.ErrIdempotencyConflict):
+		return gen.ErrorResponseCodeIdempotencyConflict
+	case errors.Is(err, domain.ErrIdempotencyInProgress):
+		return gen.ErrorResponseCodeIdempotencyInProgress
+	case errors.Is(err, domain.ErrRevisionConflict):
+		return gen.ErrorResponseCodeVersionConflict
 	case errors.Is(err, domain.ErrNotFound):
 		return gen.ErrorResponseCodeCollectionNotFound
 	case errors.Is(err, domain.ErrDocumentNotFound):
@@ -1138,4 +1138,41 @@ func batchErrorCode(err error) gen.ErrorResponseCode {
 	default:
 		return gen.ErrorResponseCodeInternalError
 	}
+}
+
+func attachDocumentMetadata(doc *domdoc.Document, raw json.RawMessage) error {
+	if raw == nil {
+		return nil
+	}
+	if len(doc.Tags()) != 0 || len(doc.Numerics()) != 0 {
+		return fmt.Errorf("metadata cannot be combined with tags/numerics: %w", domain.ErrInvalidSchema)
+	}
+	value, err := metadata.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("build JSON metadata: %w", err)
+	}
+	doc.SetMetadata(value)
+	return nil
+}
+
+func sourceMetadataJSON(
+	value metadata.Object, tags map[string]string, numerics map[string]float64,
+) (json.RawMessage, error) {
+	if value.Present() {
+		return value.JSON(), nil
+	}
+	// Internal typed consumers may still carry the old projection. The v2 wire
+	// contract always has one metadata object, including when it is empty.
+	fields := make(map[string]any, len(tags)+len(numerics))
+	for key, text := range tags {
+		fields[key] = text
+	}
+	for key, number := range numerics {
+		fields[key] = number
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("encode source metadata: %w", err)
+	}
+	return raw, nil
 }

@@ -4,17 +4,31 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	domusage "github.com/kailas-cloud/vecdex/internal/domain/usage"
 )
 
-// Accounting owns versioned shared counters; all keys use a provider hash slot.
-type Accounting struct{ store db.BudgetStore }
+type accountingStore interface {
+	db.BudgetStore
+	db.BudgetSnapshotStore
+}
+
+// Accounting separates partitioned usage from strict reservation control.
+type Accounting struct {
+	store   accountingStore
+	credits creditBackend
+	mu      sync.Mutex
+	caches  map[creditPolicy]*creditCache
+}
 
 // NewAccounting creates the shared accounting repository.
-func NewAccounting(store db.BudgetStore) *Accounting { return &Accounting{store: store} }
+func NewAccounting(store accountingStore) *Accounting {
+	credits, _ := store.(creditBackend)
+	return &Accounting{store: store, credits: credits, caches: make(map[creditPolicy]*creditCache)}
+}
 
 func accountingKeys(provider, id string, now time.Time) []string {
 	base := fmt.Sprintf("vecdex:v2:budget:{%x}", sha256.Sum256([]byte(provider)))
@@ -53,14 +67,26 @@ func (s *Accounting) Complete(
 	return snapshot, nil
 }
 
-// Snapshot reads all three periods consistently, including reservations from other replicas.
+// Snapshot combines measured usage and strict reservations from all replicas.
+// Periods within one partition are atomic; partitions can advance independently.
 func (s *Accounting) Snapshot(ctx context.Context, provider string, now time.Time) (domusage.Snapshot, error) {
-	result, err := s.store.Budget(
-		ctx,
-		&db.BudgetCommand{Keys: accountingKeys(provider, "snapshot", now), Action: "read"},
-	)
-	if err != nil {
-		return result, fmt.Errorf("read embedding usage: %w", err)
+	groups := make([][]string, 0, UsagePartitionCount*2+1)
+	// Retain the existing strict/legacy history while usage moves to v3 partitions.
+	groups = append(groups, accountingKeys(provider, "snapshot", now)[:3])
+	for partition := range UsagePartitionCount {
+		groups = append(groups, usageKeys(provider, "snapshot", partition, now)[:3],
+			creditUsageKeys(provider, "snapshot", "snapshot", partition, now)[:3])
 	}
-	return result, nil
+	snapshots, err := s.store.BudgetSnapshots(ctx, groups)
+	if err != nil {
+		return domusage.Snapshot{}, fmt.Errorf("read embedding usage: %w", err)
+	}
+	if len(snapshots) != len(groups) {
+		return domusage.Snapshot{}, fmt.Errorf("embedding usage partition count mismatch")
+	}
+	result, err := sumSnapshots(snapshots)
+	if err != nil {
+		return result, err
+	}
+	return s.includeCreditHistory(ctx, provider, now, &result)
 }

@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/kailas-cloud/vecdex/internal/db"
-	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 )
 
@@ -14,7 +13,6 @@ func buildIndex(
 	name string, fields []field.Field, vectorDim int,
 	textSearchEnabled bool, hnsw HNSWConfig,
 ) (*db.IndexDefinition, error) {
-	fields = append(append([]field.Field(nil), fields...), domcol.SystemFields()...)
 	extraFields := 1 // vector
 	if textSearchEnabled {
 		extraFields = 2 // vector + text
@@ -27,7 +25,9 @@ func buildIndex(
 		Fields:      make([]db.IndexField, 0, len(fields)+extraFields),
 	}
 
-	def.Fields = append(def.Fields, db.IndexField{Name: "__parent_id", Type: db.IndexFieldTag})
+	def.Fields = append(def.Fields,
+		db.IndexField{Name: "__parent_id", Type: db.IndexFieldTag},
+		db.IndexField{Name: "__expires_at", Type: db.IndexFieldNumeric})
 	for _, f := range fields {
 		var fieldType db.IndexFieldType
 		switch f.FieldType() {

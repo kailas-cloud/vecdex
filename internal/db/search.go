@@ -4,6 +4,7 @@ import "github.com/kailas-cloud/vecdex/internal/domain/search/filter"
 
 // KNNQuery is the input for vector similarity search.
 type KNNQuery struct {
+	NotExpiredAt    int64
 	ExcludeParentID string
 	IndexName       string
 	Filters         filter.Expression
@@ -15,6 +16,7 @@ type KNNQuery struct {
 
 // TextQuery is the input for BM25 text search.
 type TextQuery struct {
+	NotExpiredAt int64
 	IndexName    string
 	Query        string
 	Filters      filter.Expression

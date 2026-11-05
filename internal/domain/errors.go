@@ -6,6 +6,10 @@ import (
 )
 
 var (
+	// ErrIdempotencyConflict prevents reusing a source request key with another operation.
+	ErrIdempotencyConflict = errors.New("idempotency key was already used with different input")
+	// ErrIdempotencyInProgress asks a caller to retry the same request after its active owner finishes.
+	ErrIdempotencyInProgress = errors.New("idempotent request is still in progress")
 	// ErrEmbeddingSpaceMismatch requires recreating a collection after changing its vectorizer.
 	ErrEmbeddingSpaceMismatch = errors.New(
 		"embedding configuration changed; create a new collection and reindex its source documents",
@@ -52,3 +56,18 @@ func (e *RevisionConflictError) Unwrap() error { return ErrRevisionConflict }
 func NewRevisionConflict(currentRevision int) error {
 	return &RevisionConflictError{CurrentRevision: currentRevision}
 }
+
+// NewVersionConflict reports a conditional-write failure against an opaque version.
+func NewVersionConflict(current string) error { return &VersionConflictError{CurrentVersion: current} }
+
+// VersionConflictError identifies a stale or absent source incarnation.
+type VersionConflictError struct{ CurrentVersion string }
+
+func (e *VersionConflictError) Error() string {
+	if e.CurrentVersion == "" {
+		return "revision conflict: source version is absent"
+	}
+	return fmt.Sprintf("%s: current version is %s", ErrRevisionConflict, e.CurrentVersion)
+}
+
+func (e *VersionConflictError) Unwrap() error { return ErrRevisionConflict }

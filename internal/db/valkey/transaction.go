@@ -2,7 +2,9 @@ package valkey
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/rueidis"
@@ -26,17 +28,29 @@ func execTransaction(
 	if len(replies) != len(batch) {
 		return nil, false, fmt.Errorf("incomplete transaction response")
 	}
-	for _, reply := range replies[:len(replies)-1] {
-		if err := reply.Error(); err != nil {
-			return nil, false, fmt.Errorf("queue transaction: %w", err)
-		}
-	}
+	// Inspect EXEC before queue replies. Only an explicit server rejection proves
+	// that none of the queued writes ran; a lost EXEC reply is ambiguous.
 	result, err := replies[len(replies)-1].ToArray()
 	if rueidis.IsRedisNil(err) {
 		return nil, false, nil
 	}
 	if err != nil {
+		if rejectedTransaction(err, replies[:len(replies)-1]) {
+			return nil, false, &transactionRejectedError{err: err}
+		}
+		if server, ok := rueidis.IsRedisErr(err); ok && strings.HasPrefix(server.Error(), "EXECABORT ") {
+			for _, reply := range replies[:len(replies)-1] {
+				if cause := reply.Error(); cause != nil {
+					err = errors.Join(err, fmt.Errorf("queue transaction: %w", cause))
+				}
+			}
+		}
 		return nil, false, fmt.Errorf("execute transaction: %w", err)
+	}
+	for _, reply := range replies[:len(replies)-1] {
+		if err := reply.Error(); err != nil {
+			return nil, false, fmt.Errorf("queue transaction: %w", err)
+		}
 	}
 	for _, reply := range result {
 		if err := reply.Error(); err != nil {
@@ -48,6 +62,9 @@ func execTransaction(
 
 func watchKeys(ctx context.Context, client rueidis.DedicatedClient, keys ...string) error {
 	if err := client.Do(ctx, client.B().Watch().Key(keys...).Build()).Error(); err != nil {
+		if redirectedTransaction(err) {
+			return &transactionRejectedError{err: err}
+		}
 		return fmt.Errorf("watch keys: %w", err)
 	}
 	return nil
@@ -83,4 +100,49 @@ func transactionRetry(ctx context.Context, attempt int) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+// transactionRejectedError is reserved for a known pre-commit server rejection.
+// It must never wrap a network error or an individual runtime error inside EXEC.
+type transactionRejectedError struct{ err error }
+
+func (e *transactionRejectedError) Error() string {
+	return "transaction rejected before commit: " + e.err.Error()
+}
+func (e *transactionRejectedError) Unwrap() error { return e.err }
+
+func redirectedTransaction(err error) bool {
+	server, ok := rueidis.IsRedisErr(err)
+	if !ok {
+		return false
+	}
+	code, _, _ := strings.Cut(server.Error(), " ")
+	return code == "MOVED" || code == "ASK" || code == "TRYAGAIN"
+}
+
+func rejectedTransaction(err error, queue []rueidis.RedisResult) bool {
+	if redirectedTransaction(err) {
+		return true
+	}
+	server, ok := rueidis.IsRedisErr(err)
+	if !ok || !strings.HasPrefix(server.Error(), "EXECABORT ") {
+		return false
+	}
+	// EXECABORT also covers permanent queue errors. Replay only when topology
+	// caused the rejection; WRONGTYPE, ACL and OOM errors must reach the caller.
+	redirected := false
+	for _, reply := range queue {
+		if cause := reply.Error(); cause != nil {
+			if !redirectedTransaction(cause) {
+				return false
+			}
+			redirected = true
+		}
+	}
+	return redirected
+}
+
+func canRetryTransaction(err error) bool {
+	var rejected *transactionRejectedError
+	return errors.As(err, &rejected)
 }

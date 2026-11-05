@@ -7,7 +7,7 @@ import (
 )
 
 func searchReturnFields(ctx context.Context, vectors, score bool) []string {
-	fields := []string{"__content", "__metadata", "__parent_id", "__version", "parent_doc_id", "__n:chunk_index"}
+	fields := []string{"__content", "__metadata", "__parent_id", "__version"}
 	fields = append(fields, domain.SearchMetadataFields(ctx)...)
 	if vectors {
 		fields = append(fields, "__vector")

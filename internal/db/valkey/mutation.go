@@ -11,6 +11,7 @@ import (
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/redis/rueidis"
 )
 
@@ -19,6 +20,12 @@ var errPreparedChildBusy = errors.New("fragment key is already owned by another 
 // MutateHash prepares immutable hashes outside the transaction. WATCH protects
 // the parent and collection generation; the commit uses RENAME and PERSIST.
 func (s *Store) MutateHash(ctx context.Context, m *db.HashMutation) (db.HashMutationResult, error) {
+	if err := validateDeadlineMutation(m); err != nil {
+		return db.HashMutationResult{}, err
+	}
+	if m.Request != nil && m.WorkQueueKey == "" {
+		return db.HashMutationResult{}, fmt.Errorf("idempotent writes require durable mutation work")
+	}
 	if (m.CatalogKey == "") != (m.CatalogMember == "") {
 		return db.HashMutationResult{}, fmt.Errorf("catalog key and member must be supplied together")
 	}
@@ -27,7 +34,7 @@ func (s *Store) MutateHash(ctx context.Context, m *db.HashMutation) (db.HashMuta
 			return db.HashMutationResult{}, fmt.Errorf("document write canceled: %w", err)
 		}
 		result, committed, err := s.mutateHashAttempt(ctx, m)
-		if errors.Is(err, errPreparedChildBusy) {
+		if errors.Is(err, errPreparedChildBusy) || canRetryTransaction(err) {
 			err = nil
 		}
 		if err != nil || committed {
@@ -44,21 +51,33 @@ func (s *Store) mutateHashAttempt(ctx context.Context, m *db.HashMutation) (db.H
 	client, release := s.client.Dedicate()
 	defer release()
 	defer unwatch(client)
-	keys := []string{m.Key}
-	if m.GuardGeneration != "" {
-		keys = append(keys, m.GuardKey)
-	}
-	if err := watchKeys(ctx, client, keys...); err != nil {
+	if err := watchKeys(ctx, client, mutationWatchKeys(m)...); err != nil {
 		return db.HashMutationResult{}, false, err
 	}
+	if m.Request != nil {
+		request, err := checkWriteRequest(ctx, client, m.Request)
+		if err != nil || request.Replay {
+			return request.Result, request.Replay, err
+		}
+	}
 	if err := checkCatalogType(ctx, client, m.CatalogKey); err != nil {
+		return db.HashMutationResult{}, false, err
+	}
+	if err := checkCatalogType(ctx, client, m.DeadlineKey); err != nil {
+		return db.HashMutationResult{}, false, err
+	}
+	if err := checkCatalogType(ctx, client, m.LifecycleKey); err != nil {
 		return db.HashMutationResult{}, false, err
 	}
 	previous, err := readMutationParent(ctx, client, m)
 	if err != nil {
 		return db.HashMutationResult{}, false, err
 	}
-	revision, exists, err := checkMutation(m, previous)
+	markerExpired, err := checkExpiryMarker(ctx, client, m, previous)
+	if err != nil {
+		return db.HashMutationResult{}, false, err
+	}
+	revision, exists, err := checkMutation(m, previous, markerExpired)
 	if err != nil {
 		return db.HashMutationResult{}, false, err
 	}
@@ -66,7 +85,10 @@ func (s *Store) mutateHashAttempt(ctx context.Context, m *db.HashMutation) (db.H
 	if err != nil {
 		return db.HashMutationResult{}, false, err
 	}
-	result := db.HashMutationResult{Revision: revision, Created: !exists}
+	result := db.HashMutationResult{Revision: revision, Created: !exists, Version: previous["__source_version"]}
+	if m.WorkQueueKey != "" {
+		return s.commitDurableMutation(ctx, client, m, previous, oldChildren, result)
+	}
 	if m.Delete {
 		return s.commitHashDeletion(ctx, client, m, oldChildren, result)
 	}
@@ -74,11 +96,25 @@ func (s *Store) mutateHashAttempt(ctx context.Context, m *db.HashMutation) (db.H
 	return s.commitHashReplacement(ctx, client, m, previous, oldChildren, result)
 }
 
+func mutationWatchKeys(m *db.HashMutation) []string {
+	keys := []string{m.Key}
+	if m.ExpiryMarkerKey != "" {
+		keys = append(keys, m.ExpiryMarkerKey)
+	}
+	if m.Request != nil {
+		keys = append(keys, m.Request.Key)
+	}
+	if m.GuardGeneration != "" {
+		keys = append(keys, m.GuardKey)
+	}
+	return keys
+}
+
 func (s *Store) commitHashDeletion(
 	ctx context.Context, client rueidis.DedicatedClient, m *db.HashMutation, children []string,
 	result db.HashMutationResult,
 ) (db.HashMutationResult, bool, error) {
-	_, committed, err := execTransaction(ctx, client, mutationCommitCommands(client, m, ""))
+	_, committed, err := execTransaction(ctx, client, mutationCommitCommands(client, m, "", ""))
 	if committed {
 		s.unlinkHashes(children)
 	}
@@ -90,14 +126,8 @@ func readMutationParent(
 	client rueidis.DedicatedClient,
 	m *db.HashMutation,
 ) (map[string]string, error) {
-	if m.GuardGeneration != "" {
-		guard, err := client.Do(ctx, client.B().Hgetall().Key(m.GuardKey).Build()).AsStrMap()
-		if err != nil {
-			return nil, fmt.Errorf("read collection guard: %w", err)
-		}
-		if guard["generation"] != m.GuardGeneration || (m.GuardState != "" && guard["state"] != m.GuardState) {
-			return nil, domain.ErrNotFound
-		}
+	if err := checkMutationGuard(ctx, client, m); err != nil {
+		return nil, err
 	}
 	parent, err := client.Do(ctx, client.B().Hgetall().Key(m.Key).Build()).AsStrMap()
 	if err != nil {
@@ -106,7 +136,22 @@ func readMutationParent(
 	return parent, nil
 }
 
-func checkMutation(m *db.HashMutation, parent map[string]string) (revision int, exists bool, resultErr error) {
+func checkMutationGuard(ctx context.Context, client rueidis.DedicatedClient, m *db.HashMutation) error {
+	if m.GuardGeneration != "" {
+		guard, err := client.Do(ctx, client.B().Hgetall().Key(m.GuardKey).Build()).AsStrMap()
+		if err != nil {
+			return fmt.Errorf("read collection guard: %w", err)
+		}
+		if guard["generation"] != m.GuardGeneration || (m.GuardState != "" && guard["state"] != m.GuardState) {
+			return domain.ErrNotFound
+		}
+	}
+	return nil
+}
+
+func checkMutation(
+	m *db.HashMutation, parent map[string]string, markerExpired bool,
+) (revision int, exists bool, resultErr error) {
 	exists = len(parent) > 0
 	revision = 0
 	if parent["__revision"] != "" {
@@ -116,7 +161,47 @@ func checkMutation(m *db.HashMutation, parent map[string]string) (revision int, 
 			return 0, exists, fmt.Errorf("invalid stored revision: %w", err)
 		}
 	}
+	version, expired, err := mutationExpiry(m, parent)
+	if err != nil {
+		return revision, exists, err
+	}
+	if expired || (markerExpired && m.ExpiredBefore == 0) {
+		exists, revision, version = false, 0, ""
+	}
+	if m.ExpectedVersion != nil &&
+		(!exists || *m.ExpectedVersion == "" || version != *m.ExpectedVersion) {
+		return revision, exists, fmt.Errorf(
+			"check document version: %w",
+			domain.NewVersionConflict(version),
+		)
+	}
 	return revision, exists, checkMutationConditions(m, revision, exists)
+}
+
+func validateDeadlineMutation(m *db.HashMutation) error {
+	if m.DeadlineKey != "" && (m.WorkQueueKey == "" || m.CatalogMember == "" ||
+		m.ExpiryMarkerKey == "" || m.ExpiresAt < 0 || m.ExpiresAt > domdoc.MaxExpiresAt) {
+		return fmt.Errorf("source deadlines require valid durable document work")
+	}
+	return nil
+}
+
+func mutationExpiry(m *db.HashMutation, parent map[string]string) (version string, expired bool, err error) {
+	version = parent["__source_version"]
+	if m.DeadlineKey == "" {
+		return version, false, nil
+	}
+	expiresAt, err := domdoc.ParseExpiresAt(parent["__expires_at"])
+	if err != nil {
+		return version, false, fmt.Errorf("read mutation expiration: %w", err)
+	}
+	if m.ExpiredBefore > 0 {
+		if m.ExpectedVersion == nil || !domdoc.Expired(expiresAt, m.ExpiredBefore) {
+			return version, false, fmt.Errorf("source expiration changed: %w", domain.NewVersionConflict(version))
+		}
+		return version, false, nil
+	}
+	return version, domdoc.Expired(expiresAt, time.Now().UnixMilli()), nil
 }
 
 func checkMutationConditions(m *db.HashMutation, revision int, exists bool) error {
@@ -221,7 +306,7 @@ func (s *Store) executeHashReplacement(
 	ctx context.Context, client rueidis.DedicatedClient, m *db.HashMutation, stagingKey, id string,
 	oldChildren []string, result db.HashMutationResult,
 ) (db.HashMutationResult, bool, error) {
-	_, committed, err := execTransaction(ctx, client, mutationCommitCommands(client, m, stagingKey))
+	_, committed, err := execTransaction(ctx, client, mutationCommitCommands(client, m, stagingKey, ""))
 	if committed {
 		if len(m.Children) > 0 || m.Replace {
 			s.unlinkHashes(oldChildren)
@@ -231,6 +316,10 @@ func (s *Store) executeHashReplacement(
 	// EXEC errors can be ambiguous. Keep prepared children if the parent cannot be
 	// read, or if the committed parent references them. Never delete live fragments.
 	if err != nil {
+		if canRetryTransaction(err) {
+			s.discardPrepared(m, stagingKey, id)
+			return result, false, err
+		}
 		return s.recoverHashCommit(client, m, stagingKey, id, oldChildren, result, err)
 	}
 
