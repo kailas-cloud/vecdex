@@ -1,0 +1,167 @@
+{
+  "description": "Independent calls, not an execution sequence. Replace handles and versions with actual values. Preserve keys only for identical retries.",
+  "examples": [
+    {
+      "name": "collection_list",
+      "arguments": {
+        "limit": 20
+      }
+    },
+    {
+      "name": "collection_get",
+      "arguments": {
+        "name": "project-notes"
+      }
+    },
+    {
+      "name": "collection_create",
+      "arguments": {
+        "name": "project-notes",
+        "fields": [
+          {
+            "name": "kind",
+            "type": "tag"
+          }
+        ]
+      }
+    },
+    {
+      "name": "collection_delete",
+      "arguments": {
+        "name": "project-notes",
+        "generation": "<generation>",
+        "confirm_name": "project-notes"
+      }
+    },
+    {
+      "name": "context_list",
+      "arguments": {
+        "limit": 20
+      }
+    },
+    {
+      "name": "context_create",
+      "arguments": {
+        "name": "Release review",
+        "collection": "project-notes",
+        "generation": "<generation>",
+        "expires_at": null,
+        "idempotency_key": "open-release-review-1"
+      }
+    },
+    {
+      "name": "context_get",
+      "arguments": {
+        "context_id": "<context_id>",
+        "verify_pins": true
+      }
+    },
+    {
+      "name": "context_update",
+      "arguments": {
+        "context_id": "<context_id>",
+        "expected_version": "<context_version>",
+        "pins": [
+          {
+            "document_id": "decision-42",
+            "version": "<document_version>"
+          }
+        ],
+        "idempotency_key": "pin-release-review-1"
+      }
+    },
+    {
+      "name": "context_delete",
+      "arguments": {
+        "context_id": "<context_id>",
+        "expected_version": "<context_version>",
+        "idempotency_key": "close-release-review-1"
+      }
+    },
+    {
+      "name": "memory_search",
+      "arguments": {
+        "context_id": "<context_id>",
+        "query": "migration decision",
+        "mode": "hybrid",
+        "limit": 5,
+        "filters": {
+          "must": [
+            {
+              "key": "kind",
+              "match": "decision"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "memory_read",
+      "arguments": {
+        "context_id": "<context_id>",
+        "id": "decision-42",
+        "include_metadata": true,
+        "metadata_fields": [
+          "kind",
+          "statement_type"
+        ],
+        "max_bytes": 8192
+      }
+    },
+    {
+      "name": "memory_list",
+      "arguments": {
+        "context_id": "<context_id>",
+        "limit": 20
+      }
+    },
+    {
+      "name": "memory_similar",
+      "arguments": {
+        "context_id": "<context_id>",
+        "id": "decision-42",
+        "limit": 5
+      }
+    },
+    {
+      "name": "memory_create",
+      "arguments": {
+        "context_id": "<context_id>",
+        "id": "decision-42",
+        "content": "A migration was proposed; deployment is unverified.",
+        "metadata": {
+          "kind": "decision",
+          "statement_type": "plan",
+          "source_role": "user"
+        },
+        "idempotency_key": "save-decision-42-1"
+      }
+    },
+    {
+      "name": "memory_update",
+      "arguments": {
+        "context_id": "<context_id>",
+        "id": "decision-42",
+        "if_version": "<document_version>",
+        "metadata": {
+          "verified": false
+        },
+        "expires_at": null,
+        "idempotency_key": "correct-decision-42-1"
+      }
+    },
+    {
+      "name": "memory_delete",
+      "arguments": {
+        "context_id": "<context_id>",
+        "id": "decision-42",
+        "if_version": "<document_version>",
+        "idempotency_key": "delete-decision-42-1"
+      }
+    },
+    {
+      "name": "memory_status",
+      "arguments": {}
+    }
+  ]
+}

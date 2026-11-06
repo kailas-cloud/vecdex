@@ -6,6 +6,8 @@ import (
 )
 
 var (
+	// ErrCollectionGenerationMismatch rejects handles for a different incarnation.
+	ErrCollectionGenerationMismatch = errors.New("collection generation mismatch")
 	// ErrIdempotencyConflict prevents reusing a source request key with another operation.
 	ErrIdempotencyConflict = errors.New("idempotency key was already used with different input")
 	// ErrIdempotencyInProgress asks a caller to retry the same request after its active owner finishes.

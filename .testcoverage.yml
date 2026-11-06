@@ -10,7 +10,6 @@ exclude:
     - _test\.go$
     - /tests/
     - /mock_
-    - /transport/generated/
     - ^cmd/
     - /config/
     - /logger/

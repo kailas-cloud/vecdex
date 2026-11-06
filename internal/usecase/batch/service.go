@@ -66,6 +66,9 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, items []dom
 	}
 
 	col, err := s.colls.Get(ctx, collectionName)
+	if err == nil {
+		err = domain.ValidateCollectionGeneration(ctx, col.Generation())
+	}
 	if err != nil {
 		for i := range items {
 			results[i] = dombatch.NewError(items[i].ID(), fmt.Errorf("get collection: %w", err))
@@ -167,6 +170,9 @@ func (s *Service) Delete(ctx context.Context, collectionName string, items []dom
 	}
 
 	col, err := s.colls.Get(ctx, collectionName)
+	if err == nil {
+		err = domain.ValidateCollectionGeneration(ctx, col.Generation())
+	}
 	if err != nil {
 		for i, item := range items {
 			results[i] = dombatch.NewError(item.ID, fmt.Errorf("get collection: %w", err))

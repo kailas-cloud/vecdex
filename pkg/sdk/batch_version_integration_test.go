@@ -4,20 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"go.uber.org/zap"
-
-	chiTransport "github.com/kailas-cloud/vecdex/internal/transport/chi"
-	gen "github.com/kailas-cloud/vecdex/internal/transport/generated"
-	batchuc "github.com/kailas-cloud/vecdex/internal/usecase/batch"
-	collectionuc "github.com/kailas-cloud/vecdex/internal/usecase/collection"
-	documentuc "github.com/kailas-cloud/vecdex/internal/usecase/document"
-	searchuc "github.com/kailas-cloud/vecdex/internal/usecase/search"
 )
 
 func TestBatchVersionIntegration(t *testing.T) {
@@ -26,16 +16,7 @@ func TestBatchVersionIntegration(t *testing.T) {
 	defer cancel()
 	embedded, _ := newMetadataIntegrationClient(t, ctx)
 	defer embedded.Close()
-	server := chiTransport.NewServer(embedded.collSvc.(*collectionuc.Service), embedded.docSvc.(*documentuc.Service),
-		embedded.searchSvc.(*searchuc.Service), embedded.batchSvc.(*batchuc.Service), nil, nil, zap.NewNop())
-	endpoint := httptest.NewServer(gen.Handler(server))
-	defer endpoint.Close()
-	remote, err := NewHTTP(endpoint.URL, "", WithHTTPClient(endpoint.Client()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer remote.Close()
-	for label, client := range map[string]*Client{"embedded": embedded, "http": remote} {
+	for label, client := range map[string]*Client{"embedded": embedded} {
 		t.Run(label, func(t *testing.T) {
 			name := fmt.Sprintf("batch_version_%s_%d", label, time.Now().UnixNano())
 			if _, err := client.Collections().Ensure(ctx, name); err != nil {

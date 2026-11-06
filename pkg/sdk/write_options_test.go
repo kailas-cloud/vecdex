@@ -10,6 +10,21 @@ import (
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
 )
 
+func TestIfAbsentCarriesAtomicConditionAndRejectsVersion(t *testing.T) {
+	ctx, err := applyWriteOptions(context.Background(), []WriteOption{IfAbsent(), IdempotencyKey("create")})
+	if err != nil || !domain.RequireAbsent(ctx) || domain.IdempotencyKey(ctx) != "create" {
+		t.Fatalf("create-only option: %v", err)
+	}
+	_, err = applyWriteOptions(ctx, []WriteOption{IfAbsent(), IfVersion("version")})
+	if !errors.Is(err, ErrInvalidSchema) {
+		t.Fatalf("contradictory preconditions: %v", err)
+	}
+	ctx, err = applyWriteOptions(ctx, nil)
+	if err != nil || domain.RequireAbsent(ctx) {
+		t.Fatalf("ambient create-only leaked: %v", err)
+	}
+}
+
 func TestDocumentWritesCarryConditionAndRequestKey(t *testing.T) {
 	require := func(ctx context.Context) {
 		t.Helper()

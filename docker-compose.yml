@@ -32,7 +32,7 @@ services:
       timeout: 2s
       retries: 10
 
-  # Vecdex API server для локальной разработки (remote Valkey)
+  # Vecdex MCP server для локальной разработки (remote Valkey)
   vecdex:
     build:
       context: .

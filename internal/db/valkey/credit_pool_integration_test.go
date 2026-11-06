@@ -166,7 +166,9 @@ func TestCreditPoolConcurrentAdmissionAndRecoveryLive(t *testing.T) {
 
 func TestCreditPoolLeaseExpiryFencesWatchedReservationLive(t *testing.T) {
 	store, _, command := creditPoolFixture(t)
-	command.ExpiresAt = time.Now().Add(150 * time.Millisecond).UnixMilli()
+	// Leave time to prepare WATCH on a remote fixture; host/VM clocks may differ
+	// by a few hundred milliseconds. The assertion still waits for lease expiry.
+	command.ExpiresAt = time.Now().Add(2 * time.Second).UnixMilli()
 	nativeCreditPool(t, store, command)
 	command.Action, command.Amount, command.ReceiptKey = "reserve", 40, creditTestReceipt(command, 0)
 	client, release := store.client.Dedicate()

@@ -1,7 +1,6 @@
 http:
   port: 8080
   read_timeout_sec: 10
-  write_timeout_sec: 310
   shutdown_timeout_sec: 10
 
 valkey:
@@ -29,9 +28,10 @@ storage:
   key_prefix: "vecdex:"
 
 auth:
-  api_keys:
-    - ${VECDEX_API_KEY}
-
+  tokens:
+    - principal_id: team
+      role: admin
+      key: ${VECDEX_API_KEY}
 embedding:
   providers:
     nebius:

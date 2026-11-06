@@ -149,3 +149,20 @@ func TestMetricsHandler_ViaPromhttp(t *testing.T) {
 		t.Error("expected non-empty metrics response")
 	}
 }
+
+func TestMetricsMiddlewarePreservesStreaming(t *testing.T) {
+	r := chi.NewRouter()
+	r.Use(Middleware())
+	r.Post("/mcp", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {}\n\n"))
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("SSE flush: %v", err)
+		}
+	})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), "POST", "/mcp", http.NoBody))
+	if !rr.Flushed || rr.Code != http.StatusOK {
+		t.Fatalf("stream was not flushed: %+v", rr)
+	}
+}

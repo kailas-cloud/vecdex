@@ -1,0 +1,29 @@
+http:
+  port: 8080
+valkey:
+  addrs: [valkey:6379]
+auth:
+  tokens:
+    - principal_id: team
+      role: admin
+      key: test-api-key
+    - principal_id: reader
+      role: read
+      key: test-read-key
+    - principal_id: writer
+      role: write
+      key: test-write-key
+embedding:
+  providers:
+    limited:
+      api_key: fake-key
+      base_url: http://mock-embedder:9999/v1/
+      budget:
+        action: reject
+        daily_token_limit: 1
+        monthly_token_limit: 1
+  vectorizers:
+    json:
+      provider: limited
+      model: stub
+      dimensions: 1024

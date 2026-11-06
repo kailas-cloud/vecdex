@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds the vecdex API configuration.
+// Config holds the Vecdex MCP runtime configuration.
 type Config struct {
 	HTTP      HTTPConfig      `yaml:"http"`
 	Valkey    ValkeyConfig    `yaml:"valkey"`
@@ -28,17 +28,23 @@ type LoggingConfig struct {
 	Level string `yaml:"level"` // debug, info, warn, error (default: determined by env)
 }
 
-// AuthConfig holds API authentication settings.
+// AuthConfig holds explicit MCP principal credentials.
 type AuthConfig struct {
-	APIKeys []string `yaml:"api_keys"`
+	Tokens []AuthToken `yaml:"tokens"`
+}
+
+// AuthToken binds a rotating secret to a stable owner and role.
+type AuthToken struct {
+	PrincipalID string `yaml:"principal_id"`
+	Role        string `yaml:"role"`
+	Key         string `yaml:"key"`
 }
 
 // HTTPConfig holds HTTP server settings.
 type HTTPConfig struct {
-	Port            int `yaml:"port"`
-	ReadTimeoutSec  int `yaml:"read_timeout_sec"`
-	WriteTimeoutSec int `yaml:"write_timeout_sec"`
-	ShutdownSec     int `yaml:"shutdown_timeout_sec"`
+	Port           int `yaml:"port"`
+	ReadTimeoutSec int `yaml:"read_timeout_sec"`
+	ShutdownSec    int `yaml:"shutdown_timeout_sec"`
 }
 
 // ValkeyConfig holds Valkey connection settings.
@@ -122,7 +128,9 @@ func Load(env string) (Config, error) {
 	data = expandEnvVars(data)
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("failed to parse config: %w", err)
 	}
 
@@ -130,6 +138,9 @@ func Load(env string) (Config, error) {
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("invalid config: %w", err)
+	}
+	if err := cfg.Auth.Validate(); err != nil {
+		return Config{}, fmt.Errorf("invalid auth config: %w", err)
 	}
 
 	return cfg, nil
@@ -161,9 +172,6 @@ func (c *Config) ApplyDefaults() {
 func (c *Config) applyScalarDefaults() {
 	if c.HTTP.ReadTimeoutSec <= 0 {
 		c.HTTP.ReadTimeoutSec = 10
-	}
-	if c.HTTP.WriteTimeoutSec <= 0 {
-		c.HTTP.WriteTimeoutSec = 310
 	}
 	if c.HTTP.ShutdownSec <= 0 {
 		c.HTTP.ShutdownSec = 10

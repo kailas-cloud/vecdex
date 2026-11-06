@@ -30,6 +30,9 @@ func (s *Service) Create(
 		return domcol.Collection{}, fmt.Errorf("validate collection: %w: %w", domain.ErrInvalidSchema, err)
 	}
 
+	if err := domain.ValidateCollectionGeneration(ctx, col.Generation()); err != nil {
+		return domcol.Collection{}, fmt.Errorf("resolve collection: %w", err)
+	}
 	col = col.WithEmbeddingSpace(s.embeddingSpace)
 	if err := s.repo.Create(ctx, col); err != nil {
 		return domcol.Collection{}, fmt.Errorf("create collection: %w", err)
@@ -43,6 +46,9 @@ func (s *Service) Get(ctx context.Context, name string) (domcol.Collection, erro
 	col, err := s.repo.Get(ctx, name)
 	if err != nil {
 		return domcol.Collection{}, fmt.Errorf("get collection: %w", err)
+	}
+	if err := domain.ValidateCollectionGeneration(ctx, col.Generation()); err != nil {
+		return domcol.Collection{}, fmt.Errorf("resolve collection: %w", err)
 	}
 	return col, nil
 }

@@ -1,0 +1,73 @@
+{
+  "upstream_repository": "https://github.com/modelcontextprotocol/conformance",
+  "upstream_commit": "7169291ec0b68eb370fddcd9947313ab0d5e4156",
+  "upstream_version": "0.2.0-alpha.11",
+  "full_conformance": false,
+  "scope_notes": [
+    "Upstream tool, resource and prompt catalog scenarios inspect the first response page only. Reported counts are page counts; full discovery pagination and the 17-tool admin catalog are verified separately by product transport and live E2E tests.",
+    "The fixture registers production tools, resources, prompts and shipped skills through the actual MCP Handler. Domain data is inert; protocol catalog responses are not canned."
+  ],
+  "profiles": {
+    "2025-11-25": [
+      "server-initialize",
+      "ping",
+      "tools-list",
+      "resources-list",
+      "prompts-list"
+    ],
+    "2026-07-28": [
+      "server-stateless",
+      "tools-list",
+      "resources-list",
+      "prompts-list",
+      "caching",
+      "sep-2164-resource-not-found",
+      "sep-2640-skills-enumeration",
+      "sep-2640-skills-manifest"
+    ]
+  },
+  "fixture_limitations": {
+    "server-stateless": {
+      "sep-2575-server-rejects-undeclared-capability": "Requires upstream test_missing_capability tool; product does not request sampling.",
+      "sep-2575-missing-capability-http-400": "Requires upstream test_missing_capability tool; product does not request sampling.",
+      "sep-2575-http-server-no-independent-requests-on-stream": "Requires upstream test_streaming_elicitation tool; elicitation is not offered.",
+      "sep-2575-server-no-log-without-loglevel": "Requires upstream test_logging_tool; product has no logging tool."
+    }
+  },
+  "optional_skips": {
+    "server-stateless": [
+      "sep-2575-server-sends-prompts-list-changed-on-subscription",
+      "sep-2575-server-sends-tools-list-changed-on-subscription"
+    ]
+  },
+  "excluded_groups": [
+    {
+      "group": "tools-call-* and input-required-result-*",
+      "reason": "Upstream scenarios call artificial test_* tools absent from production. Product tools, errors, progress and cancellation are covered by Go transport tests and live MCP E2E tests; this does not establish these upstream requirements."
+    },
+    {
+      "group": "resources-read-* / resources-templates-read / resources-subscribe / resources-unsubscribe",
+      "reason": "Upstream expects test:// fixture resources. Product resources and polling subscriptions have separate transport and live E2E contracts. Legacy subscriptions are not advertised."
+    },
+    {
+      "group": "prompts-get-* and completion-complete",
+      "reason": "Upstream expects fixture prompt and resource names. Actual prompts and completions are checked in product transport tests."
+    },
+    {
+      "group": "sep-2640-skills-directory",
+      "reason": "Optional directoryRead capability is not advertised; every shipped skill file is available through resources/read."
+    },
+    {
+      "group": "DNS rebinding, authorization, session lifecycle, SSE reconnection",
+      "reason": "This fixture bypasses only authentication by injecting a principal on a loopback listener. HTTP perimeter and deployment behavior require separate production-server tests."
+    },
+    {
+      "group": "Tasks, Apps, elicitation, sampling",
+      "reason": "Not offered by this release. No synthetic product tools are added to satisfy framework fixtures."
+    }
+  ],
+  "extension_scenarios": [
+    "sep-2640-skills-enumeration",
+    "sep-2640-skills-manifest"
+  ]
+}

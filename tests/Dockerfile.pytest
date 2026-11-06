@@ -4,10 +4,10 @@ WORKDIR /tests
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-COPY pyproject.toml .
-RUN uv sync
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
 
 COPY . .
 
-ENTRYPOINT ["uv", "run", "pytest"]
+ENTRYPOINT ["uv", "run", "--frozen", "pytest"]
 CMD ["-v", "--tb=short", "--html=/reports/report.html", "--self-contained-html"]

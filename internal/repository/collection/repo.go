@@ -160,6 +160,9 @@ func (r *Repo) Delete(ctx context.Context, name string) error {
 		return domain.ErrNotFound
 	}
 	generation := row["generation"]
+	if err := domain.ValidateCollectionGeneration(ctx, generation); err != nil {
+		return fmt.Errorf("delete collection generation: %w", err)
+	}
 	layout, err := storage.NewCollection(name, generation)
 	if err != nil {
 		return lifecycleError("collection repo", err)

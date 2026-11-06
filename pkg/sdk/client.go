@@ -58,7 +58,6 @@ type searchUseCase interface {
 
 // Client is the vecdex SDK entry point.
 type Client struct {
-	http            *httpBackend
 	closeOnce       sync.Once
 	stopMaintenance func()
 	store           db.Store
@@ -136,7 +135,7 @@ func wireClient(store db.Store, cfg *clientConfig, obs *observer) (*Client, erro
 
 	collSvc := collectionuc.New(collRepo, vectorDim)
 	docSvc := documentuc.New(docRepo, collRepo, domEmb, domEmb)
-	searchSvc := searchuc.New(searchRepo, collRepo, domEmb)
+	searchSvc := searchuc.New(searchRepo, collRepo, domEmb).WithDocuments(docRepo)
 	// Batch embedder берём из domEmb — чтобы batch шёл через ту же цепочку адаптеров
 	var batchEmb batchuc.BulkEmbedder
 	if be, ok := domEmb.(domain.BatchEmbedder); ok {
@@ -184,10 +183,6 @@ func (c *Client) Close() {
 func (c *Client) Ping(ctx context.Context) (err error) {
 	start := time.Now()
 	defer func() { c.obs.observe("ping", start, err) }()
-	if c.http != nil {
-		_, err = c.http.call(ctx, "GET", "/health", nil, nil)
-		return err
-	}
 
 	if err = c.store.Ping(ctx); err != nil {
 		return fmt.Errorf("ping: %w", err)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -15,13 +14,6 @@ import (
 
 	"github.com/kailas-cloud/vecdex/internal/db"
 	"github.com/kailas-cloud/vecdex/internal/domain/storage"
-	chiTransport "github.com/kailas-cloud/vecdex/internal/transport/chi"
-	gen "github.com/kailas-cloud/vecdex/internal/transport/generated"
-	batchuc "github.com/kailas-cloud/vecdex/internal/usecase/batch"
-	collectionuc "github.com/kailas-cloud/vecdex/internal/usecase/collection"
-	documentuc "github.com/kailas-cloud/vecdex/internal/usecase/document"
-	searchuc "github.com/kailas-cloud/vecdex/internal/usecase/search"
-	"go.uber.org/zap"
 )
 
 type expiryEmbedder struct{ calls atomic.Int64 }
@@ -54,23 +46,9 @@ func newExpiryClient(t *testing.T, ctx context.Context) (*Client, *expiryEmbedde
 	return client, embedder
 }
 
-func expiryHTTPClient(t *testing.T, embedded *Client) *Client {
-	t.Helper()
-	server := chiTransport.NewServer(embedded.collSvc.(*collectionuc.Service), embedded.docSvc.(*documentuc.Service),
-		embedded.searchSvc.(*searchuc.Service), embedded.batchSvc.(*batchuc.Service), nil, nil, zap.NewNop())
-	endpoint := httptest.NewServer(gen.Handler(server))
-	t.Cleanup(endpoint.Close)
-	client, err := NewHTTP(endpoint.URL, "", WithHTTPClient(endpoint.Client()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(client.Close)
-	return client
-}
-
 func TestDocumentExpiryIntegration(t *testing.T) {
 	requireJSONMetadataFixture(t)
-	for _, facade := range []string{"embedded", "http"} {
+	for _, facade := range []string{"embedded"} {
 		t.Run(facade, func(t *testing.T) { runDocumentExpiryContract(t, facade) })
 	}
 }
@@ -83,9 +61,6 @@ func runDocumentExpiryContract(t *testing.T, facade string) {
 	defer embedded.Close()
 	embedded.stopMaintenance() // Logical visibility must work with physical cleanup stopped.
 	client := embedded
-	if facade == "http" {
-		client = expiryHTTPClient(t, embedded)
-	}
 	name := fmt.Sprintf("expiry_%s_%d", facade, time.Now().UnixNano())
 	if _, err := client.Collections().Ensure(ctx, name); err != nil {
 		t.Fatal(err)

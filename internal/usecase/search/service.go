@@ -57,7 +57,7 @@ func (s *Service) WithConfig(cfg Config) *Service {
 func (s *Service) Search(
 	ctx context.Context, collectionName string, req *request.Request,
 ) ([]result.Result, int, error) {
-	col, err := s.colls.Get(ctx, collectionName)
+	col, err := s.resolveCollection(ctx, collectionName)
 	if err != nil {
 		return nil, 0, fmt.Errorf("get collection: %w", err)
 	}
@@ -68,6 +68,7 @@ func (s *Service) Search(
 		}
 	}
 	ctx = collectionSearchContext(ctx, col)
+	ctx = domain.WithExpectedCollectionGeneration(ctx, col.Generation())
 	if err = validateFiltersAgainstSchema(req.Filters(), col); err != nil {
 		return nil, 0, fmt.Errorf("%w: %w", domain.ErrInvalidSchema, err)
 	}
@@ -131,7 +132,7 @@ func filterByScore(results []result.Result, minScore float64) []result.Result {
 func (s *Service) Similar(
 	ctx context.Context, collectionName, documentID string, req *request.SimilarRequest,
 ) ([]result.Result, int, error) {
-	col, err := s.colls.Get(ctx, collectionName)
+	col, err := s.resolveCollection(ctx, collectionName)
 	if err != nil {
 		return nil, 0, fmt.Errorf("get collection: %w", err)
 	}
@@ -139,6 +140,7 @@ func (s *Service) Similar(
 		return nil, 0, fmt.Errorf("similar embedding space: %w", err)
 	}
 	ctx = collectionSearchContext(ctx, col)
+	ctx = domain.WithExpectedCollectionGeneration(ctx, col.Generation())
 	vector, err := s.loadDocumentVector(ctx, collectionName, documentID, req.Filters())
 	if err != nil {
 		return nil, 0, err
@@ -169,7 +171,7 @@ func (s *Service) Similar(
 func (s *Service) loadDocumentVector(
 	ctx context.Context, collectionName, documentID string, filters filter.Expression,
 ) ([]float32, error) {
-	col, err := s.colls.Get(ctx, collectionName)
+	col, err := s.resolveCollection(ctx, collectionName)
 	if err != nil {
 		return nil, fmt.Errorf("get collection: %w", err)
 	}
@@ -400,4 +402,15 @@ func collectionSearchContext(ctx context.Context, col domcol.Collection) context
 		fields = append(fields, name)
 	}
 	return domain.WithSearchMetadataFields(domain.WithCollectionGeneration(ctx, col.Generation()), fields)
+}
+
+func (s *Service) resolveCollection(ctx context.Context, name string) (domcol.Collection, error) {
+	col, err := s.colls.Get(ctx, name)
+	if err != nil {
+		return domcol.Collection{}, fmt.Errorf("resolve collection: %w", err)
+	}
+	if err := domain.ValidateCollectionGeneration(ctx, col.Generation()); err != nil {
+		return domcol.Collection{}, fmt.Errorf("resolve collection: %w", err)
+	}
+	return col, nil
 }

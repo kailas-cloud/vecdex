@@ -174,9 +174,6 @@ func TestApplyDefaults(t *testing.T) {
 	if cfg.HTTP.ReadTimeoutSec != 10 {
 		t.Errorf("expected ReadTimeoutSec=10, got %d", cfg.HTTP.ReadTimeoutSec)
 	}
-	if cfg.HTTP.WriteTimeoutSec != 310 {
-		t.Errorf("expected WriteTimeoutSec=310, got %d", cfg.HTTP.WriteTimeoutSec)
-	}
 	if cfg.HTTP.ShutdownSec != 10 {
 		t.Errorf("expected ShutdownSec=10, got %d", cfg.HTTP.ShutdownSec)
 	}
@@ -217,7 +214,7 @@ func TestApplyDefaults(t *testing.T) {
 
 func TestApplyDefaults_NoOverride(t *testing.T) {
 	cfg := Config{
-		HTTP:   HTTPConfig{ReadTimeoutSec: 30, WriteTimeoutSec: 60, ShutdownSec: 5},
+		HTTP:   HTTPConfig{ReadTimeoutSec: 30, ShutdownSec: 5},
 		Valkey: ValkeyConfig{ReadinessTimeout: 15},
 		Index:  IndexConfig{HNSWM: 16, HNSWEFConstruct: 200, DefaultPageSize: 50, MaxPageSize: 500, MaxBatchSize: 50},
 		Search: SearchConfig{
@@ -232,9 +229,6 @@ func TestApplyDefaults_NoOverride(t *testing.T) {
 
 	if cfg.HTTP.ReadTimeoutSec != 30 {
 		t.Errorf("expected ReadTimeoutSec=30, got %d", cfg.HTTP.ReadTimeoutSec)
-	}
-	if cfg.HTTP.WriteTimeoutSec != 60 {
-		t.Errorf("expected WriteTimeoutSec=60, got %d", cfg.HTTP.WriteTimeoutSec)
 	}
 	if cfg.Index.HNSWM != 16 {
 		t.Errorf("expected HNSWM=16, got %d", cfg.Index.HNSWM)

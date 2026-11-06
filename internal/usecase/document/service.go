@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kailas-cloud/vecdex/internal/domain"
+	domcol "github.com/kailas-cloud/vecdex/internal/domain/collection"
 	"github.com/kailas-cloud/vecdex/internal/domain/collection/field"
 	domdoc "github.com/kailas-cloud/vecdex/internal/domain/document"
 	"github.com/kailas-cloud/vecdex/internal/domain/document/patch"
@@ -50,9 +51,12 @@ func (s *Service) WithPagination(defaultPageSize, maxPageSize int) *Service {
 // Upsert creates or updates a document with automatic vectorization.
 // Returns true if the document was created, false if updated.
 func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc.Document) (bool, error) {
+	if domain.RequireAbsent(ctx) && domain.ExpectedVersion(ctx) != nil {
+		return false, fmt.Errorf("create-only and expected version are mutually exclusive: %w", domain.ErrInvalidSchema)
+	}
 	ctx, cancel := context.WithTimeout(ctx, ingestion.DocumentTimeout)
 	defer cancel()
-	col, err := s.colls.Get(ctx, collectionName)
+	col, err := s.resolveCollection(ctx, collectionName)
 	if err != nil {
 		return false, fmt.Errorf("get collection: %w", err)
 	}
@@ -99,7 +103,7 @@ func (s *Service) Upsert(ctx context.Context, collectionName string, doc *domdoc
 
 // Get retrieves a document by collection and ID.
 func (s *Service) Get(ctx context.Context, collectionName, id string) (domdoc.Document, error) {
-	col, err := s.colls.Get(ctx, collectionName)
+	col, err := s.resolveCollection(ctx, collectionName)
 	if err != nil {
 		return domdoc.Document{}, fmt.Errorf("get collection: %w", err)
 	}
@@ -116,7 +120,7 @@ func (s *Service) Get(ctx context.Context, collectionName, id string) (domdoc.Do
 func (s *Service) List(
 	ctx context.Context, collectionName, cursor string, limit int,
 ) ([]domdoc.Document, string, error) {
-	col, err := s.colls.Get(ctx, collectionName)
+	col, err := s.resolveCollection(ctx, collectionName)
 	if err != nil {
 		return nil, "", fmt.Errorf("get collection: %w", err)
 	}
@@ -138,9 +142,12 @@ func (s *Service) List(
 
 // Delete removes a document.
 func (s *Service) Delete(ctx context.Context, collectionName, id string) error {
+	if domain.RequireAbsent(ctx) {
+		return fmt.Errorf("create-only is invalid for deletion: %w", domain.ErrInvalidSchema)
+	}
 	ctx, cancel := context.WithTimeout(ctx, ingestion.DocumentTimeout)
 	defer cancel()
-	col, err := s.colls.Get(ctx, collectionName)
+	col, err := s.resolveCollection(ctx, collectionName)
 	if err != nil {
 		return fmt.Errorf("get collection: %w", err)
 	}
@@ -162,9 +169,12 @@ func (s *Service) Delete(ctx context.Context, collectionName, id string) error {
 
 // Patch applies a partial update to a document.
 func (s *Service) Patch(ctx context.Context, collectionName, id string, p patch.Patch) (domdoc.WriteResult, error) {
+	if domain.RequireAbsent(ctx) {
+		return domdoc.WriteResult{}, fmt.Errorf("create-only is invalid for patch: %w", domain.ErrInvalidSchema)
+	}
 	ctx, cancel := context.WithTimeout(ctx, ingestion.DocumentTimeout)
 	defer cancel()
-	col, err := s.colls.Get(ctx, collectionName)
+	col, err := s.resolveCollection(ctx, collectionName)
 	if err != nil {
 		return domdoc.WriteResult{}, fmt.Errorf("get collection: %w", err)
 	}
@@ -218,7 +228,7 @@ func (s *Service) Patch(ctx context.Context, collectionName, id string, p patch.
 
 // Count returns the number of documents in a collection.
 func (s *Service) Count(ctx context.Context, collectionName string) (int, error) {
-	col, err := s.colls.Get(ctx, collectionName)
+	col, err := s.resolveCollection(ctx, collectionName)
 	if err != nil {
 		return 0, fmt.Errorf("get collection: %w", err)
 	}
@@ -330,4 +340,15 @@ func keysPtrFloat(m map[string]*float64) []string {
 func (s *Service) WithEmbeddingSpace(fingerprint string) *Service {
 	s.embeddingSpace = fingerprint
 	return s
+}
+
+func (s *Service) resolveCollection(ctx context.Context, name string) (domcol.Collection, error) {
+	col, err := s.colls.Get(ctx, name)
+	if err != nil {
+		return domcol.Collection{}, fmt.Errorf("resolve collection: %w", err)
+	}
+	if err := domain.ValidateCollectionGeneration(ctx, col.Generation()); err != nil {
+		return domcol.Collection{}, fmt.Errorf("resolve collection: %w", err)
+	}
+	return col, nil
 }
