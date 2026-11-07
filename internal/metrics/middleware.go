@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -41,11 +42,12 @@ func Middleware() func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
-			ww := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+			// Preserve Flusher and ResponseController support for MCP SSE streams.
+			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			next.ServeHTTP(ww, r)
 
 			duration := time.Since(start).Seconds()
-			status := strconv.Itoa(ww.status)
+			status := strconv.Itoa(ww.Status())
 
 			// Use chi route pattern for path normalization
 			routePattern := chi.RouteContext(r.Context()).RoutePattern()
@@ -64,26 +66,4 @@ func normalizePath(path string) string {
 		return "unknown"
 	}
 	return path
-}
-
-// statusWriter captures the response status code.
-type statusWriter struct {
-	http.ResponseWriter
-	status      int
-	wroteHeader bool
-}
-
-func (w *statusWriter) WriteHeader(status int) {
-	if !w.wroteHeader {
-		w.status = status
-		w.wroteHeader = true
-	}
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *statusWriter) Write(b []byte) (int, error) {
-	if !w.wroteHeader {
-		w.wroteHeader = true
-	}
-	return w.ResponseWriter.Write(b) //nolint:wrapcheck // delegating to underlying ResponseWriter
 }

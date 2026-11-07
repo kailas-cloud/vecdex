@@ -60,6 +60,13 @@ services:
     volumes:
       - ./config/incompatible.yaml:/app/config/docker.yaml:ro
 
+  vecdex-budget:
+    extends:
+      service: vecdex-valkey
+    profiles: [valkey]
+    volumes:
+      - ./config/budget.yaml:/app/config/docker.yaml:ro
+
   pytest-valkey:
     profiles: [valkey]
     build:
@@ -68,11 +75,14 @@ services:
     environment:
       - VECDEX_BASE_URL=http://vecdex-valkey:8080
       - VECDEX_INCOMPATIBLE_URL=http://vecdex-incompatible:8080
+      - VECDEX_BUDGET_URL=http://vecdex-budget:8080
       - VECDEX_API_KEY=test-api-key
     depends_on:
       vecdex-valkey:
         condition: service_healthy
       vecdex-incompatible:
+        condition: service_healthy
+      vecdex-budget:
         condition: service_healthy
     volumes:
       - ./reports:/reports
@@ -104,6 +114,7 @@ services:
       dockerfile: Dockerfile.pytest
     environment:
       - VECDEX_BASE_URL=http://vecdex-valkey-onnx:8080
+      - VECDEX_EMBEDDING_BACKEND=onnx
       - VECDEX_API_KEY=test-api-key
       - VECDEX_VECTOR_DIM=384
       - VECDEX_EMBEDDING_BACKEND=onnx

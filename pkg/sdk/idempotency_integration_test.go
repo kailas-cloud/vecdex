@@ -4,23 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"go.uber.org/zap"
-
 	"github.com/kailas-cloud/vecdex/internal/domain/storage"
-	chiTransport "github.com/kailas-cloud/vecdex/internal/transport/chi"
-	gen "github.com/kailas-cloud/vecdex/internal/transport/generated"
-	batchuc "github.com/kailas-cloud/vecdex/internal/usecase/batch"
-	collectionuc "github.com/kailas-cloud/vecdex/internal/usecase/collection"
-	documentuc "github.com/kailas-cloud/vecdex/internal/usecase/document"
-	searchuc "github.com/kailas-cloud/vecdex/internal/usecase/search"
 )
 
 func TestIdempotencyIntegration(t *testing.T) {
@@ -29,33 +18,7 @@ func TestIdempotencyIntegration(t *testing.T) {
 	defer cancel()
 	embedded, embedder := newMetadataIntegrationClient(t, ctx)
 	defer embedded.Close()
-	server := chiTransport.NewServer(embedded.collSvc.(*collectionuc.Service), embedded.docSvc.(*documentuc.Service),
-		embedded.searchSvc.(*searchuc.Service), embedded.batchSvc.(*batchuc.Service), nil, nil, zap.NewNop())
-	router := gen.Handler(server)
-	var drop atomic.Bool
-	drop.Store(true)
-	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut && r.Header.Get("Idempotency-Key") == "lost-response" && drop.Swap(false) {
-			recorder := httptest.NewRecorder()
-			router.ServeHTTP(recorder, r)
-			if recorder.Code != http.StatusCreated {
-				t.Errorf("fault injection did not follow a successful commit: %d %s", recorder.Code, recorder.Body)
-			}
-			connection, _, err := w.(http.Hijacker).Hijack()
-			if err == nil {
-				_ = connection.Close()
-			}
-			return
-		}
-		router.ServeHTTP(w, r)
-	}))
-	defer endpoint.Close()
-	remote, err := NewHTTP(endpoint.URL, "", WithHTTPClient(endpoint.Client()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer remote.Close()
-	for label, client := range map[string]*Client{"embedded": embedded, "http": remote} {
+	for label, client := range map[string]*Client{"embedded": embedded} {
 		t.Run(label, func(t *testing.T) {
 			name := fmt.Sprintf("requests_%s_%d", label, time.Now().UnixNano())
 			if _, err := client.Collections().Ensure(ctx, name); err != nil {
@@ -73,9 +36,6 @@ func TestIdempotencyIntegration(t *testing.T) {
 			assertTypedRequestOptions(t, ctx, client, name)
 			assertCompactRequestStorage(t, ctx, embedded, name)
 			assertRequestCollectionGeneration(t, ctx, client, name)
-			if label == "http" {
-				assertLostHTTPWriteResponse(t, ctx, client, embedder, name)
-			}
 		})
 	}
 }
@@ -329,23 +289,5 @@ func assertCompactRequestStorage(t *testing.T, ctx context.Context, client *Clie
 			strings.Contains(receipt["result"], "SciFact") || strings.Contains(receipt["result"], "nested") {
 			t.Fatalf("request receipt retained source data or lost its outcome: %v %v", receipt, err)
 		}
-	}
-}
-
-func assertLostHTTPWriteResponse(
-	t *testing.T, ctx context.Context, client *Client, embedder *metadataEmbedder, name string,
-) {
-	t.Helper()
-	docs := client.Documents(name)
-	source := Document{ID: "lost", Content: "SciFact lost response"}
-	before := embedder.calls.Load()
-	_, _ = docs.Upsert(ctx, source, IdempotencyKey("lost-response"))
-	result, err := docs.Upsert(ctx, source, IdempotencyKey("lost-response"))
-	if err != nil || !result.Created || result.Version == "" || embedder.calls.Load() != before+1 {
-		t.Fatalf("retry after lost response repeated the write or embedding: %+v %v", result, err)
-	}
-	stored, err := docs.Get(ctx, source.ID)
-	if err != nil || stored.Version != result.Version || stored.Content != source.Content {
-		t.Fatalf("lost-response receipt differs from native commit: %+v %v", stored, err)
 	}
 }

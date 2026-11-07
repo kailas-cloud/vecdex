@@ -60,6 +60,7 @@ func (r *Repo) Upsert(ctx context.Context, collectionName string, doc *domdoc.Do
 		Set:              fields,
 		Children:         children,
 		Replace:          true,
+		RequireAbsent:    domain.RequireAbsent(ctx),
 		ExpectedRevision: domain.ExpectedRevision(ctx),
 		ExpectedVersion:  domain.ExpectedVersion(ctx),
 		GuardKey:         layout.Guard(p),

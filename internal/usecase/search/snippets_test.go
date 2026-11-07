@@ -31,6 +31,9 @@ func TestSnippetBudgetPreservesRankAndSourceProjection(t *testing.T) {
 			total := 0
 			for i, hit := range got {
 				total += len(hit.Content())
+				if hit.ContentTruncated() != (len(hit.Content()) < len(texts[i])) {
+					t.Fatalf("incorrect excerpt truncation flag for %q", hit.ID())
+				}
 				if !utf8.ValidString(hit.Content()) || !strings.HasPrefix(texts[i], hit.Content()) {
 					t.Fatalf("invalid UTF-8 excerpt: %q", hit.Content())
 				}
@@ -74,5 +77,21 @@ func TestSnippetWindowTranslatesUnicodeCaseOffsets(t *testing.T) {
 		if !strings.Contains(got, "КЛЮЧ") || len(got) > 32 || !utf8.ValidString(got) {
 			t.Fatalf("Unicode case mapping shifted the excerpt: query=%q excerpt=%q", query, got)
 		}
+	}
+}
+
+func TestSnippetTruncationSurvivesRankingProjection(t *testing.T) {
+	hits := []result.Result{
+		result.New("long", .9, "long source excerpt", nil, nil, nil),
+		result.New("short", .8, "x", nil, nil, nil),
+	}
+	trimmed := limitSnippets(hits, 8, "")
+	fused := fuseRRF(trimmed, nil, 10)
+	if len(fused) != 2 || !fused[0].ContentTruncated() || fused[1].ContentTruncated() {
+		t.Fatalf("ranking lost excerpt truncation flags: %+v", fused)
+	}
+	repeated := limitSnippets(fused, 1000, "")
+	if !repeated[0].ContentTruncated() {
+		t.Fatal("a second budget pass forgot earlier shortening")
 	}
 }

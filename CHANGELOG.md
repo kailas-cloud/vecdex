@@ -5,7 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## Unreleased — MCP v2 (breaking)
+
+- Replace REST/OpenAPI and `sdk.NewHTTP` with Streamable HTTP MCP at `/mcp`.
+- Add 17 memory, collection, context and status tools; resources, prompts,
+  completions and four portable skills. Modern profile is `2026-07-28`, with a
+  base `2025-11-25` profile for compatible clients.
+- Add stable Bearer principals with read/write/admin roles, durable owned
+  contexts, conditional writes and collection generation fences.
+- Preserve embedded Go SDK batch/ingest and v3 source data. Contexts use a new
+  native Valkey namespace. Configure `auth.tokens` instead of `auth.api_keys`.
+- Remove the unused `http.write_timeout_sec` setting. Delete it from existing
+  configuration before upgrading; strict loading rejects the obsolete field.
+  Ordinary MCP operations have a 120-second deadline; subscription lifetimes
+  are managed separately.
+- Retain `/health` and `/metrics`. Deployment validation status and any remaining
+  client/harness limits are recorded under `tests/`.
+
+## [3.0.0] - 2026-11-05
 
 ### Added
 

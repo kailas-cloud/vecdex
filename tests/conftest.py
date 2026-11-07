@@ -1,161 +1,119 @@
-"""Shared fixtures for vecdex E2E tests."""
-
+"""Native MCP E2E fixtures. Every memory operation uses tools/call."""
 import os
 import time
 import uuid
 
 import httpx
 import pytest
-from tenacity import retry, stop_after_attempt, wait_fixed
+
+from mcp_client import MCPClient, write_key
 
 VECDEX_BASE_URL = os.environ.get("VECDEX_BASE_URL", "http://localhost:8080")
 VECDEX_API_KEY = os.environ.get("VECDEX_API_KEY", "test-api-key")
-DB_DRIVER = os.environ.get("DB_DRIVER", "valkey")
-VECDEX_VECTOR_DIM = int(os.environ.get("VECDEX_VECTOR_DIM", "1024"))
 
 
-def unique_name() -> str:
-    """Generate a unique collection name for test isolation."""
-    ts = int(time.time() * 1000)
-    short_id = uuid.uuid4().hex[:8]
-    return f"pytest_{ts}_{short_id}"
+def unique_name():
+    return "pytest_" + uuid.uuid4().hex
 
 
-@pytest.fixture(scope="session")
-def client() -> httpx.Client:
-    """Authenticated httpx client for API v2."""
-    c = httpx.Client(
-        base_url=VECDEX_BASE_URL,
-        headers={"Authorization": f"Bearer {VECDEX_API_KEY}"},
-        timeout=330.0,
-    )
-    yield c
-    c.close()
+def eventually(assertion, attempts=20):
+    for attempt in range(attempts):
+        try:
+            return assertion()
+        except AssertionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.15)
 
 
 @pytest.fixture(scope="session")
-def raw_client() -> httpx.Client:
-    """Unauthenticated httpx client for 401 tests."""
-    c = httpx.Client(base_url=VECDEX_BASE_URL, timeout=330.0)
-    yield c
-    c.close()
+def mcp():
+    with MCPClient(VECDEX_BASE_URL, VECDEX_API_KEY) as connection:
+        yield connection
 
 
 @pytest.fixture(scope="session")
-def health_client() -> httpx.Client:
-    """Client for root endpoints for /health and /metrics."""
-    c = httpx.Client(base_url=VECDEX_BASE_URL, timeout=330.0)
-    yield c
-    c.close()
+def raw_client():
+    with httpx.Client(base_url=VECDEX_BASE_URL, timeout=30) as connection:
+        yield connection
+
+
+@pytest.fixture(scope="session")
+def health_client(raw_client):
+    return raw_client
+
+
+@pytest.fixture(scope="session")
+def client():
+    """HTTP client only for operator health/tracing endpoints."""
+    with httpx.Client(base_url=VECDEX_BASE_URL, timeout=30,
+                      headers={"Authorization": f"Bearer {VECDEX_API_KEY}"}) as connection:
+        yield connection
+
+
+def open_context(mcp, collection, **settings):
+    return mcp.call("context_create", {
+        "name": "E2E " + collection["name"], "collection": collection["name"],
+        "generation": collection["generation"], "idempotency_key": write_key(), **settings,
+    })["context"]
+
+
+def close_context(mcp, context_id):
+    result = mcp.result("context_get", {"context_id": context_id})["structuredContent"]
+    if result["ok"]:
+        mcp.call("context_delete", {"context_id": context_id, "expected_version": result["data"]["version"],
+                                    "idempotency_key": write_key()})
+    else:
+        assert result["error"]["code"] == "not_found", result
 
 
 @pytest.fixture()
-def collection_name() -> str:
-    """Return a unique collection name."""
-    return unique_name()
+def context_factory(mcp):
+    opened = []
+    def create(collection, **settings):
+        context = open_context(mcp, collection, **settings)
+        opened.append(context["context_id"])
+        return context
+    yield create
+    for context_id in opened:
+        close_context(mcp, context_id)
 
 
 @pytest.fixture()
-def collection_factory(client: httpx.Client):
-    """Factory that creates collections and cleans up after the test."""
-    created: list[str] = []
-
-    def _create(
-        name: str | None = None,
-        fields: list[dict] | None = None,
-        type: str | None = None,
-    ) -> dict:
-        coll_name = name or unique_name()
-        body: dict = {"name": coll_name}
-        if fields:
-            body["fields"] = fields
-        if type:
-            body["type"] = type
-        resp = client.post("/api/v2/collections", json=body)
-        assert resp.status_code == 201, f"Failed to create collection: {resp.text}"
-        created.append(coll_name)
-        return resp.json()
-
-    yield _create
-
-    for name in created:
-        client.delete(f"/api/v2/collections/{name}")
+def collection_factory(mcp):
+    created = []
+    def create(name=None, fields=None):
+        collection = mcp.call("collection_create", {"name": name or unique_name(), "fields": fields or []})
+        context = open_context(mcp, collection)
+        created.append((collection, context))
+        return {**collection, "context_id": context["context_id"], "context": context}
+    yield create
+    for collection, context in reversed(created):
+        close_context(mcp, context["context_id"])
+        current = mcp.call("collection_get", {"name": collection["name"]})
+        if current["state"] == "active" and current["generation"] == collection["generation"]:
+            mcp.call("collection_delete", {"name": collection["name"], "generation": collection["generation"],
+                                           "confirm_name": collection["name"]})
 
 
 @pytest.fixture()
-def populated_collection(client: httpx.Client, collection_factory):
-    """Collection with 5 documents, tag 'category' and numeric 'priority' fields."""
-    coll = collection_factory(
-        fields=[
-            {"name": "category", "type": "tag"},
-            {"name": "priority", "type": "numeric"},
-        ]
-    )
-    coll_name = coll["name"]
-
-    docs = [
-        {
-            "id": "doc-1",
-            "content": "Python is a programming language used for web development",
-            "metadata": {"category": "programming", "priority": 10},
-        },
-        {
-            "id": "doc-2",
-            "content": "Go is a statically typed language designed at Google",
-            "metadata": {"category": "programming", "priority": 8},
-        },
-        {
-            "id": "doc-3",
-            "content": "Kubernetes orchestrates containerized applications",
-            "metadata": {"category": "infrastructure", "priority": 9},
-        },
-        {
-            "id": "doc-4",
-            "content": "Valkey is an in-memory data store for caching",
-            "metadata": {"category": "database", "priority": 7},
-        },
-        {
-            "id": "doc-5",
-            "content": "Docker packages applications into containers",
-            "metadata": {"category": "infrastructure", "priority": 6},
-        },
+def populated_collection(mcp, collection_factory):
+    collection = collection_factory(fields=[{"name": "category", "type": "tag"}, {"name": "priority", "type": "numeric"}])
+    descriptions = [
+        ("Python programming language for web development", "programming", 10),
+        ("Go programming language designed at Google", "programming", 8),
+        ("Kubernetes orchestrates containerized applications", "infrastructure", 9),
+        ("Valkey is an in-memory database for caching", "database", 7),
+        ("Docker packages applications into containers", "infrastructure", 6),
     ]
-
-    for doc in docs:
-        resp = client.put(
-            f"/api/v2/collections/{coll_name}/documents/{doc['id']}",
-            json={
-                "content": doc["content"],
-                "metadata": doc["metadata"],
-            },
-        )
-        assert resp.status_code in (200, 201), f"Failed to upsert {doc['id']}: {resp.text}"
-
-    # Wait for indexing
-    time.sleep(0.5)
-
-    return {"name": coll_name, "docs": docs, **coll}
-
-
-@retry(stop=stop_after_attempt(5), wait=wait_fixed(0.3))
-def search_with_retry(client: httpx.Client, collection: str, **kwargs) -> httpx.Response:
-    """Search with retry for indexing lag."""
-    expect_results = kwargs.pop("_expect_results", True)
-    resp = client.post(f"/api/v2/collections/{collection}/search", json=kwargs)
-    assert resp.status_code == 200
-    data = resp.json()
-    if expect_results and len(data.get("items", [])) == 0:
-        raise AssertionError("No search results yet, retrying...")
-    return resp
-
-
-def assert_embedding_headers(resp: httpx.Response):
-    """Assert embedding response headers are present and numeric."""
-    assert "x-embedding-tokens" in resp.headers
-    tokens = int(resp.headers["x-embedding-tokens"])
-    assert tokens >= 0
-
-
-def assert_no_embedding_headers(resp: httpx.Response):
-    """Assert embedding headers are absent."""
-    assert "x-embedding-tokens" not in resp.headers
+    documents = []
+    for index, (text, category, priority) in enumerate(descriptions, 1):
+        document = {"id": f"doc-{index}", "content": "memoryrecord " + text,
+                    "metadata": {"category": category, "priority": priority}}
+        receipt = mcp.create(collection["context_id"], document["id"], document["content"], metadata=document["metadata"])
+        documents.append({**document, "version": receipt["version"]})
+    def indexed():
+        found = mcp.call("memory_search", {"context_id": collection["context_id"], "query": "memoryrecord", "mode": "keyword"})
+        assert len(found["items"]) == 5
+    eventually(indexed)
+    return {**collection, "docs": documents}

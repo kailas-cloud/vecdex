@@ -29,12 +29,27 @@ const (
 
 // CollectionInfo represents collection metadata.
 type CollectionInfo struct {
-	Name      string
-	Type      CollectionType
-	Fields    []FieldInfo
-	VectorDim int
-	Revision  int
-	CreatedAt int64
+	Generation string
+	Name       string
+	Type       CollectionType
+	Fields     []FieldInfo
+	VectorDim  int
+	Revision   int
+	CreatedAt  int64
+}
+
+// CollectionInspection includes creating/deleting lifecycle states and absence.
+type CollectionInspection struct {
+	Name       string
+	Generation string
+	State      string
+	Collection *CollectionInfo
+}
+
+// SourceProjection selects source text and metadata without fragment vectors.
+type SourceProjection struct {
+	Content  bool
+	Metadata bool
 }
 
 // FieldInfo represents a collection field definition.

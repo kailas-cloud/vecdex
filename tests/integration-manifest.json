@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "validated_on": "2026-11-06",
+  "release_published": false,
+  "protocols": {
+    "primary": "2026-07-28",
+    "compatibility": "2025-11-25"
+  },
+  "versions": {
+    "go": "1.27.3",
+    "golangci-lint": "2.15.0",
+    "go-mcp-sdk": "v1.8.0",
+    "python-mcp": "2.3.0",
+    "strands-agents": "1.64.0",
+    "codex-cli": "0.167.0"
+  },
+  "checks": {
+    "go_test_short": "passed with native Valkey enabled",
+    "go_vet": "passed",
+    "golangci_lint": "passed, 0 issues",
+    "build": "passed",
+    "contract_examples": {
+      "passed": 17,
+      "total": 17
+    },
+    "skills_validation": {
+      "passed": 4,
+      "total": 4
+    },
+    "native_valkey": "passed, including ACL denying scripting",
+    "native_cluster": "passed, including topology recovery and fork-window contracts",
+    "sdk_mcp_replica_subscription": "passed"
+  },
+  "e2e": {
+    "valkey": {
+      "passed": 100,
+      "skipped": 4,
+      "seconds": 69.15
+    },
+    "valkey-onnx": {
+      "passed": 97,
+      "skipped": 7,
+      "seconds": 43.07
+    },
+    "valkey-bedrock": {
+      "passed": 102,
+      "skipped": 2,
+      "seconds": 38.51
+    }
+  },
+  "clients": {
+    "codex": {
+      "scenario": "tests/clients/codex-smoke.prompt.txt",
+      "model": "gpt-6-astra",
+      "kind": "real model compatibility smoke",
+      "success": true,
+      "mcp_calls": 22,
+      "normalized_result_bytes": 23610,
+      "latency_seconds": 79.58271441700344,
+      "reported_token_usage": {
+        "input_tokens": 312756,
+        "cached_input_tokens": 290048,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1981,
+        "reasoning_output_tokens": 55
+      },
+      "report": "tests/reports/clients/codex-final/summary.json"
+    },
+    "strands": {
+      "scenario": "tests/test_mcp_clients.py::test_real_strands_agent_receives_workflow_data",
+      "kind": "real Agent/MCPClient/AgentSkills with deterministic model",
+      "success": true,
+      "measurements": {
+        "client": "strands",
+        "strands_version": "1.64.0",
+        "mcp_version": "2.3.0",
+        "model_kind": "deterministic",
+        "agent_elapsed_seconds": 0.09025279100023909,
+        "mcp_calls": 8,
+        "skill_calls": 1,
+        "model_visible_result_bytes": 9953
+      },
+      "report": "tests/reports/clients/strands/junit.xml"
+    }
+  },
+  "conformance": {
+    "manifest": "tests/conformance/manifest.json",
+    "upstream_commit": "7169291ec0b68eb370fddcd9947313ab0d5e4156",
+    "upstream_version": "0.2.0-alpha.11",
+    "scoped_checks_passed": true,
+    "full_conformance": false,
+    "passed": 93,
+    "info": 1,
+    "fixture_limitations": 4,
+    "optional_not_advertised": 2,
+    "report": "tests/reports/conformance/20261106T203912183149Z/summary.json"
+  },
+  "limits": [
+    "Raw reports are local/CI artifacts under ignored tests/reports; commands and pinned runners are versioned.",
+    "E2E skips are explicit provider/replica fixture conditions; no application regression is marked xfail.",
+    "Upstream conformance covers selected production surfaces. Artificial test tools/resources are not implemented; full certification is not claimed.",
+    "Client smoke measurements are single observations on different workflows, not comparable benchmarks.",
+    "Codex result bytes are normalized client serialization, not model tokens. Token usage includes host instructions.",
+    "Strands uses a deterministic model; semantic fixtures do not evaluate free-form LLM extraction quality.",
+    "Rate limiting, exhaustive/snapshot search, a proven indexing barrier and guaranteed subscription replay remain unavailable."
+  ]
+}

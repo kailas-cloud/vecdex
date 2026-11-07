@@ -1,0 +1,4128 @@
+[
+  {
+    "name": "memory_search",
+    "description": "Find source memories in the context's collection using hybrid, keyword or semantic retrieval. Returns evidence excerpts and versions, never vectors.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "filters": {
+          "additionalProperties": false,
+          "properties": {
+            "must": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Declared indexed metadata field.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "match": {
+                    "description": "Exact tag match.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "range": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "gt": {
+                        "type": "number"
+                      },
+                      "gte": {
+                        "type": "number"
+                      },
+                      "lt": {
+                        "type": "number"
+                      },
+                      "lte": {
+                        "type": "number"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "key"
+                ],
+                "type": "object"
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
+            "must_not": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Declared indexed metadata field.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "match": {
+                    "description": "Exact tag match.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "range": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "gt": {
+                        "type": "number"
+                      },
+                      "gte": {
+                        "type": "number"
+                      },
+                      "lt": {
+                        "type": "number"
+                      },
+                      "lte": {
+                        "type": "number"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "key"
+                ],
+                "type": "object"
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
+            "should": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Declared indexed metadata field.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "match": {
+                    "description": "Exact tag match.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "range": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "gt": {
+                        "type": "number"
+                      },
+                      "gte": {
+                        "type": "number"
+                      },
+                      "lt": {
+                        "type": "number"
+                      },
+                      "lte": {
+                        "type": "number"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "key"
+                ],
+                "type": "object"
+              },
+              "maxItems": 32,
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_content_bytes": {
+          "maximum": 163840,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "min_score": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "mode": {
+          "enum": [
+            "semantic",
+            "keyword",
+            "hybrid"
+          ],
+          "type": "string"
+        },
+        "query": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "context_id",
+        "query"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "context_id": {
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  },
+                  "content_truncated": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "score": {
+                    "type": "number"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "score",
+                  "content",
+                  "uri",
+                  "content_truncated"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "next_action": {
+              "type": "string"
+            },
+            "total_candidates": {
+              "type": "integer"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "items",
+            "truncated",
+            "context_id",
+            "total_candidates",
+            "next_action"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "memory_read",
+    "description": "Read a source memory in UTF-8 byte pages. Supply version when continuing a page. Metadata is opt-in.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "description": "Source document ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "include_content": {
+          "description": "False returns metadata only; default true.",
+          "type": "boolean"
+        },
+        "include_metadata": {
+          "type": "boolean"
+        },
+        "max_bytes": {
+          "maximum": 163840,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "metadata_fields": {
+          "items": {
+            "description": "Top-level metadata field to include.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "offset": {
+          "maximum": 163840,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "description": "Version from the first page; required when offset \u003e 0.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "context_id",
+        "id"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "content": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "metadata": {
+              "type": "object"
+            },
+            "next_offset": {
+              "type": "integer"
+            },
+            "offset": {
+              "type": "integer"
+            },
+            "total_bytes": {
+              "type": "integer"
+            },
+            "uri": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "version",
+            "uri",
+            "expires_at"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "memory_list",
+    "description": "List source identities and versions with an opaque cursor. Content is fetched separately with memory_read.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "cursor": {
+          "description": "Opaque cursor from this operation and scope.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "include_metadata": {
+          "type": "boolean"
+        },
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "context_id"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "context_id": {
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "complete": {
+                    "type": "boolean"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "expires_at": {
+                    "type": "integer"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object"
+                  },
+                  "next_offset": {
+                    "type": "integer"
+                  },
+                  "offset": {
+                    "type": "integer"
+                  },
+                  "total_bytes": {
+                    "type": "integer"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "uri",
+                  "expires_at"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "next_cursor": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "items",
+            "next_cursor",
+            "truncated",
+            "context_id"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "memory_similar",
+    "description": "Find other memories similar to a source, reusing its stored vector without another embedding call.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "filters": {
+          "additionalProperties": false,
+          "properties": {
+            "must": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Declared indexed metadata field.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "match": {
+                    "description": "Exact tag match.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "range": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "gt": {
+                        "type": "number"
+                      },
+                      "gte": {
+                        "type": "number"
+                      },
+                      "lt": {
+                        "type": "number"
+                      },
+                      "lte": {
+                        "type": "number"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "key"
+                ],
+                "type": "object"
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
+            "must_not": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Declared indexed metadata field.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "match": {
+                    "description": "Exact tag match.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "range": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "gt": {
+                        "type": "number"
+                      },
+                      "gte": {
+                        "type": "number"
+                      },
+                      "lt": {
+                        "type": "number"
+                      },
+                      "lte": {
+                        "type": "number"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "key"
+                ],
+                "type": "object"
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
+            "should": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Declared indexed metadata field.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "match": {
+                    "description": "Exact tag match.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "range": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "gt": {
+                        "type": "number"
+                      },
+                      "gte": {
+                        "type": "number"
+                      },
+                      "lt": {
+                        "type": "number"
+                      },
+                      "lte": {
+                        "type": "number"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "key"
+                ],
+                "type": "object"
+              },
+              "maxItems": 32,
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "id": {
+          "description": "Source document ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_content_bytes": {
+          "maximum": 163840,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "min_score": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "mode": {
+          "enum": [
+            "semantic",
+            "keyword",
+            "hybrid"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "context_id",
+        "id"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "context_id": {
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  },
+                  "content_truncated": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "score": {
+                    "type": "number"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version",
+                  "score",
+                  "content",
+                  "uri",
+                  "content_truncated"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "next_action": {
+              "type": "string"
+            },
+            "total_candidates": {
+              "type": "integer"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "items",
+            "truncated",
+            "context_id",
+            "total_candidates",
+            "next_action"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "memory_create",
+    "description": "Create an absent memory. Never overwrites an existing ID. Requires a write key and retry-safe idempotency key.",
+    "role": "write",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "maxLength": 163840,
+          "minLength": 1,
+          "type": "string"
+        },
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "UTC Unix milliseconds. Null or zero clears expiry; omission preserves it.",
+          "maximum": 253402300799999,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Source document ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Keep unchanged for retries of this exact operation.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "metadata": {
+          "description": "Arbitrary source metadata; only declared collection fields are indexed.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "context_id",
+        "id",
+        "content",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "created": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "replayed": {
+              "type": "boolean"
+            },
+            "uri": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "version",
+            "uri",
+            "replayed",
+            "created"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "memory_update",
+    "description": "Update a memory with exact version CAS. Metadata uses JSON Merge Patch; omitted fields remain unchanged.",
+    "role": "write",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "maxLength": 163840,
+          "minLength": 1,
+          "type": "string"
+        },
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "UTC Unix milliseconds. Null or zero clears expiry; omission preserves it.",
+          "maximum": 253402300799999,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Source document ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Keep unchanged for retries of this exact operation.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "if_version": {
+          "description": "Exact opaque source version returned by the latest read.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "metadata": {
+          "description": "Arbitrary source metadata; only declared collection fields are indexed.",
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "context_id",
+        "id",
+        "if_version",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "replayed": {
+              "type": "boolean"
+            },
+            "uri": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "version",
+            "uri",
+            "replayed"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "memory_delete",
+    "description": "Delete exactly the source version reviewed by the caller. Requires a write key, if_version and idempotency_key.",
+    "role": "write",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "description": "Source document ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Keep unchanged for retries of this exact operation.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "if_version": {
+          "description": "Exact opaque source version returned by the latest read.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "context_id",
+        "id",
+        "if_version",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "deleted": {
+              "type": "boolean"
+            },
+            "deleted_version": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "replayed": {
+              "type": "boolean"
+            },
+            "uri": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "deleted",
+            "deleted_version",
+            "uri",
+            "replayed"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "collection_list",
+    "description": "List current collection identities and generations with a bounded cursor.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor from this operation and scope.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "created_at": {
+                    "type": "integer"
+                  },
+                  "fields": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "generation": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "generation",
+                  "type",
+                  "fields",
+                  "uri",
+                  "created_at"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "next_cursor": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "items",
+            "next_cursor",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "collection_get",
+    "description": "Inspect a collection, including active/deleting/absent lifecycle state and immutable generation.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Collection name.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "collection": {
+              "additionalProperties": false,
+              "properties": {
+                "created_at": {
+                  "type": "integer"
+                },
+                "fields": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "type"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "generation": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "uri": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "generation",
+                "type",
+                "fields",
+                "uri",
+                "created_at"
+              ],
+              "type": "object"
+            },
+            "generation": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "generation",
+            "state"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "collection_create",
+    "description": "Create a text collection with declared tag/numeric metadata indexes. Administrator only.",
+    "role": "admin",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "description": "Metadata field name.",
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "tag",
+                  "numeric"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "type"
+            ],
+            "type": "object"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Collection name.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "created_at": {
+              "type": "integer"
+            },
+            "fields": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "type"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "generation": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "uri": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "generation",
+            "type",
+            "fields",
+            "uri",
+            "created_at",
+            "state"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "collection_delete",
+    "description": "Delete exactly the named collection generation and all of its sources. Administrator only; confirm_name must match name.",
+    "role": "admin",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "confirm_name": {
+          "description": "Explicitly repeat the reviewed collection name.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "generation": {
+          "description": "Exact generation from collection_get.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Collection name.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "generation",
+        "confirm_name"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "deleted": {
+              "type": "boolean"
+            },
+            "generation": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "generation",
+            "state",
+            "deleted"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "context_list",
+    "description": "List this principal's durable contexts. Read keys may manage their own contexts.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor from this operation and scope.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "collection": {
+                    "type": "string"
+                  },
+                  "collection_state": {
+                    "type": "string"
+                  },
+                  "context_id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "expires_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "generation": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "pin_states": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "current_version": {
+                          "type": "string"
+                        },
+                        "document_id": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "document_id",
+                        "version",
+                        "state"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "pins": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "document_id": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "document_id",
+                        "version"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "search": {
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "stale": {
+                    "type": "boolean"
+                  },
+                  "updated_at": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "context_id",
+                  "version",
+                  "name",
+                  "collection",
+                  "generation",
+                  "search",
+                  "pins",
+                  "expires_at",
+                  "created_at",
+                  "updated_at",
+                  "uri"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "next_cursor": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "items",
+            "next_cursor",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "context_create",
+    "description": "Create an owned durable context pinned to a collection generation, with search defaults, pins and expiry. Default lifetime is seven days.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "description": "Collection name.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "UTC timestamp; null makes the context persistent. Omission preserves/defaults its expiry.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "description": "Generation from collection_get or collection_list.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Keep unchanged for retries of this exact operation.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Human-readable context name.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "pins": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "document_id": {
+                "description": "Pinned source ID.",
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "version": {
+                "description": "Pinned source version.",
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "version"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "search": {
+          "additionalProperties": false,
+          "description": "Saved search defaults; explicit search arguments override them.",
+          "properties": {
+            "filters": {
+              "additionalProperties": false,
+              "properties": {
+                "must": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "key": {
+                        "description": "Declared indexed metadata field.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "match": {
+                        "description": "Exact tag match.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "range": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "gt": {
+                            "type": "number"
+                          },
+                          "gte": {
+                            "type": "number"
+                          },
+                          "lt": {
+                            "type": "number"
+                          },
+                          "lte": {
+                            "type": "number"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 32,
+                  "type": "array"
+                },
+                "must_not": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "key": {
+                        "description": "Declared indexed metadata field.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "match": {
+                        "description": "Exact tag match.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "range": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "gt": {
+                            "type": "number"
+                          },
+                          "gte": {
+                            "type": "number"
+                          },
+                          "lt": {
+                            "type": "number"
+                          },
+                          "lte": {
+                            "type": "number"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 32,
+                  "type": "array"
+                },
+                "should": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "key": {
+                        "description": "Declared indexed metadata field.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "match": {
+                        "description": "Exact tag match.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "range": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "gt": {
+                            "type": "number"
+                          },
+                          "gte": {
+                            "type": "number"
+                          },
+                          "lt": {
+                            "type": "number"
+                          },
+                          "lte": {
+                            "type": "number"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 32,
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "limit": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_content_bytes": {
+              "maximum": 163840,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "min_score": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "mode": {
+              "enum": [
+                "semantic",
+                "keyword",
+                "hybrid"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "collection",
+        "generation",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "collection_state": {
+                  "type": "string"
+                },
+                "context_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "generation": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "pin_states": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "current_version": {
+                        "type": "string"
+                      },
+                      "document_id": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "document_id",
+                      "version",
+                      "state"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "pins": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "document_id": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "document_id",
+                      "version"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "search": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "stale": {
+                  "type": "boolean"
+                },
+                "updated_at": {
+                  "type": "string"
+                },
+                "uri": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "context_id",
+                "version",
+                "name",
+                "collection",
+                "generation",
+                "search",
+                "pins",
+                "expires_at",
+                "created_at",
+                "updated_at",
+                "uri"
+              ],
+              "type": "object"
+            },
+            "current_state": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "operation": {
+              "type": "string"
+            },
+            "replayed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "context",
+            "operation",
+            "replayed",
+            "current_state",
+            "current_version"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "context_get",
+    "description": "Read an owned context and report whether its pinned collection generation is still usable.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "verify_pins": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "context_id"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "collection": {
+              "type": "string"
+            },
+            "collection_state": {
+              "type": "string"
+            },
+            "context_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "expires_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "generation": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "pin_states": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "current_version": {
+                    "type": "string"
+                  },
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "document_id",
+                  "version",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "pins": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "document_id",
+                  "version"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "search": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "updated_at": {
+              "type": "string"
+            },
+            "uri": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "context_id",
+            "version",
+            "name",
+            "collection",
+            "generation",
+            "search",
+            "pins",
+            "expires_at",
+            "created_at",
+            "updated_at",
+            "uri",
+            "collection_state",
+            "stale"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "context_update",
+    "description": "Update owned context settings using exact version CAS. Collection and generation cannot be retargeted.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "expected_version": {
+          "description": "Exact opaque context version returned by the latest read.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "UTC timestamp; null makes the context persistent. Omission preserves/defaults its expiry.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "description": "Keep unchanged for retries of this exact operation.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        },
+        "name": {
+          "description": "New context name.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "pins": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "document_id": {
+                "description": "Pinned source ID.",
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "version": {
+                "description": "Pinned source version.",
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_id",
+              "version"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "search": {
+          "additionalProperties": false,
+          "description": "Saved search defaults; explicit search arguments override them.",
+          "properties": {
+            "filters": {
+              "additionalProperties": false,
+              "properties": {
+                "must": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "key": {
+                        "description": "Declared indexed metadata field.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "match": {
+                        "description": "Exact tag match.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "range": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "gt": {
+                            "type": "number"
+                          },
+                          "gte": {
+                            "type": "number"
+                          },
+                          "lt": {
+                            "type": "number"
+                          },
+                          "lte": {
+                            "type": "number"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 32,
+                  "type": "array"
+                },
+                "must_not": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "key": {
+                        "description": "Declared indexed metadata field.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "match": {
+                        "description": "Exact tag match.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "range": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "gt": {
+                            "type": "number"
+                          },
+                          "gte": {
+                            "type": "number"
+                          },
+                          "lt": {
+                            "type": "number"
+                          },
+                          "lte": {
+                            "type": "number"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 32,
+                  "type": "array"
+                },
+                "should": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "key": {
+                        "description": "Declared indexed metadata field.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "match": {
+                        "description": "Exact tag match.",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "range": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "gt": {
+                            "type": "number"
+                          },
+                          "gte": {
+                            "type": "number"
+                          },
+                          "lt": {
+                            "type": "number"
+                          },
+                          "lte": {
+                            "type": "number"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 32,
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "limit": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_content_bytes": {
+              "maximum": 163840,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "min_score": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "mode": {
+              "enum": [
+                "semantic",
+                "keyword",
+                "hybrid"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "context_id",
+        "expected_version",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "collection_state": {
+                  "type": "string"
+                },
+                "context_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "generation": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "pin_states": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "current_version": {
+                        "type": "string"
+                      },
+                      "document_id": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "document_id",
+                      "version",
+                      "state"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "pins": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "document_id": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "document_id",
+                      "version"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "search": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "stale": {
+                  "type": "boolean"
+                },
+                "updated_at": {
+                  "type": "string"
+                },
+                "uri": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "context_id",
+                "version",
+                "name",
+                "collection",
+                "generation",
+                "search",
+                "pins",
+                "expires_at",
+                "created_at",
+                "updated_at",
+                "uri"
+              ],
+              "type": "object"
+            },
+            "current_state": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "operation": {
+              "type": "string"
+            },
+            "replayed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "context",
+            "operation",
+            "replayed",
+            "current_state",
+            "current_version"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "context_delete",
+    "description": "Delete an owned context using exact version CAS; does not delete memories.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "expected_version": {
+          "description": "Exact opaque context version returned by the latest read.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Keep unchanged for retries of this exact operation.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "context_id",
+        "expected_version",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "collection_state": {
+                  "type": "string"
+                },
+                "context_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "generation": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "pin_states": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "current_version": {
+                        "type": "string"
+                      },
+                      "document_id": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "document_id",
+                      "version",
+                      "state"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "pins": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "document_id": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "document_id",
+                      "version"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "search": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "stale": {
+                  "type": "boolean"
+                },
+                "updated_at": {
+                  "type": "string"
+                },
+                "uri": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "context_id",
+                "version",
+                "name",
+                "collection",
+                "generation",
+                "search",
+                "pins",
+                "expires_at",
+                "created_at",
+                "updated_at",
+                "uri"
+              ],
+              "type": "object"
+            },
+            "current_state": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "operation": {
+              "type": "string"
+            },
+            "replayed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "context",
+            "operation",
+            "replayed",
+            "current_state",
+            "current_version"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "memory_status",
+    "description": "Report readiness, embedding budget and transport limits; optionally inspect an owned context.",
+    "role": "read",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "context_id": {
+          "description": "Owned durable context handle; never a transport session ID.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_output_bytes": {
+          "maximum": 262144,
+          "minimum": 4096,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "data"
+          ]
+        },
+        {
+          "not": {
+            "required": [
+              "data"
+            ]
+          },
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "cache_scope": {
+              "type": "string"
+            },
+            "capabilities": {
+              "additionalProperties": false,
+              "properties": {
+                "advisory_pins": {
+                  "type": "boolean"
+                },
+                "apps": {
+                  "type": "boolean"
+                },
+                "cancellation": {
+                  "type": "boolean"
+                },
+                "collection_mutations": {
+                  "type": "boolean"
+                },
+                "completions": {
+                  "type": "boolean"
+                },
+                "create_only": {
+                  "type": "boolean"
+                },
+                "durable_contexts": {
+                  "type": "boolean"
+                },
+                "elicitation": {
+                  "type": "boolean"
+                },
+                "history": {
+                  "type": "boolean"
+                },
+                "json_merge_patch": {
+                  "type": "boolean"
+                },
+                "owned_context_management": {
+                  "type": "boolean"
+                },
+                "progress": {
+                  "type": "boolean"
+                },
+                "prompts": {
+                  "type": "boolean"
+                },
+                "rate_limiting": {
+                  "type": "boolean"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "sampling": {
+                  "type": "boolean"
+                },
+                "search_modes": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "search_visibility_barrier": {
+                  "type": "boolean"
+                },
+                "skills_protocol": {
+                  "type": "string"
+                },
+                "snapshot_pagination": {
+                  "type": "boolean"
+                },
+                "source_mutations": {
+                  "type": "boolean"
+                },
+                "source_projections": {
+                  "type": "boolean"
+                },
+                "source_version_cas": {
+                  "type": "boolean"
+                },
+                "subscriptions_protocol": {
+                  "type": "string"
+                },
+                "tasks": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "advisory_pins",
+                "apps",
+                "cancellation",
+                "collection_mutations",
+                "completions",
+                "create_only",
+                "durable_contexts",
+                "elicitation",
+                "history",
+                "json_merge_patch",
+                "owned_context_management",
+                "progress",
+                "prompts",
+                "rate_limiting",
+                "role",
+                "sampling",
+                "search_modes",
+                "search_visibility_barrier",
+                "skills_protocol",
+                "snapshot_pagination",
+                "source_mutations",
+                "source_projections",
+                "source_version_cas",
+                "subscriptions_protocol",
+                "tasks"
+              ],
+              "type": "object"
+            },
+            "checks": {
+              "type": "object"
+            },
+            "context": {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "type": "string"
+                },
+                "collection_state": {
+                  "type": "string"
+                },
+                "context_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "generation": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "pin_states": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "current_version": {
+                        "type": "string"
+                      },
+                      "document_id": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "document_id",
+                      "version",
+                      "state"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "pins": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "document_id": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "document_id",
+                      "version"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "search": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "stale": {
+                  "type": "boolean"
+                },
+                "updated_at": {
+                  "type": "string"
+                },
+                "uri": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "context_id",
+                "version",
+                "name",
+                "collection",
+                "generation",
+                "search",
+                "pins",
+                "expires_at",
+                "created_at",
+                "updated_at",
+                "uri"
+              ],
+              "type": "object"
+            },
+            "embedding_usage": {
+              "additionalProperties": false,
+              "properties": {
+                "budget_limit": {
+                  "type": "integer"
+                },
+                "budget_remaining": {
+                  "type": "integer"
+                },
+                "exhausted": {
+                  "type": "boolean"
+                },
+                "period": {
+                  "type": "string"
+                },
+                "requests": {
+                  "type": "integer"
+                },
+                "resets_at": {
+                  "type": "integer"
+                },
+                "tokens": {
+                  "type": "integer"
+                },
+                "unknown_requests": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "period",
+                "tokens",
+                "requests",
+                "unknown_requests",
+                "budget_limit",
+                "budget_remaining",
+                "exhausted",
+                "resets_at"
+              ],
+              "type": "object"
+            },
+            "limits": {
+              "additionalProperties": false,
+              "properties": {
+                "content_max_bytes": {
+                  "type": "integer"
+                },
+                "context_default_ttl_ms": {
+                  "type": "integer"
+                },
+                "context_idempotency_ttl_ms": {
+                  "type": "integer"
+                },
+                "context_max_bytes": {
+                  "type": "integer"
+                },
+                "context_pins_max": {
+                  "type": "integer"
+                },
+                "list_default_limit": {
+                  "type": "integer"
+                },
+                "max_items": {
+                  "type": "integer"
+                },
+                "metadata_max_bytes": {
+                  "type": "integer"
+                },
+                "operation_deadline_ms": {
+                  "type": "integer"
+                },
+                "output_default_bytes": {
+                  "type": "integer"
+                },
+                "output_max_bytes": {
+                  "type": "integer"
+                },
+                "read_default_content_bytes": {
+                  "type": "integer"
+                },
+                "search_default_limit": {
+                  "type": "integer"
+                },
+                "source_idempotency_ttl_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "content_max_bytes",
+                "context_default_ttl_ms",
+                "context_idempotency_ttl_ms",
+                "context_max_bytes",
+                "context_pins_max",
+                "list_default_limit",
+                "max_items",
+                "metadata_max_bytes",
+                "operation_deadline_ms",
+                "output_default_bytes",
+                "output_max_bytes",
+                "read_default_content_bytes",
+                "search_default_limit",
+                "source_idempotency_ttl_ms"
+              ],
+              "type": "object"
+            },
+            "max_request_bytes": {
+              "type": "integer"
+            },
+            "max_result_bytes": {
+              "type": "integer"
+            },
+            "max_subscriptions": {
+              "type": "integer"
+            },
+            "protocol_versions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "status": {
+              "type": "string"
+            },
+            "subscription_poll_ms": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "protocol_versions",
+            "max_result_bytes",
+            "max_request_bytes",
+            "max_subscriptions",
+            "subscription_poll_ms",
+            "cache_scope",
+            "capabilities",
+            "limits"
+          ],
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "current_version": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable",
+            "action"
+          ],
+          "type": "object"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
+    }
+  }
+]

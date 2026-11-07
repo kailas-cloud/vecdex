@@ -5,19 +5,23 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import json
 import math
 import statistics
 import sys
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from uuid import uuid4
 
-import httpx
+import httpx2
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "output" / "latest"
@@ -26,6 +30,8 @@ DEFAULT_API_KEY = "test-api-key"
 DEFAULT_COLLECTION = "scifact-benchmark"
 DEFAULT_QRELS_SPLIT = "test"
 DEFAULT_LIMIT = 100
+BENCHMARK_RESULT_BUDGET = 256 << 10
+BENCHMARK_PROTOCOL_VERSION = "2026-07-28"
 DEFAULT_MODES = ("semantic", "hybrid")
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_SMOKE_QUERIES = 5
@@ -44,89 +50,123 @@ class SourceDocument:
 
 
 class VecdexClient:
-    """Minimal REST client for the benchmark harness."""
+    """Source-level MCP benchmark client using the official Python SDK.
 
-    def __init__(self, base_url: str, api_key: str, timeout_sec: float) -> None:
-        self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(timeout_sec),
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
+    Contexts bind every daily operation to one collection generation. Ingestion
+    uses individual create-only calls; grouping below only controls progress logs.
+    """
 
-    def close(self) -> None:
-        self._client.close()
+    def __init__(self, session: ClientSession, protocol_version: str) -> None:
+        self._session = session
+        self.protocol_version = protocol_version
+        self.contexts: dict[str, dict[str, Any]] = {}
 
-    def health(self) -> dict[str, Any]:
-        response = self._client.get("/health")
-        response.raise_for_status()
-        return response.json()
+    @classmethod
+    @asynccontextmanager
+    async def connect(cls, base_url: str, api_key: str, timeout_sec: float):
+        endpoint = base_url.rstrip("/") + "/mcp"
+        async with httpx2.AsyncClient(
+            timeout=timeout_sec, headers={"Authorization": f"Bearer {api_key}"}
+        ) as http:
+            async with streamable_http_client(endpoint, http_client=http) as (read, write):
+                async with ClientSession(read, write, read_timeout_seconds=timeout_sec) as session:
+                    discovered = await session.discover()
+                    if BENCHMARK_PROTOCOL_VERSION not in discovered.supported_versions:
+                        raise RuntimeError("server does not support the benchmark MCP wire version")
+                    client = cls(session, BENCHMARK_PROTOCOL_VERSION)
+                    try:
+                        yield client
+                    finally:
+                        await client.release_contexts()
 
-    def delete_collection(self, name: str) -> None:
-        response = self._client.delete(f"/api/v2/collections/{quote(name, safe='')}")
-        if response.status_code not in (204, 404):
-            raise httpx.HTTPStatusError(
-                f"delete collection failed: {response.status_code} {response.text}",
-                request=response.request,
-                response=response,
-            )
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = await self._session.call_tool(name, arguments)
+        payload = getattr(result, "structured_content", None)
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{name} returned no structured result")
+        if getattr(result, "is_error", False) or payload.get("ok") is not True:
+            raise RuntimeError(f"{name} failed: {payload.get('error', payload)}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError(f"{name} returned invalid data")
+        return data
 
-    def create_collection(self, name: str) -> dict[str, Any]:
-        response = self._client.post("/api/v2/collections", json={"name": name})
-        response.raise_for_status()
-        return response.json()
+    async def health(self) -> dict[str, Any]:
+        return await self.call_tool("memory_status", {})
 
-    def batch_upsert(self, collection: str, documents: list[dict[str, Any]]) -> dict[str, Any]:
-        response = self._client.post(
-            f"/api/v2/collections/{quote(collection, safe='')}/documents/batch-upsert",
-            json={"documents": documents},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        failed = int(payload.get("failed", 0))
-        if failed:
-            items = payload.get("items", [])
-            errors = [item for item in items if item.get("status") == "error"]
-            raise RuntimeError(f"batch upsert failed for {failed} items: {errors[:3]}")
-        items = payload.get("items", [])
-        if payload.get("succeeded") != len(documents) or len(items) != len(documents):
-            raise RuntimeError("batch upsert did not acknowledge every source")
-        for document, item in zip(documents, items, strict=True):
-            if item.get("id") != document["id"] or item.get("status") != "ok" or not item.get("version"):
-                raise RuntimeError(f"invalid source write receipt: {item}")
-        return payload
+    async def delete_collection(self, name: str) -> None:
+        inspected = await self.call_tool("collection_get", {"name": name})
+        if inspected.get("state") == "absent":
+            return
+        if inspected.get("state") != "active" or not inspected.get("generation"):
+            raise RuntimeError(f"collection is not ready for reset: {inspected}")
+        await self.call_tool("collection_delete", {
+            "name": name, "generation": inspected["generation"], "confirm_name": name,
+        })
 
-    def search(
-        self,
-        collection: str,
-        query: str,
-        mode: str,
-        limit: int,
+    async def create_collection(self, name: str) -> dict[str, Any]:
+        collection = await self.call_tool("collection_create", {"name": name})
+        generation = collection.get("generation")
+        if not isinstance(generation, str) or not generation:
+            raise RuntimeError(f"collection_create returned no generation: {collection}")
+        receipt = await self.call_tool("context_create", {
+            "name": "SciFact benchmark", "collection": name, "generation": generation,
+            "idempotency_key": f"scifact-context-{uuid4()}",
+        })
+        context = receipt.get("context", {})
+        if (context.get("collection") != name or context.get("generation") != generation
+                or not context.get("context_id") or not context.get("version")):
+            raise RuntimeError(f"invalid context receipt: {receipt}")
+        self.contexts[name] = context
+        return collection
+
+    async def release_contexts(self) -> None:
+        for context in self.contexts.values():
+            try:
+                await self.call_tool("context_delete", {
+                    "context_id": context["context_id"], "expected_version": context["version"],
+                    "idempotency_key": f"scifact-release-{context['context_id']}",
+                })
+            except Exception as exc:  # Preserve benchmark failures; contexts also expire automatically.
+                print(f"[warn] context cleanup failed: {exc}", file=sys.stderr)
+
+    async def create_sources(self, collection: str, documents: list[dict[str, Any]]) -> None:
+        context_id = self.contexts[collection]["context_id"]
+        for document in documents:
+            receipt = await self.call_tool("memory_create", {
+                "context_id": context_id, "id": document["id"], "content": document["content"],
+                "idempotency_key": f"scifact-source-{uuid4()}",
+            })
+            if (receipt.get("id") != document["id"] or not receipt.get("version")
+                    or receipt.get("created") is not True):
+                raise RuntimeError(f"invalid source write receipt: {receipt}")
+
+    async def search(
+        self, collection: str, query: str, mode: str, limit: int,
     ) -> dict[str, Any]:
-        response = self._client.post(
-            f"/api/v2/collections/{quote(collection, safe='')}/search",
-            json={
-                "query": query,
-                "mode": mode,
-                "limit": limit,
-                "max_content_bytes": 1,
-            },
-        )
-        response.raise_for_status()
-        return response.json()
+        context_id = self.contexts[collection]["context_id"]
+        data = await self.call_tool("memory_search", {
+            "context_id": context_id, "query": query, "mode": mode,
+            "limit": limit, "max_content_bytes": 1, "max_output_bytes": BENCHMARK_RESULT_BUDGET,
+        })
+        if data.get("context_id") != context_id:
+            raise RuntimeError("search returned a different candidate context")
+        if data.get("truncated") is not False:
+            raise RuntimeError("search exceeded the MCP response budget; increase the server result budget")
+        return data
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="vecdex base URL, e.g. http://localhost:8080")
-    parser.add_argument("--api-key", default=DEFAULT_API_KEY, help="vecdex API key")
+    parser.add_argument("--api-key", default=DEFAULT_API_KEY, help="vecdex admin bearer token")
     parser.add_argument("--collection", default=DEFAULT_COLLECTION, help="collection name used for the benchmark")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="directory where benchmark artifacts are written")
     parser.add_argument("--dataset-cache-dir", default=None, help="optional Hugging Face datasets cache dir")
     parser.add_argument("--dataset", default="scifact", help="dataset label written to the report")
     parser.add_argument("--qrels-split", default=DEFAULT_QRELS_SPLIT, help="SciFact qrels split to evaluate")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="vecdex limit search parameter")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="batch upsert size")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="local progress group size; each source uses one MCP create call")
     parser.add_argument("--modes", nargs="+", choices=("semantic", "hybrid", "keyword"), default=list(DEFAULT_MODES), help="search modes to evaluate")
     parser.add_argument("--smoke-queries", type=int, default=DEFAULT_SMOKE_QUERIES, help="number of test queries used by the search readiness probe")
     parser.add_argument("--search-retries", type=int, default=DEFAULT_SEARCH_RETRIES, help="retries for the readiness probe")
@@ -136,7 +176,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
+async def main() -> int:
     benchmark_started_at = time.perf_counter()
     args = parse_args()
     validate_args(args)
@@ -152,15 +192,14 @@ def main() -> int:
     documents, corpus_stats = build_source_documents(corpus)
     verify_qrels_coverage(corpus, qrels)
 
-    client = VecdexClient(args.base_url, args.api_key, args.http_timeout)
-    try:
-        wait_for_health(client, retries=args.search_retries, sleep_sec=args.search_retry_sleep)
-        reset_collection(client, args.collection)
-        ingest_stats = ingest_documents(client, args.collection, documents, batch_size=args.batch_size)
+    async with VecdexClient.connect(args.base_url, args.api_key, args.http_timeout) as client:
+        await wait_for_health(client, retries=args.search_retries, sleep_sec=args.search_retry_sleep)
+        await reset_collection(client, args.collection)
+        ingest_stats = await ingest_documents(client, args.collection, documents, batch_size=args.batch_size)
         if args.ingest_only:
             log(f"[done] ingest complete for collection={args.collection}; skipping evaluation (--ingest-only)")
             return 0
-        probe_search_readiness(
+        await probe_search_readiness(
             client=client,
             collection=args.collection,
             sample_queries=list(queries.items())[: args.smoke_queries],
@@ -179,7 +218,7 @@ def main() -> int:
         for mode in args.modes:
             log(f"[info] mode={mode}: evaluating {len(queries)} queries")
             mode_started_at = time.perf_counter()
-            mode_rows, mode_summary = evaluate_mode(
+            mode_rows, mode_summary = await evaluate_mode(
                 client=client,
                 collection=args.collection,
                 mode=mode,
@@ -206,10 +245,14 @@ def main() -> int:
             "collection": args.collection,
             "base_url": args.base_url,
             "config": {
-                "api_version": "v2",
+                "transport": "mcp",
+                "protocol_version": client.protocol_version,
+                "collection_generation": client.contexts[args.collection]["generation"],
+                "candidate_scope": "context collection generation",
+                "max_output_bytes": BENCHMARK_RESULT_BUDGET,
                 "fragmentation": "server",
                 "limit": args.limit,
-                "batch_size": args.batch_size,
+                "progress_group_size": args.batch_size,
                 "modes": list(args.modes),
             },
             "corpus_stats": corpus_stats,
@@ -234,8 +277,6 @@ def main() -> int:
             qrels=qrels,
         )
         log(f"[done] benchmark artifacts written to {output_dir}")
-    finally:
-        client.close()
 
     return 0
 
@@ -244,7 +285,7 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.limit <= 0 or args.limit > 100:
         raise ValueError("--limit must be within vecdex limits (1..100)")
     if args.batch_size <= 0 or args.batch_size > 100:
-        raise ValueError("--batch-size must be within vecdex batch upsert limits (1..100)")
+        raise ValueError("--batch-size must be within local progress group limits (1..100)")
     if args.search_retries <= 0:
         raise ValueError("--search-retries must be positive")
     if args.smoke_queries <= 0:
@@ -395,27 +436,29 @@ def verify_qrels_coverage(corpus: dict[str, str], qrels: dict[str, dict[str, int
         raise RuntimeError(f"qrels docs missing from corpus: {missing[:10]}")
 
 
-def wait_for_health(client: VecdexClient, retries: int, sleep_sec: float) -> None:
+async def wait_for_health(client: VecdexClient, retries: int, sleep_sec: float) -> None:
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
-            health = client.health()
+            health = await client.health()
             print(f"[info] vecdex health attempt={attempt}: {health.get('status', 'unknown')}")
+            if health.get("status") != "ok":
+                raise RuntimeError(f"unhealthy Vecdex: {health}")
             return
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             print(f"[warn] health probe attempt={attempt} failed: {exc}", file=sys.stderr, flush=True)
-            time.sleep(sleep_sec)
+            await asyncio.sleep(sleep_sec)
     raise RuntimeError("vecdex health probe failed") from last_error
 
 
-def reset_collection(client: VecdexClient, collection: str) -> None:
+async def reset_collection(client: VecdexClient, collection: str) -> None:
     log(f"[info] resetting collection {collection!r}")
-    client.delete_collection(collection)
-    client.create_collection(collection)
+    await client.delete_collection(collection)
+    await client.create_collection(collection)
 
 
-def ingest_documents(
+async def ingest_documents(
     client: VecdexClient,
     collection: str,
     documents: list[SourceDocument],
@@ -423,10 +466,10 @@ def ingest_documents(
 ) -> dict[str, Any]:
     total = len(documents)
     started_at = time.perf_counter()
-    log(f"[info] ingest start: collection={collection} documents={total} batch_size={batch_size}")
+    log(f"[info] ingest start: collection={collection} documents={total} progress_group_size={batch_size}")
     for start in range(0, total, batch_size):
         batch = documents[start : start + batch_size]
-        client.batch_upsert(collection, [{"id": doc.id, "content": doc.content} for doc in batch])
+        await client.create_sources(collection, [{"id": doc.id, "content": doc.content} for doc in batch])
         done = start + len(batch)
         elapsed = time.perf_counter() - started_at
         log(f"[info] ingest progress={done}/{total} elapsed={elapsed:.2f}s")
@@ -434,13 +477,14 @@ def ingest_documents(
     return {
         "document_count": total,
         "content_bytes": sum(len(doc.content.encode("utf-8")) for doc in documents),
-        "batch_count": math.ceil(total / batch_size),
+        "create_call_count": total,
+        "progress_group_count": math.ceil(total / batch_size),
         "elapsed_sec": elapsed,
         "documents_per_sec": total / elapsed if elapsed > 0 else 0.0,
     }
 
 
-def probe_search_readiness(
+async def probe_search_readiness(
     client: VecdexClient,
     collection: str,
     sample_queries: list[tuple[str, str]],
@@ -456,7 +500,7 @@ def probe_search_readiness(
         for attempt in range(1, retries + 1):
             query_id, query_text = sample_queries[(attempt - 1) % len(sample_queries)]
             try:
-                payload = client.search(collection, query_text, mode=mode, limit=limit)
+                payload = await client.search(collection, query_text, mode=mode, limit=limit)
                 if payload.get("items"):
                     log(
                         f"[info] readiness probe passed for mode={mode} on query={query_id} attempt={attempt}"
@@ -468,12 +512,12 @@ def probe_search_readiness(
                     file=sys.stderr,
                     flush=True,
                 )
-            time.sleep(sleep_sec)
+            await asyncio.sleep(sleep_sec)
         else:
             raise RuntimeError(f"search readiness probe did not return results for mode={mode}")
 
 
-def evaluate_mode(
+async def evaluate_mode(
     client: VecdexClient,
     collection: str,
     mode: str,
@@ -485,7 +529,7 @@ def evaluate_mode(
     query_count = len(queries)
 
     for idx, (query_id, query_text) in enumerate(queries.items(), start=1):
-        payload = client.search(collection, query_text, mode=mode, limit=limit)
+        payload = await client.search(collection, query_text, mode=mode, limit=limit)
         ranked_doc_ids = parse_ranked_doc_ids(payload)
         relevant = qrels.get(query_id, {})
         metrics = compute_metrics(ranked_doc_ids, relevant)
@@ -794,6 +838,8 @@ def build_report(
     lines.append(f"- Qrels split: {summary['qrels_split']}")
     lines.append(f"- Collection: `{summary['collection']}`")
     lines.append(f"- Vecdex base URL: {summary['base_url']}")
+    lines.append(f"- MCP protocol: {summary['config']['protocol_version']}")
+    lines.append(f"- Collection generation: `{summary['config']['collection_generation']}`")
     lines.append("")
     lines.append("## Corpus Diagnostics")
     lines.append("")
@@ -892,7 +938,7 @@ def format_report_query_block(row: dict[str, Any]) -> list[str]:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(asyncio.run(main()))
     except KeyboardInterrupt as exc:
         print("[error] interrupted", file=sys.stderr)
         raise SystemExit(130) from exc

@@ -50,11 +50,14 @@ docker compose --profile valkey down -v
 - The `valkey-onnx` profile runs the same contract against ONNX (`pytest-valkey-onnx`).
 - The `valkey-bedrock` profile runs a TLS Bedrock mock with two Vecdex replicas (`pytest-valkey-bedrock`). It uses a public test certificate and a dummy Bearer key; no AWS key is needed.
 - Run profiles separately or use different Compose project names to isolate their data. Reports share the same output path.
-- Nine strict xfails in `tests/test_10_rate_limiting.py` cover rate limiting that is not implemented yet. They are expected failures, not new regressions.
-- Set `VECDEX_TEST_VALKEY_ADDR=127.0.0.1:16379` to enable native transaction, lifecycle, catalog, cache TTL, and shared accounting regressions against an isolated local Valkey. These tests include an ACL that denies scripting.
+- The Python suite uses MCP directly. Rate limiting is not implemented; the old REST-only placeholder xfails were removed. `tests/MIGRATION.md` maps preserved assertions to MCP or embedded SDK coverage.
+- Set `VECDEX_TEST_VALKEY_ADDR=127.0.0.1:16379` to enable native transaction, lifecycle, catalog, durable contexts, cache TTL, and shared accounting regressions against an isolated local Valkey. These tests include an ACL that denies scripting.
 - Set `VECDEX_TEST_VALKEY_CLUSTER_ADDRS` to a comma-separated list of reachable seed addresses to run `TestPartitionCatalogNativeLive` against an isolated cluster with at least three primaries. This fixture writes and removes its own generation namespace, verifies v3 key co-location, native commits, physical distribution, and catalog pagination; it does not cover Search, replicas, or resharding.
 
 - `tests/cluster/README.md` describes the disposable Search fixture and `VECDEX_E2E_VALKEY_CLUSTER_ADDRS` SDK contracts. `VECDEX_E2E_CLUSTER_CONTAINER` explicitly opts into destructive topology changes on that fixture only. Review `tests/cluster/KNOWN_FAILURES.md` before interpreting scale-out results.
+
+- `tests/conformance/manifest.json` pins the official MCP harness and records scoped coverage and fixture limitations for both protocol profiles and Skills.
+- `internal/skills/bundle` is the single source for MCP skills and the installable archive (`scripts/package-skills.sh`).
 
 ## Practical notes
 

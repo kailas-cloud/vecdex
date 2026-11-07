@@ -3,7 +3,16 @@ http:
 valkey:
   addrs: [valkey:6379]
 auth:
-  api_keys: [test-api-key]
+  tokens:
+    - principal_id: team
+      role: admin
+      key: test-api-key
+    - principal_id: reader
+      role: read
+      key: test-read-key
+    - principal_id: writer
+      role: write
+      key: test-write-key
 embedding:
   providers:
     stub:

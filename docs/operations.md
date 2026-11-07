@@ -401,10 +401,48 @@ workflow (`.github/workflows/online-topology.yml`); its application test remains
 ordinary and can fail. A green supported-path workflow does not qualify online
 scale-out or scale-in on this Search release.
 
-With the required writer/fork settings, the full HTTP profiles passed on the
-current application code: 344 tests with the mock embedder, 341 with ONNX, and
+Before the MCP transport migration, the required writer/fork settings passed
+the old HTTP profiles: 344 tests with the mock embedder, 341 with ONNX, and
 350 with the two-instance Bedrock mock. The nine rate-limiting cases remain
 expected failures for an unimplemented feature. ONNX passed in an isolated run;
 an earlier simultaneous run exhausted the shared 6 GiB test VM and killed the
 Vecdex inference process, while Valkey remained running. That application OOM
 is separate from the Search topology and fork defects above.
+
+
+## MCP runtime and observability
+
+The public agent endpoint is `/mcp`. Configure `auth.tokens` with a stable
+`principal_id`, role (`read`, `write` or `admin`) and Bearer key. Invalid or empty
+credential configuration prevents startup. Rolling key rotation should keep the
+same identity and role on both old and new keys until callers have moved.
+
+Contexts are durable, owner-scoped records in their own versioned Valkey
+namespace. Related context records, catalog entries, expiry entries and receipts
+share a hash slot. Receipts last 24 hours even after deletion; do not remove them
+as a way to retry a failed request. Reads do not renew context or source expiry.
+
+Source and context writes use native conditional transactions. Context expiry
+index cleanup uses Valkey's clock so host/VM clock skew cannot strand expired
+catalog entries. Source confirmation is a direct read of the committed ID and
+version. Search remains asynchronously indexed.
+
+MCP metrics use the `vecdex_mcp_` prefix: `requests_total`,
+`request_duration_seconds`, `response_bytes`, `conflicts_total`, `replays_total`,
+`truncated_results_total`, `active_subscriptions` (listener streams), and
+`subscription_poll_errors_total`. Embedding and HTTP metrics remain available.
+MCP result bytes are measured before SDK envelope enrichment; HTTP metrics and
+access logs cover actual transport bytes. Requests log method, tool, stable
+outcome, latency and request ID, without arguments, source content or credentials.
+
+Ordinary MCP operations have a 120-second deadline. Subscription lifetimes are
+managed separately, and their streams can outlive that deadline. The obsolete
+`http.write_timeout_sec` setting has been removed; delete it from existing YAML
+files before upgrading because strict configuration loading rejects unknown
+fields.
+
+Shut subscription streams down before draining HTTP so termination cannot wait
+indefinitely for listeners. Changes are detected by coalesced polling, including
+SDK writes and changes on other replicas. A reconnect requires rereading current resources; there is no durable
+notification replay. Current MCP validation is recorded under `tests/`, separate
+from the historical REST counts above.

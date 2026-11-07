@@ -175,11 +175,12 @@ func fromInternalCollection(col domcol.Collection) CollectionInfo {
 		fields[i] = FieldInfo{Name: f.Name(), Type: FieldType(f.FieldType())}
 	}
 	return CollectionInfo{
-		Name:      col.Name(),
-		Type:      CollectionType(col.Type()),
-		Fields:    fields,
-		VectorDim: col.VectorDim(),
-		Revision:  col.Revision(),
-		CreatedAt: col.CreatedAt(),
+		Generation: col.Generation(),
+		Name:       col.Name(),
+		Type:       CollectionType(col.Type()),
+		Fields:     fields,
+		VectorDim:  col.VectorDim(),
+		Revision:   col.Revision(),
+		CreatedAt:  col.CreatedAt(),
 	}
 }

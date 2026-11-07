@@ -77,6 +77,10 @@ func (s *Store) Close() {
 	s.client.Close()
 }
 
+// Client returns the shared connection for colocated native context transactions.
+// The Store owns its lifetime; callers must not close it.
+func (s *Store) Client() rueidis.Client { return s.client }
+
 // WaitForReady polls complete primary and Search readiness until the deadline.
 func (s *Store) WaitForReady(ctx context.Context, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)

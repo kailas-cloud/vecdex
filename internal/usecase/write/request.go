@@ -29,6 +29,7 @@ type input struct {
 	Expected        *string         `json:"expected"`
 	Action          string          `json:"action"`
 	ExpiresAt       *int64          `json:"expires_at"`
+	RequireAbsent   bool            `json:"require_absent,omitempty"`
 }
 
 // Upsert reserves the exact caller input, independently of vector preparation.
@@ -39,7 +40,7 @@ func Upsert(
 	expiresAt := doc.ExpiresAt()
 	return begin(ctx, repo, collection, doc.ID(), &input{Content: &content, Metadata: doc.Metadata().JSON(),
 		Tags: doc.Tags(), Numerics: doc.Numerics(), Expected: domain.ExpectedVersion(ctx),
-		Action: "upsert", ExpiresAt: &expiresAt})
+		Action: "upsert", ExpiresAt: &expiresAt, RequireAbsent: domain.RequireAbsent(ctx)})
 }
 
 // Patch fingerprints the caller's merge patch, before any internal CAS retry.
@@ -87,6 +88,7 @@ func begin(
 		return ctx, nil, done, fmt.Errorf("begin source request: %w", err)
 	}
 	if replay != nil {
+		domain.MarkWriteReplayed(ctx)
 		return ctx, replay, done, nil
 	}
 	done = func() {

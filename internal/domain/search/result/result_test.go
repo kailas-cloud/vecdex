@@ -41,3 +41,16 @@ func TestNew_NilFields(t *testing.T) {
 		t.Errorf("Vector() = %v, want nil", r.Vector())
 	}
 }
+
+func TestExcerptTruncationDoesNotMutateSharedProjection(t *testing.T) {
+	original := New("source", 1, "full candidate excerpt", nil, nil, nil)
+	shortened := original.WithSnippet("excerpt")
+	if original.ContentTruncated() || !shortened.ContentTruncated() {
+		t.Fatal("excerpt copies shared mutable truncation state")
+	}
+	another := New("ranked", .5, original.Content(), nil, nil, nil).WithSourceOf(&original)
+	_ = another.WithSnippet("")
+	if original.ContentTruncated() || another.ContentTruncated() {
+		t.Fatal("shortening a derived copy changed the original projection")
+	}
+}

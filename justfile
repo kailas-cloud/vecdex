@@ -35,16 +35,10 @@ clean:
     go clean -testcache
     docker-compose down -v
 
-# Generate API code from OpenAPI spec
-generate:
-    cd api && go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.5.1 --config=oapi-codegen.yaml openapi.yaml
-    @echo "✓ Generated internal/transport/generated/api.gen.go"
-
 # Build vecdex binary into build/
 build:
     @mkdir -p build
     go build -o build/vecdex ./cmd/vecdex
-    go fmt ./...
     go vet ./...
 
 # Refresh minimal local ONNX assets for all-MiniLM-L6-v2 in ./models
@@ -56,9 +50,9 @@ download-model-all-minilm:
 lint:
     golangci-lint run ./...
 
-# Generate coverage report (excludes generated code)
+# Generate coverage report
 coverage:
-    go test $(go list ./... | grep -v /transport/generated) -coverprofile=coverage.out -covermode=atomic
+    go test ./... -coverprofile=coverage.out -covermode=atomic
     go tool cover -html=coverage.out -o coverage.html
     @echo "✓ Coverage report: coverage.html"
 
@@ -66,10 +60,9 @@ coverage:
 example-months:
     go run ./examples/months/
 
-# Serve API docs (Redoc) at localhost:9090
-docs:
-    @echo "Opening http://localhost:9090/docs.html"
-    @cd api && python3 -m http.server 9090
+# Package the same skills served by MCP
+package-skills:
+    ./scripts/package-skills.sh
 
 # Run pytest E2E suite against the supported Valkey backend
 test-pytest-valkey:

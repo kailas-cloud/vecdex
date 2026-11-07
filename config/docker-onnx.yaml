@@ -1,7 +1,6 @@
 http:
   port: 8080
   read_timeout_sec: 10
-  write_timeout_sec: 310
   shutdown_timeout_sec: 10
 
 valkey:
@@ -21,9 +20,16 @@ storage:
   key_prefix: "vecdex:"
 
 auth:
-  api_keys:
-    - test-api-key
-
+  tokens:
+    - principal_id: team
+      role: admin
+      key: test-api-key
+    - principal_id: reader
+      role: read
+      key: test-read-key
+    - principal_id: writer
+      role: write
+      key: test-write-key
 embedding:
   providers:
     local_onnx:
