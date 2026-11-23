@@ -188,7 +188,7 @@ func TestClusterSearchCoordinatorDistributionLive(t *testing.T) {
 	}
 	before := clusterSearchCallCounts(t, ctx, primaries)
 	for range 96 {
-		command := store.searchCommand([]string{index, "@status:{run}", "ALLSHARDS", "CONSISTENT", "LIMIT", "0", "10"})
+		command := store.searchCommand(index, "@status:{run}", nil, 10, nil)
 		if _, err := store.client.Do(ctx, command).ToArray(); err != nil {
 			t.Fatal(err)
 		}
