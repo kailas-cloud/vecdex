@@ -29,7 +29,7 @@ func (s *Store) CreateIndex(ctx context.Context, def *db.IndexDefinition) error 
 
 // DropIndex removes an FT index by name.
 func (s *Store) DropIndex(ctx context.Context, name string) error {
-	cmd := s.b().Arbitrary("FT.DROPINDEX").Keys(name).Build()
+	cmd := s.b().FtDropindex().Index(name).Build().SetSlot(name)
 	if err := s.do(ctx, cmd).Error(); err != nil {
 		if isIndexMissing(err) {
 			return db.ErrIndexNotFound
@@ -41,7 +41,7 @@ func (s *Store) DropIndex(ctx context.Context, name string) error {
 
 // IndexExists probes index existence via FT.INFO; "unknown index name" means absent.
 func (s *Store) IndexExists(ctx context.Context, name string) (bool, error) {
-	cmd := s.b().Arbitrary("FT.INFO").Keys(name).Build()
+	cmd := s.b().FtInfo().Index(name).Build().SetSlot(name)
 	if err := s.do(ctx, cmd).Error(); err != nil {
 		if isIndexMissing(err) {
 			return false, nil

@@ -7,8 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates=20230311* \
     curl=7.88.1-10+deb12u* \
     tar=1.34+dfsg-1.2+deb12u* \
+    unzip=6.0-28* \
  && rm -rf /var/lib/apt/lists/*
 
+# Microsoft publishes the same runtime version as native assets in its NuGet package.
 RUN set -eux; \
     arch="${TARGETARCH:-}"; \
     if [ -z "$arch" ]; then \
@@ -19,16 +21,25 @@ RUN set -eux; \
       esac; \
     fi; \
     case "$arch" in \
-      amd64) ort_arch="x64" ;; \
-      arm64) ort_arch="aarch64" ;; \
+      amd64) ort_arch="x64"; nuget_arch="x64" ;; \
+      arm64) ort_arch="aarch64"; nuget_arch="arm64" ;; \
       *) echo "unsupported Docker target architecture: $arch" >&2; exit 1 ;; \
     esac; \
     ort_pkg="onnxruntime-linux-${ort_arch}-${ONNXRUNTIME_VERSION}"; \
-    curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/${ort_pkg}.tgz" -o /tmp/onnxruntime.tgz; \
+    ort_dir="/opt/onnxruntime/${ort_pkg}"; \
     mkdir -p /opt/onnxruntime; \
-    tar -xzf /tmp/onnxruntime.tgz -C /opt/onnxruntime; \
-    ln -s "/opt/onnxruntime/${ort_pkg}" /opt/onnxruntime/current; \
-    rm /tmp/onnxruntime.tgz
+    if curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/${ort_pkg}.tgz" -o /tmp/onnxruntime.tgz; then \
+      tar -xzf /tmp/onnxruntime.tgz -C /opt/onnxruntime; \
+    else \
+      nuget_pkg="microsoft.ml.onnxruntime"; \
+      curl -fsSL "https://api.nuget.org/v3-flatcontainer/${nuget_pkg}/${ONNXRUNTIME_VERSION}/${nuget_pkg}.${ONNXRUNTIME_VERSION}.nupkg" -o /tmp/onnxruntime.nupkg; \
+      mkdir -p "${ort_dir}/include" "${ort_dir}/lib"; \
+      unzip -qj /tmp/onnxruntime.nupkg 'build/native/include/*.h' -d "${ort_dir}/include"; \
+      unzip -qj /tmp/onnxruntime.nupkg "runtimes/linux-${nuget_arch}/native/*.so" -d "${ort_dir}/lib"; \
+      ln -s libonnxruntime.so "${ort_dir}/lib/libonnxruntime.so.1"; \
+    fi; \
+    ln -s "${ort_dir}" /opt/onnxruntime/current; \
+    rm -f /tmp/onnxruntime.tgz /tmp/onnxruntime.nupkg
 
 FROM golang:1.27.3 AS go-base
 

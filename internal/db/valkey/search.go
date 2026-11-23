@@ -2,7 +2,6 @@ package valkey
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
@@ -31,28 +30,14 @@ func (s *Store) SearchKNN(ctx context.Context, q *db.KNNQuery) (*db.SearchResult
 		filterStr = strings.TrimSpace(filterStr + " -" + buildTagFilter("__parent_id", q.ExcludeParentID))
 	}
 
-	knnPart := fmt.Sprintf("[KNN %d @vector $BLOB]", q.K)
-	var queryStr string
-	if filterStr != "" {
-		queryStr = fmt.Sprintf("(%s)=>%s", filterStr, knnPart)
+	if filterStr == "" {
+		filterStr = "*"
 	} else {
-		queryStr = fmt.Sprintf("*=>%s", knnPart)
+		filterStr = "(" + filterStr + ")"
 	}
+	queryStr := fmt.Sprintf("%s=>[KNN %d @vector $BLOB]", filterStr, q.K)
 
-	// A successful search must cover every shard with one index/topology view.
-	args := []string{q.IndexName, queryStr, "ALLSHARDS", "CONSISTENT"}
-
-	if len(q.ReturnFields) > 0 {
-		args = append(args, "RETURN", strconv.Itoa(len(q.ReturnFields)))
-		args = append(args, q.ReturnFields...)
-	}
-
-	// K controls candidate ranking, while LIMIT controls response cardinality.
-	// Omitting LIMIT silently truncates FT.SEARCH to its ten-row default.
-	args = append(args, "LIMIT", "0", strconv.Itoa(q.K),
-		"PARAMS", "2", "BLOB", vectorToBytes(q.Vector), "DIALECT", "2")
-
-	cmd := s.searchCommand(args)
+	cmd := s.searchCommand(q.IndexName, queryStr, q.ReturnFields, q.K, q.Vector)
 	raw, err := s.do(ctx, cmd).ToArray()
 	if err != nil {
 		return nil, &db.Error{Op: db.OpSearch, Err: err}
@@ -75,26 +60,12 @@ func (s *Store) SearchBM25(ctx context.Context, q *db.TextQuery) (*db.SearchResu
 
 	filterStr := withExpiryFilter(buildFilter(q.Filters), q.NotExpiredAt)
 
-	escaped := escapeQuery(q.Query)
-	textPart := escaped
-
-	var queryStr string
+	queryStr := escapeQuery(q.Query)
 	if filterStr != "" {
-		queryStr = fmt.Sprintf("%s %s", filterStr, textPart)
-	} else {
-		queryStr = textPart
+		queryStr = filterStr + " " + queryStr
 	}
 
-	// A successful search must cover every shard with one index/topology view.
-	args := []string{q.IndexName, queryStr, "ALLSHARDS", "CONSISTENT"}
-
-	if len(q.ReturnFields) > 0 {
-		args = append(args, "RETURN", strconv.Itoa(len(q.ReturnFields)))
-		args = append(args, q.ReturnFields...)
-	}
-	args = append(args, "LIMIT", "0", strconv.Itoa(q.TopK), "DIALECT", "2")
-
-	cmd := s.searchCommand(args)
+	cmd := s.searchCommand(q.IndexName, queryStr, q.ReturnFields, q.TopK, nil)
 	raw, err := s.do(ctx, cmd).ToArray()
 	if err != nil {
 		return nil, &db.Error{Op: db.OpSearch, Err: err}
@@ -114,9 +85,20 @@ func withExpiryFilter(filters string, now int64) string {
 // A routing slot selects a primary coordinator without creating a data key.
 // Rotating it avoids pinning a collection's entire query load to its index-name
 // slot. The actual index argument and distributed consistency checks are intact.
-func (s *Store) searchCommand(args []string) rueidis.Completed {
+func (s *Store) searchCommand(index, query string, fields []string, limit int, vector []float32) rueidis.Completed {
+	// The typed builder lacks the flags that require a consistent result from every shard.
+	command := s.b().Arbitrary("FT.SEARCH", index, query, "ALLSHARDS", "CONSISTENT")
+	if len(fields) > 0 {
+		command = command.Args("RETURN", strconv.Itoa(len(fields))).Args(fields...)
+	}
+	// Even with a larger KNN candidate count, the server returns ten rows by default.
+	command = command.Args("LIMIT", "0", strconv.Itoa(limit))
+	if len(vector) > 0 {
+		command = command.Args("PARAMS", "2", "BLOB", rueidis.VectorString32(vector))
+	}
+
 	route := "vecdex:query-route:" + strconv.FormatUint(s.queryRoute.Add(1), 10)
-	return s.b().Arbitrary("FT.SEARCH").Args(args...).ReadOnly().SetSlot(route)
+	return command.Args("DIALECT", "2").ReadOnly().SetSlot(route)
 }
 
 // --- Result parsing ---
@@ -351,11 +333,3 @@ var queryEscaper = strings.NewReplacer(
 	`;`, `\;`,
 	`+`, `\+`,
 )
-
-func vectorToBytes(v []float32) string {
-	buf := make([]byte, len(v)*4)
-	for i, f := range v {
-		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
-	}
-	return string(buf)
-}

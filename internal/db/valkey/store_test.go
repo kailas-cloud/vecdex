@@ -448,14 +448,11 @@ func TestSearchKNN_Success(t *testing.T) {
 	c := mock.NewClient(ctrl)
 
 	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(cmd []string) bool {
-			for i := 0; i+2 < len(cmd); i++ {
-				if cmd[i] == "LIMIT" {
-					return cmd[0] == "FT.SEARCH" && cmd[i+1] == "0" && cmd[i+2] == "50"
-				}
-			}
-			return false
-		})).
+		Do(gomock.Any(), mock.Match(
+			"FT.SEARCH", "idx", "*=>[KNN 50 @vector $BLOB]", "ALLSHARDS", "CONSISTENT",
+			"RETURN", "2", "__vector_score", "__content", "LIMIT", "0", "50",
+			"PARAMS", "2", "BLOB", "\x00\x00\x80\x3f\x00\x00\x00\x3f", "DIALECT", "2",
+		)).
 		Return(mock.Result(mock.RedisArray(
 			mock.RedisInt64(1),
 			mock.RedisString("doc:1"),
@@ -469,9 +466,10 @@ func TestSearchKNN_Success(t *testing.T) {
 
 	s := NewStoreForTest(c)
 	result, err := s.SearchKNN(context.Background(), &db.KNNQuery{
-		IndexName: "idx",
-		Vector:    []float32{0.1, 0.2},
-		K:         50,
+		IndexName:    "idx",
+		Vector:       []float32{1.0, 0.5},
+		K:            50,
+		ReturnFields: []string{"__vector_score", "__content"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -510,7 +508,9 @@ func TestSearchBM25_Success(t *testing.T) {
 	fields := mock.RedisArray(mock.RedisString("__content"), mock.RedisString("text"))
 	reply := mock.RedisArray(mock.RedisInt64(1), mock.RedisString("doc:1"), fields)
 	c.EXPECT().
-		Do(gomock.Any(), mock.MatchFn(func(args []string) bool { return args[0] == "FT.SEARCH" })).
+		Do(gomock.Any(), mock.Match(
+			"FT.SEARCH", "idx", "test", "ALLSHARDS", "CONSISTENT", "LIMIT", "0", "10", "DIALECT", "2",
+		)).
 		Return(mock.Result(reply))
 	result, err := NewStoreForTest(
 		c,
@@ -607,14 +607,6 @@ func TestEscapeQuery_SciFactPunctuation(t *testing.T) {
 	want := `The ureABIEFGH gene cluster encodes urease maturation proteins \: UreD\/UreH\, UreE\, UreF\, and UreG\.`
 	if escaped != want {
 		t.Errorf("unexpected escaped: %q", escaped)
-	}
-}
-
-func TestVectorToBytes(t *testing.T) {
-	v := []float32{1.0}
-	b := vectorToBytes(v)
-	if len(b) != 4 {
-		t.Fatalf("expected 4 bytes, got %d", len(b))
 	}
 }
 
